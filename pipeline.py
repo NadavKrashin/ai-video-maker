@@ -116,9 +116,10 @@ class Config(BaseModel):
     duration: int = 5
     output_format: str = "png"
     default_frame_count: int = 8
-    # When True, the storyboard never proposes text/title-card scenes and every
-    # generated frame is told not to render any on-screen text/letters.
-    avoid_onscreen_text: bool = True
+    # When True, the storyboard never proposes text-ONLY frames (a title/caption
+    # card: text on a blank/black/solid background). Text on top of a real
+    # visual scene is allowed; every frame must depict an actual scene.
+    avoid_text_only_frames: bool = True
 
     # Model / endpoint settings (safe to edit).
     openai_image_model: str = "gpt-image-2"
@@ -527,14 +528,14 @@ class OpenAIClient:
             "(character looks, wardrobe, environment, palette, lighting) so a "
             "text-to-image model produces consistent results frame to frame."
         )
-        if self.config.avoid_onscreen_text:
+        if self.config.avoid_text_only_frames:
             system += (
-                " Every frame MUST be a purely visual scene with characters "
-                "and/or an environment. NEVER create title cards, intro/outro "
-                "text screens, caption frames, quote cards, credits, or any "
-                "frame whose main content is text. Keep every image_prompt free "
-                "of rendered text, lettering, words, signage, captions, or "
-                "subtitles, and add those to each negative_prompt."
+                " Every frame MUST depict a real visual scene with characters "
+                "and/or an environment. NEVER create a frame that is only text "
+                "on a blank, black, or solid-colour background (title cards, "
+                "intro/outro text screens, caption cards, quote cards, credits). "
+                "Text is allowed only when it appears naturally on top of a real "
+                "scene — it must never be the sole content of a frame."
             )
         if frame_count and frame_count > 0:
             count_instruction = f"Create exactly {frame_count} key frames."
@@ -1133,11 +1134,12 @@ class Pipeline:
             )
             if frame.negative_prompt:
                 full_prompt += f"\n\nAvoid: {frame.negative_prompt}"
-            if self.config.avoid_onscreen_text:
+            if self.config.avoid_text_only_frames:
                 full_prompt += (
-                    "\n\nIMPORTANT: Do NOT render any on-screen text, letters, "
-                    "words, numbers, captions, titles, subtitles, signage, "
-                    "logos, or watermarks. Produce a purely visual scene only."
+                    "\n\nIMPORTANT: This must be a full visual scene, NOT a "
+                    "title/caption card. Do NOT produce a blank, black, or "
+                    "solid-colour background containing only text. (Text is fine "
+                    "when it appears naturally within a real scene.)"
                 )
 
             if self.dry_run:

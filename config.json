@@ -7,7 +7,7 @@
   "duration": 5,
   "output_format": "png",
   "default_frame_count": 8,
-  "avoid_onscreen_text": true,
+  "avoid_text_only_frames": true,
   "openai_image_model": "gpt-image-2",
   "openai_text_model": "gpt-4o",
   "video_provider": "fal",
