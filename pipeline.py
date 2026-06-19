@@ -118,7 +118,7 @@ class Config(BaseModel):
     default_frame_count: int = 8
 
     # Model / endpoint settings (safe to edit).
-    openai_image_model: str = "gpt-image-1"
+    openai_image_model: str = "gpt-image-2"
     openai_text_model: str = "gpt-4o"
 
     # Which image-to-video provider to use: "fal" or "higgsfield".

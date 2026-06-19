@@ -7,7 +7,7 @@
   "duration": 5,
   "output_format": "png",
   "default_frame_count": 8,
-  "openai_image_model": "gpt-image-1",
+  "openai_image_model": "gpt-image-2",
   "openai_text_model": "gpt-4o",
   "video_provider": "fal",
   "fal_model_id": "fal-ai/kling-video/v2.1/pro/image-to-video",
