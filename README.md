@@ -56,9 +56,19 @@ cp .env.example .env
 
 ```env
 OPENAI_API_KEY=sk-...
-KLING_ACCESS_KEY=...
-KLING_SECRET_KEY=...
+
+# Kling auth — use ONE scheme (auto-detected):
+# (a) single API key (most common; console shows one "api-key-kling-..." value)
+KLING_API_KEY=api-key-kling-...
+# (b) OR an Access Key + Secret Key pair (leave KLING_API_KEY blank if you use this)
+# KLING_ACCESS_KEY=...
+# KLING_SECRET_KEY=...
 ```
+
+> **Kling auth:** if your Kling console shows a single **API Key**, set
+> `KLING_API_KEY` and leave the AK/SK pair blank — it's sent directly as a Bearer
+> token. If it shows an **Access Key + Secret Key** pair, set those two instead
+> and the app signs a short-lived JWT. If both are set, the single API key wins.
 
 Keys are loaded from `.env` via `python-dotenv` — they are **never hardcoded**,
 and `.env` is git-ignored.

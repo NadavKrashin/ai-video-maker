@@ -536,10 +536,17 @@ class OpenAIClient:
 #
 # ALL Kling-specific details are confined to this class. If the official Kling
 # API changes, you should only need to edit the marked sections below:
-#   * _build_jwt        -> auth / signing
+#   * _auth_token       -> auth / signing
 #   * submit_image2video-> request endpoint + payload
 #   * _poll             -> status endpoint + status field names
 #   * download          -> result URL field + download
+#
+# AUTH MODES (auto-detected from .env):
+#   * API key mode  : set KLING_API_KEY=<single api-key-kling-... value>.
+#                     Sent directly as `Authorization: Bearer <KLING_API_KEY>`.
+#   * AK/SK mode    : set KLING_ACCESS_KEY + KLING_SECRET_KEY. A short-lived
+#                     HS256 JWT is signed and sent as the Bearer token.
+# If both are present, the single API key takes precedence.
 #
 # Reference: consult the official KlingAI API documentation for exact paths,
 # payload field names, and status values, and adjust accordingly.
@@ -548,27 +555,38 @@ class KlingClient:
     def __init__(self, config: Config) -> None:
         self.config = config
         self.base_url = config.kling_base_url.rstrip("/")
+        self._api_key = os.environ.get("KLING_API_KEY")
         self._access_key = os.environ.get("KLING_ACCESS_KEY")
         self._secret_key = os.environ.get("KLING_SECRET_KEY")
 
     def _require_credentials(self) -> None:
-        if not self._access_key or not self._secret_key:
-            raise RuntimeError(
-                "KLING_ACCESS_KEY / KLING_SECRET_KEY are not set. "
-                "Add them to your .env file."
-            )
+        if self._api_key:
+            return
+        if self._access_key and self._secret_key:
+            return
+        raise RuntimeError(
+            "No Kling credentials found. Set KLING_API_KEY (single key), or "
+            "KLING_ACCESS_KEY + KLING_SECRET_KEY, in your .env file."
+        )
 
     # --- AUTH / SIGNING ---------------------------------------------------- #
-    def _build_jwt(self) -> str:
+    def _auth_token(self) -> str:
         """
-        Build a short-lived JWT used as the Bearer token.
+        Return the Bearer token for requests.
 
-        ADJUST IF NEEDED: Kling's documented scheme signs an HS256 token whose
-        payload contains the access key as `iss`, plus `exp` and `nbf`. If the
-        official docs specify different claims or a different signing method,
-        edit this method only.
+        ADJUST IF NEEDED:
+        * Single API key  -> used verbatim.
+        * AK/SK pair      -> signed into an HS256 JWT whose payload contains the
+          access key as `iss`, plus `exp`/`nbf`. If the official docs specify
+          different claims or a different signing method, edit this method only.
         """
         self._require_credentials()
+
+        # API key mode: send the key directly.
+        if self._api_key:
+            return self._api_key
+
+        # AK/SK mode: sign a short-lived JWT.
         import jwt  # PyJWT, imported lazily
 
         now = int(time.time())
@@ -583,7 +601,7 @@ class KlingClient:
 
     def _headers(self) -> dict[str, str]:
         return {
-            "Authorization": f"Bearer {self._build_jwt()}",
+            "Authorization": f"Bearer {self._auth_token()}",
             "Content-Type": "application/json",
         }
 
