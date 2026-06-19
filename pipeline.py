@@ -1,0 +1,1147 @@
+#!/usr/bin/env python3
+"""
+AI Video Maker — local automation pipeline.
+
+Two workflows:
+
+  Mode A (default): Image-to-video from images you provide in input_images/.
+      * Style every image to a consistent 1920x1080 look (OpenAI image edit).
+      * Send each consecutive styled pair to KlingAI (start frame -> end frame)
+        to produce one short clip. n images -> n-1 clips.
+
+  Mode B (--from-scratch): Generate a video from a raw idea.
+      * Ask OpenAI to write a full storyboard (concept, scenes, frames,
+        per-frame image prompts, per-transition motion prompts).
+      * Save it to storyboard/storyboard.json + .md and STOP for human review.
+      * Only after --approve-storyboard: generate frames, then Kling clips.
+
+Final clips are NOT combined — the user assembles them in Premiere Pro.
+
+Run `python pipeline.py --help` for all flags.
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import logging
+import os
+import re
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Iterable, Optional, TypeVar
+
+from dotenv import load_dotenv
+from PIL import Image
+from pydantic import BaseModel, Field, ValidationError
+from tqdm import tqdm
+
+# Third-party SDK / HTTP libs are imported lazily inside the client classes so
+# that --dry-run and --help work even if credentials/SDKs are not configured.
+
+# --------------------------------------------------------------------------- #
+# Paths & constants
+# --------------------------------------------------------------------------- #
+PROJECT_ROOT = Path(__file__).resolve().parent
+INPUT_IMAGES_DIR = PROJECT_ROOT / "input_images"
+GENERATED_FRAMES_DIR = PROJECT_ROOT / "generated_frames"
+STYLED_IMAGES_DIR = PROJECT_ROOT / "styled_images"
+STORYBOARD_DIR = PROJECT_ROOT / "storyboard"
+CLIPS_DIR = PROJECT_ROOT / "clips"
+LOGS_DIR = PROJECT_ROOT / "logs"
+FAILED_JOBS_DIR = PROJECT_ROOT / "failed_jobs"
+
+STATE_FILE = LOGS_DIR / "state.json"
+FAILED_JOBS_FILE = FAILED_JOBS_DIR / "failed_jobs.json"
+DEFAULT_STORYBOARD_JSON = STORYBOARD_DIR / "storyboard.json"
+STORYBOARD_MD = STORYBOARD_DIR / "storyboard.md"
+
+SUPPORTED_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+VALID_DURATIONS = {5, 10}
+
+ALL_DIRS = [
+    INPUT_IMAGES_DIR,
+    GENERATED_FRAMES_DIR,
+    STYLED_IMAGES_DIR,
+    STORYBOARD_DIR,
+    CLIPS_DIR,
+    LOGS_DIR,
+    FAILED_JOBS_DIR,
+]
+
+T = TypeVar("T")
+logger = logging.getLogger("pipeline")
+
+
+# --------------------------------------------------------------------------- #
+# Logging
+# --------------------------------------------------------------------------- #
+def setup_logging() -> None:
+    """Log to both the console and a timestamped file in logs/."""
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    logger.setLevel(logging.DEBUG)
+    logger.handlers.clear()
+
+    fmt = logging.Formatter("%(asctime)s | %(levelname)-7s | %(message)s")
+
+    console = logging.StreamHandler(sys.stdout)
+    console.setLevel(logging.INFO)
+    console.setFormatter(fmt)
+    logger.addHandler(console)
+
+    logfile = LOGS_DIR / f"pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    file_handler = logging.FileHandler(logfile, encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(fmt)
+    logger.addHandler(file_handler)
+
+    logger.debug("Logging initialised -> %s", logfile)
+
+
+# --------------------------------------------------------------------------- #
+# Config (validated with pydantic)
+# --------------------------------------------------------------------------- #
+class Config(BaseModel):
+    """Validated representation of config.json."""
+
+    target_width: int = 1920
+    target_height: int = 1080
+    style_prompt: str
+    scratch_style_prompt: str
+    motion_prompt: str
+    duration: int = 5
+    output_format: str = "png"
+    default_frame_count: int = 8
+
+    # Model / endpoint settings (safe to edit).
+    openai_image_model: str = "gpt-image-1"
+    openai_text_model: str = "gpt-4o"
+    kling_model: str = "kling-v1"
+    kling_base_url: str = "https://api.klingai.com"
+    kling_poll_interval_seconds: int = 10
+    kling_poll_timeout_seconds: int = 900
+
+    # Retry behaviour.
+    max_retries: int = 5
+    retry_base_delay_seconds: float = 2.0
+
+    @classmethod
+    def load(cls, path: Path) -> "Config":
+        if not path.exists():
+            raise FileNotFoundError(f"Config file not found: {path}")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            return cls(**data)
+        except ValidationError as exc:  # pragma: no cover - surfaced to user
+            raise SystemExit(f"Invalid config.json:\n{exc}") from exc
+
+
+# --------------------------------------------------------------------------- #
+# Storyboard data models (Mode B). Human-editable JSON maps onto these.
+# --------------------------------------------------------------------------- #
+class Frame(BaseModel):
+    id: str
+    description: str
+    image_prompt: str
+    negative_prompt: str = ""
+    output_path: str
+
+
+class Transition(BaseModel):
+    id: str
+    start_frame: str
+    end_frame: str
+    motion_prompt: str
+    duration: int = 5
+    output_path: str
+
+
+class Storyboard(BaseModel):
+    project_title: str
+    style: str
+    duration_per_clip: int = 5
+    target_width: int = 1920
+    target_height: int = 1080
+    concept: str = ""
+    scenes: list[str] = Field(default_factory=list)
+    frames: list[Frame]
+    transitions: list[Transition] = Field(default_factory=list)
+
+    @classmethod
+    def load(cls, path: Path) -> "Storyboard":
+        if not path.exists():
+            raise FileNotFoundError(f"Storyboard file not found: {path}")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            return cls(**data)
+        except ValidationError as exc:
+            raise SystemExit(f"Invalid storyboard JSON ({path}):\n{exc}") from exc
+
+    def save(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(self.model_dump(), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Job state (resume support) and failed-job tracking
+# --------------------------------------------------------------------------- #
+class StateStore:
+    """Persists per-job status to logs/state.json so runs can resume."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._data: dict[str, Any] = {"jobs": {}}
+        if path.exists():
+            try:
+                self._data = json.loads(path.read_text(encoding="utf-8"))
+                self._data.setdefault("jobs", {})
+            except json.JSONDecodeError:
+                logger.warning("Could not parse %s; starting fresh.", path)
+
+    def status(self, job_id: str) -> Optional[str]:
+        entry = self._data["jobs"].get(job_id)
+        return entry.get("status") if entry else None
+
+    def is_done(self, job_id: str) -> bool:
+        return self.status(job_id) == "done"
+
+    def set(self, job_id: str, status: str, **extra: Any) -> None:
+        self._data["jobs"][job_id] = {
+            "status": status,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            **extra,
+        }
+        self._flush()
+
+    def _flush(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(
+            json.dumps(self._data, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+
+class FailedJobStore:
+    """Collects failed jobs and writes them to failed_jobs/failed_jobs.json."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.failures: list[dict[str, Any]] = []
+
+    def record(self, job_id: str, kind: str, error: str, **extra: Any) -> None:
+        self.failures.append(
+            {
+                "job_id": job_id,
+                "kind": kind,
+                "error": error,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                **extra,
+            }
+        )
+        logger.error("FAILED [%s] %s: %s", kind, job_id, error)
+
+    def flush(self) -> None:
+        if not self.failures:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(
+            json.dumps(self.failures, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        logger.info("Wrote %d failed job(s) -> %s", len(self.failures), self.path)
+
+
+# --------------------------------------------------------------------------- #
+# Retry helper (exponential backoff)
+# --------------------------------------------------------------------------- #
+def with_retries(
+    func: Callable[[], T],
+    *,
+    max_retries: int,
+    base_delay: float,
+    description: str,
+) -> T:
+    """Call `func` with exponential backoff. Re-raises the last error."""
+    last_exc: Optional[BaseException] = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            return func()
+        except Exception as exc:  # noqa: BLE001 - we want to retry broadly
+            last_exc = exc
+            if attempt >= max_retries:
+                break
+            delay = base_delay * (2 ** (attempt - 1))
+            logger.warning(
+                "%s failed (attempt %d/%d): %s — retrying in %.1fs",
+                description,
+                attempt,
+                max_retries,
+                exc,
+                delay,
+            )
+            time.sleep(delay)
+    assert last_exc is not None
+    raise last_exc
+
+
+# --------------------------------------------------------------------------- #
+# Image utilities (Pillow) — normalise everything to exactly target size
+# --------------------------------------------------------------------------- #
+def natural_sort_key(path: Path) -> list[Any]:
+    """Sort key that orders e.g. img2 before img10 (natural ordering)."""
+    parts = re.split(r"(\d+)", path.name)
+    return [int(p) if p.isdigit() else p.lower() for p in parts]
+
+
+def list_input_images(directory: Path) -> list[Path]:
+    files = [
+        p
+        for p in directory.iterdir()
+        if p.is_file() and p.suffix.lower() in SUPPORTED_IMAGE_EXTS
+    ]
+    return sorted(files, key=natural_sort_key)
+
+
+def normalize_image(src: Path, dst: Path, width: int, height: int) -> None:
+    """
+    Force `src` to be exactly width x height and write to `dst`.
+
+    Strategy: convert to RGB, then center-crop to the target aspect ratio
+    (cover) and resize. This avoids distortion and preserves the center
+    composition. If the source is smaller, it is scaled up.
+    """
+    with Image.open(src) as im:
+        im = im.convert("RGB")
+        target_ratio = width / height
+        src_ratio = im.width / im.height
+
+        if abs(src_ratio - target_ratio) < 1e-3:
+            cropped = im
+        elif src_ratio > target_ratio:
+            # Too wide -> crop the sides.
+            new_w = int(round(im.height * target_ratio))
+            left = (im.width - new_w) // 2
+            cropped = im.crop((left, 0, left + new_w, im.height))
+        else:
+            # Too tall -> crop top/bottom.
+            new_h = int(round(im.width / target_ratio))
+            top = (im.height - new_h) // 2
+            cropped = im.crop((0, top, im.width, top + new_h))
+
+        resized = cropped.resize((width, height), Image.LANCZOS)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        resized.save(dst, format="PNG")
+
+
+def verify_dimensions(path: Path, width: int, height: int) -> bool:
+    try:
+        with Image.open(path) as im:
+            return im.size == (width, height)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Could not verify %s: %s", path, exc)
+        return False
+
+
+# --------------------------------------------------------------------------- #
+# OpenAI client (isolated). Image generation/editing + storyboard text.
+# --------------------------------------------------------------------------- #
+class OpenAIClient:
+    """Thin wrapper around the OpenAI SDK. Easy to swap models/endpoints."""
+
+    # gpt-image-1 supports these sizes; 16:9 1920x1080 is not native, so we
+    # request the closest landscape size and then normalise with Pillow.
+    _IMAGE_API_SIZE = "1536x1024"
+
+    def __init__(self, config: Config) -> None:
+        self.config = config
+        self._client = None  # lazily created
+
+    def _ensure_client(self):
+        if self._client is None:
+            api_key = os.environ.get("OPENAI_API_KEY")
+            if not api_key:
+                raise RuntimeError(
+                    "OPENAI_API_KEY is not set. Add it to your .env file."
+                )
+            from openai import OpenAI  # imported lazily
+
+            self._client = OpenAI(api_key=api_key)
+        return self._client
+
+    # --- Mode A: edit an existing image into the target style --------------- #
+    def style_image(self, src: Path, style_prompt: str, dst: Path) -> None:
+        """Edit `src` into the styled look and write a normalised PNG to `dst`."""
+        client = self._ensure_client()
+
+        def _call() -> bytes:
+            with src.open("rb") as fh:
+                # NOTE: images.edit applies the prompt to the provided image.
+                resp = client.images.edit(
+                    model=self.config.openai_image_model,
+                    image=fh,
+                    prompt=style_prompt,
+                    size=self._IMAGE_API_SIZE,
+                )
+            return base64.b64decode(resp.data[0].b64_json)
+
+        raw = with_retries(
+            _call,
+            max_retries=self.config.max_retries,
+            base_delay=self.config.retry_base_delay_seconds,
+            description=f"OpenAI style_image({src.name})",
+        )
+        self._save_normalized(raw, dst)
+
+    # --- Mode B: generate an image from a text prompt ----------------------- #
+    def generate_image(self, prompt: str, dst: Path) -> None:
+        """Generate an image from `prompt` and write a normalised PNG to `dst`."""
+        client = self._ensure_client()
+
+        def _call() -> bytes:
+            resp = client.images.generate(
+                model=self.config.openai_image_model,
+                prompt=prompt,
+                size=self._IMAGE_API_SIZE,
+            )
+            return base64.b64decode(resp.data[0].b64_json)
+
+        raw = with_retries(
+            _call,
+            max_retries=self.config.max_retries,
+            base_delay=self.config.retry_base_delay_seconds,
+            description="OpenAI generate_image",
+        )
+        self._save_normalized(raw, dst)
+
+    def _save_normalized(self, raw_png: bytes, dst: Path) -> None:
+        """Write raw bytes to a temp file, then normalise to target size."""
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dst.with_suffix(".raw.png")
+        tmp.write_bytes(raw_png)
+        try:
+            normalize_image(
+                tmp, dst, self.config.target_width, self.config.target_height
+            )
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    # --- Mode B: storyboard planning --------------------------------------- #
+    def create_storyboard(self, idea: str, frame_count: int) -> Storyboard:
+        """Ask the text model to produce a structured storyboard for `idea`."""
+        client = self._ensure_client()
+
+        system = (
+            "You are a film pre-production assistant. Produce a storyboard for a "
+            "short cinematic video that will be rendered as a sequence of still "
+            "key frames, then animated between consecutive frames. "
+            "CRITICAL: keep the same characters, same world, same lighting "
+            "language, and same color palette across every frame so the frames "
+            "form a continuous, consistent visual flow. Each image_prompt must "
+            "be fully self-contained and restate the recurring visual identity "
+            "(character looks, wardrobe, environment, palette, lighting) so a "
+            "text-to-image model produces consistent results frame to frame."
+        )
+        user = (
+            f"Video idea: {idea}\n\n"
+            f"Create exactly {frame_count} key frames. Return ONLY valid JSON "
+            "with this exact shape:\n"
+            "{\n"
+            '  "project_title": str,\n'
+            '  "style": str,                       // overall visual style sentence\n'
+            '  "concept": str,                     // overall concept paragraph\n'
+            '  "scenes": [str, ...],               // scene list\n'
+            '  "frames": [\n'
+            "    {\n"
+            '      "id": "001",\n'
+            '      "description": str,             // what happens in this frame\n'
+            '      "image_prompt": str,            // full detailed image prompt\n'
+            '      "negative_prompt": str          // things to avoid\n'
+            "    }, ...\n"
+            "  ]\n"
+            "}\n"
+            "Do not include output_path or transitions; those are added later. "
+            "Frame ids must be zero-padded 3-digit strings starting at 001."
+        )
+
+        def _call() -> str:
+            resp = client.chat.completions.create(
+                model=self.config.openai_text_model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.8,
+            )
+            return resp.choices[0].message.content or "{}"
+
+        raw = with_retries(
+            _call,
+            max_retries=self.config.max_retries,
+            base_delay=self.config.retry_base_delay_seconds,
+            description="OpenAI create_storyboard",
+        )
+        return self._assemble_storyboard(json.loads(raw))
+
+    def _assemble_storyboard(self, data: dict[str, Any]) -> Storyboard:
+        """Normalise the model JSON and attach output paths + transitions."""
+        frames_in = data.get("frames", [])
+        frames: list[Frame] = []
+        for i, fr in enumerate(frames_in, start=1):
+            fid = str(fr.get("id") or f"{i:03d}").zfill(3)
+            frames.append(
+                Frame(
+                    id=fid,
+                    description=fr.get("description", ""),
+                    image_prompt=fr.get("image_prompt", ""),
+                    negative_prompt=fr.get("negative_prompt", ""),
+                    output_path=f"generated_frames/{fid}.png",
+                )
+            )
+
+        transitions: list[Transition] = []
+        for a, b in zip(frames, frames[1:]):
+            tid = f"{a.id}_to_{b.id}"
+            transitions.append(
+                Transition(
+                    id=tid,
+                    start_frame=a.output_path,
+                    end_frame=b.output_path,
+                    motion_prompt=self.config.motion_prompt,
+                    duration=self.config.duration,
+                    output_path=f"clips/{tid}.mp4",
+                )
+            )
+
+        return Storyboard(
+            project_title=data.get("project_title", "Untitled Project"),
+            style=data.get("style", self.config.scratch_style_prompt),
+            duration_per_clip=self.config.duration,
+            target_width=self.config.target_width,
+            target_height=self.config.target_height,
+            concept=data.get("concept", ""),
+            scenes=list(data.get("scenes", [])),
+            frames=frames,
+            transitions=transitions,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Kling client (isolated). Image-to-video generation.
+# --------------------------------------------------------------------------- #
+#
+# ALL Kling-specific details are confined to this class. If the official Kling
+# API changes, you should only need to edit the marked sections below:
+#   * _build_jwt        -> auth / signing
+#   * submit_image2video-> request endpoint + payload
+#   * _poll             -> status endpoint + status field names
+#   * download          -> result URL field + download
+#
+# Reference: consult the official KlingAI API documentation for exact paths,
+# payload field names, and status values, and adjust accordingly.
+# --------------------------------------------------------------------------- #
+class KlingClient:
+    def __init__(self, config: Config) -> None:
+        self.config = config
+        self.base_url = config.kling_base_url.rstrip("/")
+        self._access_key = os.environ.get("KLING_ACCESS_KEY")
+        self._secret_key = os.environ.get("KLING_SECRET_KEY")
+
+    def _require_credentials(self) -> None:
+        if not self._access_key or not self._secret_key:
+            raise RuntimeError(
+                "KLING_ACCESS_KEY / KLING_SECRET_KEY are not set. "
+                "Add them to your .env file."
+            )
+
+    # --- AUTH / SIGNING ---------------------------------------------------- #
+    def _build_jwt(self) -> str:
+        """
+        Build a short-lived JWT used as the Bearer token.
+
+        ADJUST IF NEEDED: Kling's documented scheme signs an HS256 token whose
+        payload contains the access key as `iss`, plus `exp` and `nbf`. If the
+        official docs specify different claims or a different signing method,
+        edit this method only.
+        """
+        self._require_credentials()
+        import jwt  # PyJWT, imported lazily
+
+        now = int(time.time())
+        payload = {
+            "iss": self._access_key,
+            "exp": now + 1800,  # valid 30 minutes
+            "nbf": now - 5,
+        }
+        headers = {"alg": "HS256", "typ": "JWT"}
+        token = jwt.encode(payload, self._secret_key, algorithm="HS256", headers=headers)
+        return token if isinstance(token, str) else token.decode("utf-8")
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._build_jwt()}",
+            "Content-Type": "application/json",
+        }
+
+    @staticmethod
+    def _encode_image(path: Path) -> str:
+        """Kling accepts base64-encoded images (or public URLs)."""
+        return base64.b64encode(path.read_bytes()).decode("utf-8")
+
+    # --- SUBMIT ------------------------------------------------------------ #
+    def submit_image2video(
+        self,
+        start_frame: Path,
+        end_frame: Path,
+        motion_prompt: str,
+        duration: int,
+    ) -> str:
+        """
+        Submit a start-frame + end-frame image-to-video job. Returns task_id.
+
+        ADJUST IF NEEDED: endpoint path and payload field names below follow the
+        commonly documented Kling image2video API (`image` = start frame,
+        `image_tail` = end frame). Verify against the official docs.
+        """
+        import requests
+
+        url = f"{self.base_url}/v1/videos/image2video"
+        payload = {
+            "model_name": self.config.kling_model,
+            "mode": "std",
+            "duration": str(duration),
+            "image": self._encode_image(start_frame),       # start frame
+            "image_tail": self._encode_image(end_frame),    # end frame
+            "prompt": motion_prompt,
+        }
+
+        def _call() -> str:
+            resp = requests.post(
+                url, headers=self._headers(), json=payload, timeout=60
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            # ADJUST IF NEEDED: task id location in the response.
+            task_id = (body.get("data") or {}).get("task_id") or body.get("task_id")
+            if not task_id:
+                raise RuntimeError(f"No task_id in Kling response: {body}")
+            return task_id
+
+        return with_retries(
+            _call,
+            max_retries=self.config.max_retries,
+            base_delay=self.config.retry_base_delay_seconds,
+            description=f"Kling submit ({start_frame.name}->{end_frame.name})",
+        )
+
+    # --- POLL -------------------------------------------------------------- #
+    def _poll(self, task_id: str) -> str:
+        """
+        Poll until the job succeeds (returns the video URL), fails, or times out.
+
+        ADJUST IF NEEDED: status endpoint path and the status string values
+        ("succeed" / "failed") below follow the documented Kling API.
+        """
+        import requests
+
+        url = f"{self.base_url}/v1/videos/image2video/{task_id}"
+        deadline = time.time() + self.config.kling_poll_timeout_seconds
+
+        while time.time() < deadline:
+            resp = requests.get(url, headers=self._headers(), timeout=60)
+            resp.raise_for_status()
+            data = (resp.json().get("data") or {})
+            status = data.get("task_status", "")
+            logger.debug("Kling task %s status=%s", task_id, status)
+
+            if status == "succeed":
+                videos = (data.get("task_result") or {}).get("videos") or []
+                if not videos:
+                    raise RuntimeError(f"Kling job {task_id} succeeded but no video URL")
+                return videos[0]["url"]  # ADJUST IF NEEDED: result URL field
+            if status == "failed":
+                raise RuntimeError(
+                    f"Kling job {task_id} failed: {data.get('task_status_msg', '')}"
+                )
+            time.sleep(self.config.kling_poll_interval_seconds)
+
+        raise TimeoutError(
+            f"Kling job {task_id} did not finish within "
+            f"{self.config.kling_poll_timeout_seconds}s"
+        )
+
+    # --- DOWNLOAD ---------------------------------------------------------- #
+    def download(self, video_url: str, dst: Path) -> None:
+        """Stream the result video to `dst`."""
+        import requests
+
+        dst.parent.mkdir(parents=True, exist_ok=True)
+
+        def _call() -> None:
+            with requests.get(video_url, stream=True, timeout=300) as resp:
+                resp.raise_for_status()
+                with dst.open("wb") as fh:
+                    for chunk in resp.iter_content(chunk_size=1 << 16):
+                        if chunk:
+                            fh.write(chunk)
+
+        with_retries(
+            _call,
+            max_retries=self.config.max_retries,
+            base_delay=self.config.retry_base_delay_seconds,
+            description=f"Kling download -> {dst.name}",
+        )
+
+    # --- High-level convenience -------------------------------------------- #
+    def generate_clip(
+        self,
+        start_frame: Path,
+        end_frame: Path,
+        motion_prompt: str,
+        duration: int,
+        dst: Path,
+    ) -> None:
+        task_id = self.submit_image2video(start_frame, end_frame, motion_prompt, duration)
+        logger.info("Kling job submitted: %s (task_id=%s)", dst.name, task_id)
+        video_url = self._poll(task_id)
+        self.download(video_url, dst)
+
+
+# --------------------------------------------------------------------------- #
+# Pipeline orchestration
+# --------------------------------------------------------------------------- #
+@dataclass
+class RunSummary:
+    input_count: int = 0
+    styled_created: int = 0
+    styled_skipped: int = 0
+    styled_failed: int = 0
+    videos_created: int = 0
+    videos_skipped: int = 0
+    videos_failed: int = 0
+
+    def print(self) -> None:
+        line = "=" * 60
+        print(f"\n{line}\nRUN SUMMARY\n{line}")
+        print(f"  Input/generated images : {self.input_count}")
+        print(f"  Styled/frames created  : {self.styled_created}")
+        print(f"  Styled/frames skipped  : {self.styled_skipped}")
+        print(f"  Styled/frames failed   : {self.styled_failed}")
+        print(f"  Videos created         : {self.videos_created}")
+        print(f"  Videos skipped         : {self.videos_skipped}")
+        print(f"  Videos failed          : {self.videos_failed}")
+        print(f"\n  Output folders:")
+        print(f"    Styled images   : {STYLED_IMAGES_DIR}")
+        print(f"    Generated frames: {GENERATED_FRAMES_DIR}")
+        print(f"    Clips           : {CLIPS_DIR}")
+        print(f"    Logs            : {LOGS_DIR}")
+        print(f"    Failed jobs     : {FAILED_JOBS_FILE}")
+        print(line)
+
+
+class Pipeline:
+    def __init__(self, config: Config, args: argparse.Namespace) -> None:
+        self.config = config
+        self.args = args
+        self.dry_run: bool = args.dry_run
+        self.force: bool = args.force
+        self.duration: int = args.duration or config.duration
+        self.state = StateStore(STATE_FILE)
+        self.failed = FailedJobStore(FAILED_JOBS_FILE)
+        self.summary = RunSummary()
+        self.openai = OpenAIClient(config)
+        self.kling = KlingClient(config)
+
+    # ------------------------------ Mode A ------------------------------- #
+    def run_mode_a(self) -> None:
+        logger.info("=== Mode A: image-to-video from input_images/ ===")
+        images = list_input_images(INPUT_IMAGES_DIR)
+        self.summary.input_count = len(images)
+
+        if not images:
+            raise SystemExit(
+                f"No supported images found in {INPUT_IMAGES_DIR}. "
+                f"Supported: {sorted(SUPPORTED_IMAGE_EXTS)}"
+            )
+        logger.info("Found %d input image(s).", len(images))
+
+        styled: list[Path] = []
+        if not self.args.only_video:
+            styled = self._style_images(images)
+        else:
+            # --only-video: use existing styled images.
+            styled = sorted(
+                (p for p in STYLED_IMAGES_DIR.iterdir()
+                 if p.is_file() and p.suffix.lower() == ".png"),
+                key=natural_sort_key,
+            )
+            logger.info("Using %d existing styled image(s).", len(styled))
+
+        if self.args.only_style:
+            logger.info("--only-style set: skipping video generation.")
+            return
+
+        if len(styled) < 2:
+            logger.warning(
+                "Need at least 2 styled images to make a clip; have %d.", len(styled)
+            )
+            return
+
+        self._generate_clips(
+            [(styled[i], styled[i + 1]) for i in range(len(styled) - 1)],
+            motion_prompt=self._motion_prompt(),
+        )
+
+    def _style_images(self, images: list[Path]) -> list[Path]:
+        style_prompt = self.args.style_prompt or self.config.style_prompt
+        styled: list[Path] = []
+
+        for idx, src in enumerate(
+            tqdm(images, desc="Styling images", unit="img"), start=1
+        ):
+            dst = STYLED_IMAGES_DIR / f"{idx:03d}_styled.png"
+            styled.append(dst)
+            job_id = f"style:{dst.name}"
+
+            if dst.exists() and not self.force and self.state.is_done(job_id):
+                self.summary.styled_skipped += 1
+                logger.info("Skip styled (done): %s", dst.name)
+                continue
+
+            if self.dry_run:
+                logger.info("[dry-run] would style %s -> %s", src.name, dst.name)
+                self.summary.styled_created += 1
+                continue
+
+            try:
+                self.openai.style_image(src, style_prompt, dst)
+                if not verify_dimensions(dst, self.config.target_width, self.config.target_height):
+                    raise RuntimeError(f"{dst.name} is not {self.config.target_width}x{self.config.target_height}")
+                self.state.set(job_id, "done", output=str(dst))
+                self.summary.styled_created += 1
+                logger.info("Styled: %s", dst.name)
+            except Exception as exc:  # noqa: BLE001
+                self.summary.styled_failed += 1
+                self.state.set(job_id, "failed")
+                self.failed.record(job_id, "style", str(exc), source=str(src))
+
+        return styled
+
+    # ------------------------------ Mode B ------------------------------- #
+    def run_mode_b(self) -> None:
+        logger.info("=== Mode B: generate from scratch ===")
+
+        if self.args.create_storyboard:
+            self._create_storyboard()
+            return
+
+        if self.args.approve_storyboard:
+            self._run_approved_storyboard()
+            return
+
+        raise SystemExit(
+            "Mode B requires either --create-storyboard (with --idea) or "
+            "--approve-storyboard. See README.md."
+        )
+
+    def _create_storyboard(self) -> None:
+        if not self.args.idea:
+            raise SystemExit("--create-storyboard requires --idea \"...\"")
+
+        frame_count = self.config.default_frame_count
+        logger.info(
+            "Creating storyboard for idea: %r (%d frames)", self.args.idea, frame_count
+        )
+
+        if self.dry_run:
+            logger.info("[dry-run] would call OpenAI to build a storyboard and "
+                        "write %s + %s", DEFAULT_STORYBOARD_JSON, STORYBOARD_MD)
+            return
+
+        storyboard = self.openai.create_storyboard(self.args.idea, frame_count)
+        storyboard.save(DEFAULT_STORYBOARD_JSON)
+        write_storyboard_markdown(storyboard, STORYBOARD_MD)
+
+        print("\n" + "=" * 70)
+        print("Storyboard created. Review storyboard/storyboard.md or "
+              "storyboard/storyboard.json,")
+        print("edit if needed, then run with --approve-storyboard.")
+        print("=" * 70 + "\n")
+
+    def _run_approved_storyboard(self) -> None:
+        sb_path = Path(self.args.storyboard_file)
+        if not sb_path.is_absolute():
+            sb_path = PROJECT_ROOT / sb_path
+        storyboard = Storyboard.load(sb_path)
+        logger.info(
+            "Approved storyboard %r with %d frame(s).",
+            storyboard.project_title,
+            len(storyboard.frames),
+        )
+        self.summary.input_count = len(storyboard.frames)
+
+        if not self.args.only_video:
+            self._generate_frames(storyboard)
+
+        if self.args.only_style:
+            logger.info("--only-style set: skipping video generation.")
+            return
+
+        # Build transition pairs from the storyboard (per-transition motion).
+        pairs: list[tuple[Path, Path, str, int]] = []
+        transitions = storyboard.transitions or self._derive_transitions(storyboard)
+        for tr in transitions:
+            pairs.append(
+                (
+                    PROJECT_ROOT / tr.start_frame,
+                    PROJECT_ROOT / tr.end_frame,
+                    self.args.motion_prompt or tr.motion_prompt,
+                    self.args.duration or tr.duration,
+                )
+            )
+        self._generate_clips_with_prompts(pairs)
+
+    @staticmethod
+    def _derive_transitions(storyboard: Storyboard) -> list[Transition]:
+        derived: list[Transition] = []
+        frames = storyboard.frames
+        for a, b in zip(frames, frames[1:]):
+            tid = f"{a.id}_to_{b.id}"
+            derived.append(
+                Transition(
+                    id=tid,
+                    start_frame=a.output_path,
+                    end_frame=b.output_path,
+                    motion_prompt=storyboard.style,
+                    duration=storyboard.duration_per_clip,
+                    output_path=f"clips/{tid}.mp4",
+                )
+            )
+        return derived
+
+    def _generate_frames(self, storyboard: Storyboard) -> None:
+        for frame in tqdm(
+            storyboard.frames, desc="Generating frames", unit="frame"
+        ):
+            dst = PROJECT_ROOT / frame.output_path
+            job_id = f"frame:{frame.id}"
+
+            if dst.exists() and not self.force and self.state.is_done(job_id):
+                self.summary.styled_skipped += 1
+                logger.info("Skip frame (done): %s", dst.name)
+                continue
+
+            # Reinforce style consistency in every prompt.
+            full_prompt = (
+                f"{frame.image_prompt}\n\nStyle: {storyboard.style}"
+            )
+            if frame.negative_prompt:
+                full_prompt += f"\n\nAvoid: {frame.negative_prompt}"
+
+            if self.dry_run:
+                logger.info("[dry-run] would generate frame %s -> %s", frame.id, dst.name)
+                self.summary.styled_created += 1
+                continue
+
+            try:
+                self.openai.generate_image(full_prompt, dst)
+                if not verify_dimensions(dst, self.config.target_width, self.config.target_height):
+                    raise RuntimeError(f"{dst.name} is not {self.config.target_width}x{self.config.target_height}")
+                self.state.set(job_id, "done", output=str(dst))
+                self.summary.styled_created += 1
+                logger.info("Generated frame: %s", dst.name)
+            except Exception as exc:  # noqa: BLE001
+                self.summary.styled_failed += 1
+                self.state.set(job_id, "failed")
+                self.failed.record(job_id, "frame", str(exc), frame_id=frame.id)
+
+    # ------------------------- shared video step ------------------------- #
+    def _motion_prompt(self) -> str:
+        return self.args.motion_prompt or self.config.motion_prompt
+
+    def _generate_clips(
+        self, pairs: list[tuple[Path, Path]], motion_prompt: str
+    ) -> None:
+        enriched = [
+            (a, b, motion_prompt, self.duration) for a, b in pairs
+        ]
+        self._generate_clips_with_prompts(enriched)
+
+    def _generate_clips_with_prompts(
+        self, pairs: list[tuple[Path, Path, str, int]]
+    ) -> None:
+        if not pairs:
+            logger.warning("No transition pairs to render.")
+            return
+
+        for start, end, motion, duration in tqdm(
+            pairs, desc="Generating Kling clips", unit="clip"
+        ):
+            dst = self._clip_name(start, end)
+            job_id = f"clip:{dst.name}"
+
+            if dst.exists() and not self.force and self.state.is_done(job_id):
+                self.summary.videos_skipped += 1
+                logger.info("Skip clip (done): %s", dst.name)
+                continue
+
+            if self.dry_run:
+                # Frames may not exist yet during a dry-run (styling was also
+                # dry-run), so report the plan without checking for them.
+                logger.info(
+                    "[dry-run] would render %s (%ss): %s -> %s | motion=%r",
+                    dst.name, duration, start.name, end.name, motion,
+                )
+                self.summary.videos_created += 1
+                continue
+
+            if not start.exists() or not end.exists():
+                self.summary.videos_failed += 1
+                self.failed.record(
+                    job_id, "clip",
+                    f"Missing frame(s): {start.name} / {end.name}",
+                )
+                continue
+
+            try:
+                self.kling.generate_clip(start, end, motion, duration, dst)
+                self.state.set(job_id, "done", output=str(dst))
+                self.summary.videos_created += 1
+                logger.info("Clip ready: %s", dst.name)
+            except Exception as exc:  # noqa: BLE001
+                self.summary.videos_failed += 1
+                self.state.set(job_id, "failed")
+                self.failed.record(
+                    job_id, "clip", str(exc),
+                    start=str(start), end=str(end),
+                )
+
+    @staticmethod
+    def _clip_name(start: Path, end: Path) -> Path:
+        """Map a frame pair to clips/<start>_to_<end>.mp4 using leading ids."""
+        def stem_id(p: Path) -> str:
+            m = re.match(r"(\d+)", p.stem)
+            return m.group(1) if m else p.stem
+        return CLIPS_DIR / f"{stem_id(start)}_to_{stem_id(end)}.mp4"
+
+    # ------------------------------- run --------------------------------- #
+    def run(self) -> None:
+        try:
+            if self.args.from_scratch:
+                self.run_mode_b()
+            else:
+                self.run_mode_a()
+        finally:
+            self.failed.flush()
+            self.summary.print()
+
+
+# --------------------------------------------------------------------------- #
+# Storyboard markdown rendering
+# --------------------------------------------------------------------------- #
+def write_storyboard_markdown(storyboard: Storyboard, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    lines.append(f"# {storyboard.project_title}\n")
+    lines.append(f"**Style:** {storyboard.style}\n")
+    if storyboard.concept:
+        lines.append(f"**Concept:** {storyboard.concept}\n")
+    lines.append(
+        f"**Output:** {storyboard.target_width}x{storyboard.target_height}, "
+        f"{storyboard.duration_per_clip}s per clip\n"
+    )
+
+    if storyboard.scenes:
+        lines.append("## Scenes\n")
+        for i, scene in enumerate(storyboard.scenes, start=1):
+            lines.append(f"{i}. {scene}")
+        lines.append("")
+
+    lines.append("## Frames\n")
+    for fr in storyboard.frames:
+        lines.append(f"### Frame {fr.id}")
+        lines.append(f"- **Description:** {fr.description}")
+        lines.append(f"- **Image prompt:** {fr.image_prompt}")
+        if fr.negative_prompt:
+            lines.append(f"- **Negative prompt:** {fr.negative_prompt}")
+        lines.append(f"- **Output:** `{fr.output_path}`")
+        lines.append("")
+
+    if storyboard.transitions:
+        lines.append("## Transitions (clips)\n")
+        for tr in storyboard.transitions:
+            lines.append(f"### {tr.id}  ({tr.duration}s)")
+            lines.append(f"- **Start:** `{tr.start_frame}`")
+            lines.append(f"- **End:** `{tr.end_frame}`")
+            lines.append(f"- **Motion prompt:** {tr.motion_prompt}")
+            lines.append(f"- **Output:** `{tr.output_path}`")
+            lines.append("")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+# --------------------------------------------------------------------------- #
+# CLI
+# --------------------------------------------------------------------------- #
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="pipeline.py",
+        description="Local AI video maker (image-to-video via OpenAI + KlingAI).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("--config", default="config.json", help="Path to config JSON.")
+    p.add_argument("--force", action="store_true", help="Redo completed outputs.")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Print planned work without spending API credits.")
+    p.add_argument("--only-style", action="store_true",
+                   help="Only style/generate images; skip video generation.")
+    p.add_argument("--only-video", action="store_true",
+                   help="Only generate videos from existing styled/generated images.")
+    p.add_argument("--duration", type=int, choices=sorted(VALID_DURATIONS),
+                   help="Clip duration in seconds (5 or 10).")
+    p.add_argument("--motion-prompt", default=None,
+                   help="Override the global motion prompt.")
+    p.add_argument("--style-prompt", default=None,
+                   help="Override the global style prompt (Mode A).")
+    # Mode B
+    p.add_argument("--idea", default=None, help="Video idea/prompt (Mode B).")
+    p.add_argument("--from-scratch", action="store_true",
+                   help="Use Mode B (generate from an idea).")
+    p.add_argument("--create-storyboard", action="store_true",
+                   help="Mode B: create the storyboard and stop.")
+    p.add_argument("--approve-storyboard", action="store_true",
+                   help="Mode B: generate frames/clips from an approved storyboard.")
+    p.add_argument("--storyboard-file", default="storyboard/storyboard.json",
+                   help="Path to the storyboard JSON (Mode B approval).")
+    return p
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    for d in ALL_DIRS:
+        d.mkdir(parents=True, exist_ok=True)
+
+    setup_logging()
+    load_dotenv(PROJECT_ROOT / ".env")
+
+    if args.only_style and args.only_video:
+        parser.error("--only-style and --only-video are mutually exclusive.")
+
+    config = Config.load((PROJECT_ROOT / args.config) if not Path(args.config).is_absolute() else Path(args.config))
+
+    if args.dry_run:
+        logger.info("DRY-RUN: no API credits will be spent.")
+
+    pipeline = Pipeline(config, args)
+    pipeline.run()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

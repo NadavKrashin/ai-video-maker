@@ -1,0 +1,28 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.python-version
+
+# OS
+.DS_Store
+
+# Generated media & runtime artifacts (kept out of version control by default).
+# Folders themselves are preserved via .gitkeep.
+input_images/*
+generated_frames/*
+styled_images/*
+clips/*
+logs/*
+failed_jobs/*
+storyboard/storyboard.json
+storyboard/storyboard.md
+
+# Keep the placeholder files so the folder structure is committed.
+!**/.gitkeep
