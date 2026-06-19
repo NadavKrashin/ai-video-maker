@@ -16,7 +16,9 @@ Two workflows:
       * Save it to storyboard/storyboard.json + .md and STOP for human review.
       * Only after --approve-storyboard: generate frames, then Higgsfield clips.
 
-Final clips are NOT combined — the user assembles them in Premiere Pro.
+After the clips are generated they are concatenated, in order, into
+output/final_video.mp4 (ffmpeg). Use --no-combine to skip this, or --combine
+to only stitch existing clips without regenerating anything.
 
 Run `python pipeline.py --help` for all flags.
 """
@@ -28,7 +30,10 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -52,8 +57,11 @@ GENERATED_FRAMES_DIR = PROJECT_ROOT / "generated_frames"
 STYLED_IMAGES_DIR = PROJECT_ROOT / "styled_images"
 STORYBOARD_DIR = PROJECT_ROOT / "storyboard"
 CLIPS_DIR = PROJECT_ROOT / "clips"
+OUTPUT_DIR = PROJECT_ROOT / "output"
 LOGS_DIR = PROJECT_ROOT / "logs"
 FAILED_JOBS_DIR = PROJECT_ROOT / "failed_jobs"
+
+FINAL_VIDEO = OUTPUT_DIR / "final_video.mp4"
 
 STATE_FILE = LOGS_DIR / "state.json"
 FAILED_JOBS_FILE = FAILED_JOBS_DIR / "failed_jobs.json"
@@ -69,6 +77,7 @@ ALL_DIRS = [
     STYLED_IMAGES_DIR,
     STORYBOARD_DIR,
     CLIPS_DIR,
+    OUTPUT_DIR,
     LOGS_DIR,
     FAILED_JOBS_DIR,
 ]
@@ -374,6 +383,77 @@ def natural_sort_key(path: Path) -> list[Any]:
     """Sort key that orders e.g. img2 before img10 (natural ordering)."""
     parts = re.split(r"(\d+)", path.name)
     return [int(p) if p.isdigit() else p.lower() for p in parts]
+
+
+def find_generated_clips(directory: Path) -> list[Path]:
+    """Return the generated transition clips (``<id>_to_<id>.mp4``) in order.
+
+    Only clips matching the pipeline's naming scheme are returned, so the
+    combined ``final_video.mp4`` (or any other stray file) is never folded
+    back into itself on a re-run.
+    """
+    clips = [
+        p
+        for p in directory.iterdir()
+        if p.is_file()
+        and p.suffix.lower() == ".mp4"
+        and re.match(r"\d+_to_\d+$", p.stem)
+    ]
+    return sorted(clips, key=natural_sort_key)
+
+
+def combine_clips(clips: list[Path], output: Path) -> None:
+    """Concatenate ``clips`` (in the given order) into ``output`` via ffmpeg.
+
+    Uses the concat demuxer with stream copy first (fast, lossless). If that
+    fails — e.g. clips with mismatched codecs/parameters — it falls back to
+    re-encoding so the join still succeeds.
+    """
+    if not clips:
+        raise ValueError("No clips to combine.")
+
+    if shutil.which("ffmpeg") is None:
+        raise RuntimeError(
+            "ffmpeg not found on PATH. Install it (e.g. `brew install ffmpeg`) "
+            "to combine clips."
+        )
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    # ffmpeg's concat demuxer reads a list file of `file '<path>'` lines.
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".txt", delete=False, encoding="utf-8"
+    ) as fh:
+        list_path = Path(fh.name)
+        for clip in clips:
+            safe = str(clip.resolve()).replace("'", r"'\''")
+            fh.write(f"file '{safe}'\n")
+
+    copy_cmd = [
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        "-i", str(list_path), "-c", "copy", str(output),
+    ]
+    reencode_cmd = [
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        "-i", str(list_path),
+        "-c:v", "libx264", "-crf", "18", "-preset", "medium",
+        "-pix_fmt", "yuv420p", "-c:a", "aac", str(output),
+    ]
+
+    try:
+        result = subprocess.run(copy_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.warning(
+                "Stream-copy concat failed, re-encoding instead. ffmpeg said:\n%s",
+                result.stderr.strip()[-2000:],
+            )
+            result = subprocess.run(reencode_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"ffmpeg concat failed:\n{result.stderr.strip()[-2000:]}"
+                )
+    finally:
+        list_path.unlink(missing_ok=True)
 
 
 def list_input_images(directory: Path) -> list[Path]:
@@ -894,6 +974,7 @@ class RunSummary:
     videos_created: int = 0
     videos_skipped: int = 0
     videos_failed: int = 0
+    final_video: Optional[Path] = None
 
     def print(self) -> None:
         line = "=" * 60
@@ -905,6 +986,8 @@ class RunSummary:
         print(f"  Videos created         : {self.videos_created}")
         print(f"  Videos skipped         : {self.videos_skipped}")
         print(f"  Videos failed          : {self.videos_failed}")
+        if self.final_video:
+            print(f"  Final video            : {self.final_video}")
         print(f"\n  Output folders:")
         print(f"    Styled images   : {STYLED_IMAGES_DIR}")
         print(f"    Generated frames: {GENERATED_FRAMES_DIR}")
@@ -1228,13 +1311,50 @@ class Pipeline:
             return m.group(1) if m else p.stem
         return CLIPS_DIR / f"{stem_id(start)}_to_{stem_id(end)}.mp4"
 
+    def _combine_clips(self) -> None:
+        """Concatenate all generated clips into output/final_video.mp4."""
+        clips = find_generated_clips(CLIPS_DIR)
+        if not clips:
+            logger.info("No clips to combine; skipping final video.")
+            return
+
+        if self.dry_run:
+            logger.info(
+                "[dry-run] would combine %d clip(s) into %s",
+                len(clips), FINAL_VIDEO,
+            )
+            return
+
+        if FINAL_VIDEO.exists() and not self.force:
+            logger.info(
+                "Final video already exists (use --force to rebuild): %s",
+                FINAL_VIDEO,
+            )
+            return
+
+        logger.info("Combining %d clip(s) into %s", len(clips), FINAL_VIDEO)
+        try:
+            combine_clips(clips, FINAL_VIDEO)
+            self.summary.final_video = FINAL_VIDEO
+            logger.info("Final video ready: %s", FINAL_VIDEO)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Failed to combine clips: %s", exc)
+            self.failed.record("combine", "combine", str(exc))
+
     # ------------------------------- run --------------------------------- #
     def run(self) -> None:
         try:
+            if self.args.combine:
+                # Standalone: just stitch the existing clips together.
+                self._combine_clips()
+                return
             if self.args.from_scratch:
                 self.run_mode_b()
             else:
                 self.run_mode_a()
+            if not self.args.no_combine and not self.args.only_style \
+                    and not self.args.create_storyboard:
+                self._combine_clips()
         finally:
             self.failed.flush()
             self.summary.print()
@@ -1301,6 +1421,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Only style/generate images; skip video generation.")
     p.add_argument("--only-video", action="store_true",
                    help="Only generate videos from existing styled/generated images.")
+    p.add_argument("--combine", action="store_true",
+                   help="Only combine existing clips/ into output/final_video.mp4 "
+                        "(no image/video generation).")
+    p.add_argument("--no-combine", action="store_true",
+                   help="Skip combining clips into a final video at the end of a run.")
     p.add_argument("--duration", type=int, choices=sorted(VALID_DURATIONS),
                    help="Clip duration in seconds (5 or 10).")
     p.add_argument("--motion-prompt", default=None,

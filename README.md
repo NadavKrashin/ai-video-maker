@@ -4,8 +4,11 @@ A local Python pipeline that turns images (or a raw idea) into short, consistent
 1920×1080 video clips using **OpenAI** (image generation/editing + storyboard
 planning) and **fal** or **Higgsfield** (image-to-video; selectable, default fal).
 
-It produces individual clips between consecutive key frames — **it does not
-combine them**. You assemble the final cut yourself in **Premiere Pro**.
+It produces individual clips between consecutive key frames and then
+**concatenates them, in order, into `output/final_video.mp4`** using `ffmpeg`
+(requires `ffmpeg` on your `PATH`). You can disable that step with `--no-combine`
+and assemble the cut yourself, or run `--combine` to stitch existing clips
+without regenerating anything.
 
 ---
 
@@ -33,6 +36,8 @@ combine them**. You assemble the final cut yourself in **Premiere Pro**.
 ## Requirements
 
 - Python **3.11+**
+- **ffmpeg** on your `PATH` (used to combine clips; e.g. `brew install ffmpeg`).
+  Only needed for the final-combine step — skip it with `--no-combine`.
 - An OpenAI API key
 - A video-provider key: **fal** (default — from https://fal.ai/dashboard/keys),
   or Higgsfield (from https://cloud.higgsfield.ai)
@@ -133,11 +138,17 @@ python pipeline.py --only-style
 # Only generate videos from already-styled images in styled_images/
 python pipeline.py --only-video
 
-# Use 10-second clips
+# Use 10-second clips (Mode A uses one length for every clip)
 python pipeline.py --duration 10
+
+# Generate clips but skip building output/final_video.mp4
+python pipeline.py --no-combine
 
 # Re-do everything, ignoring previously completed outputs
 python pipeline.py --force
+
+# Combine the existing clips/ into output/final_video.mp4 (no generation)
+python pipeline.py --combine
 ```
 
 Styled images are written as `styled_images/001_styled.png`,
@@ -217,7 +228,9 @@ normalized to exactly 1920×1080), then renders the clips using the
 | `--dry-run` | Print planned work; spend no API credits. |
 | `--only-style` | Only style/generate images; skip video. |
 | `--only-video` | Only generate videos from existing images. |
-| `--duration 5` / `--duration 10` | Clip length in seconds. |
+| `--combine` | Only concatenate existing `clips/` into `output/final_video.mp4`; no generation. |
+| `--no-combine` | Skip building the final combined video at the end of a run. |
+| `--duration 5` / `--duration 10` | Force every clip to this length. Omit in Mode B to let clips mix 5s/10s. |
 | `--motion-prompt "..."` | Override the global/per-transition motion prompt. |
 | `--style-prompt "..."` | Override the global style prompt (Mode A). |
 | `--idea "..."` | The video idea (Mode B). |
@@ -253,12 +266,17 @@ errors, and it waits on provider jobs until they complete, fail, or time out.
 | `styled_images/` | Mode A styled frames (`001_styled.png`, …) |
 | `generated_frames/` | Mode B generated frames (`001.png`, …) |
 | `clips/` | Rendered clips (`001_to_002.mp4`, …) |
+| `output/` | Combined `final_video.mp4` (all clips concatenated in order) |
 | `storyboard/` | `storyboard.json` + `storyboard.md` (Mode B) |
 | `logs/` | Run logs + `state.json` |
 | `failed_jobs/` | `failed_jobs.json` |
 
-**The clips are intentionally NOT merged.** Import the `clips/` folder into
-Premiere Pro and arrange them on the timeline to build your final video.
+By default the clips are concatenated, in filename order, into
+`output/final_video.mp4` with `ffmpeg` (lossless stream-copy when the clips
+share a codec, otherwise a re-encode fallback). Use `--no-combine` to skip this
+and assemble the cut yourself in an editor, or `--combine` to (re)build the final
+video from whatever is already in `clips/`. Re-running won't overwrite an
+existing `final_video.mp4` unless you pass `--force`.
 
 ---
 
