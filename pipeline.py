@@ -463,7 +463,11 @@ class OpenAIClient:
 
     # --- Mode B: storyboard planning --------------------------------------- #
     def create_storyboard(self, idea: str, frame_count: int) -> Storyboard:
-        """Ask the text model to produce a structured storyboard for `idea`."""
+        """Ask the text model to produce a structured storyboard for `idea`.
+
+        If `frame_count` <= 0, the model chooses the number of frames that best
+        fits the provided content instead of a fixed count.
+        """
         client = self._ensure_client()
 
         system = (
@@ -477,9 +481,18 @@ class OpenAIClient:
             "(character looks, wardrobe, environment, palette, lighting) so a "
             "text-to-image model produces consistent results frame to frame."
         )
+        if frame_count and frame_count > 0:
+            count_instruction = f"Create exactly {frame_count} key frames."
+        else:
+            count_instruction = (
+                "Decide how many key frames best fit the content above and "
+                "create that many (use as many as the material naturally needs; "
+                "each beat/scene/section in the input should map to one or more "
+                "frames). Do not pad to a fixed number."
+            )
         user = (
-            f"Video idea: {idea}\n\n"
-            f"Create exactly {frame_count} key frames. Return ONLY valid JSON "
+            f"Video idea / source material:\n{idea}\n\n"
+            f"{count_instruction} Return ONLY valid JSON "
             "with this exact shape:\n"
             "{\n"
             '  "project_title": str,\n'
@@ -950,21 +963,43 @@ class Pipeline:
             "--approve-storyboard. See README.md."
         )
 
-    def _create_storyboard(self) -> None:
-        if not self.args.idea:
-            raise SystemExit("--create-storyboard requires --idea \"...\"")
-
-        frame_count = self.config.default_frame_count
-        logger.info(
-            "Creating storyboard for idea: %r (%d frames)", self.args.idea, frame_count
+    def _resolve_idea(self) -> str:
+        """Get the idea text from --idea-file (preferred) or --idea."""
+        if self.args.idea_file:
+            path = Path(self.args.idea_file)
+            if not path.is_absolute():
+                path = PROJECT_ROOT / path
+            if not path.exists():
+                raise SystemExit(f"--idea-file not found: {path}")
+            text = path.read_text(encoding="utf-8").strip()
+            if not text:
+                raise SystemExit(f"--idea-file is empty: {path}")
+            return text
+        if self.args.idea:
+            return self.args.idea
+        raise SystemExit(
+            "--create-storyboard requires --idea \"...\" or --idea-file PATH"
         )
+
+    def _create_storyboard(self) -> None:
+        idea = self._resolve_idea()
+
+        # Frame count precedence: --frame-count, else config.default_frame_count.
+        # A value <= 0 means "let the model choose based on the content".
+        frame_count = (
+            self.args.frame_count
+            if self.args.frame_count is not None
+            else self.config.default_frame_count
+        )
+        count_desc = f"{frame_count} frames" if frame_count and frame_count > 0 else "auto frame count"
+        logger.info("Creating storyboard (%s) from idea (%d chars)", count_desc, len(idea))
 
         if self.dry_run:
             logger.info("[dry-run] would call OpenAI to build a storyboard and "
                         "write %s + %s", DEFAULT_STORYBOARD_JSON, STORYBOARD_MD)
             return
 
-        storyboard = self.openai.create_storyboard(self.args.idea, frame_count)
+        storyboard = self.openai.create_storyboard(idea, frame_count)
         storyboard.save(DEFAULT_STORYBOARD_JSON)
         write_storyboard_markdown(storyboard, STORYBOARD_MD)
 
@@ -1211,6 +1246,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Override the global style prompt (Mode A).")
     # Mode B
     p.add_argument("--idea", default=None, help="Video idea/prompt (Mode B).")
+    p.add_argument("--idea-file", default=None,
+                   help="Path to a text file with the idea/source material "
+                        "(Mode B). Use this for long or structured pasted data; "
+                        "takes precedence over --idea.")
+    p.add_argument("--frame-count", type=int, default=None,
+                   help="Mode B: number of key frames to generate "
+                        "(overrides config default_frame_count). Use 0 to let "
+                        "the model choose based on your content.")
     p.add_argument("--from-scratch", action="store_true",
                    help="Use Mode B (generate from an idea).")
     p.add_argument("--create-storyboard", action="store_true",

@@ -163,6 +163,30 @@ prints:
 **Nothing is generated yet.** The app never jumps straight from an idea to a
 full video.
 
+**Controlling how many frames/clips you get.** By default the storyboard uses
+`default_frame_count` from `config.json` (8 frames → 7 clips). To change it:
+
+```bash
+# Fixed number of frames (e.g. 5 frames -> 4 clips)
+python pipeline.py --from-scratch --create-storyboard --idea "..." --frame-count 5
+
+# Let the model choose the count based on YOUR content (no fixed padding)
+python pipeline.py --from-scratch --create-storyboard --idea "..." --frame-count 0
+
+# Pass long / structured pasted data from a file instead of --idea
+python pipeline.py --from-scratch --create-storyboard --idea-file my_script.txt --frame-count 0
+```
+
+- `--frame-count N` overrides the default; `--frame-count 0` tells the model to
+  pick the number of frames that fits the material (each beat/scene maps to one
+  or more frames, no padding to a fixed number).
+- `--idea-file PATH` reads the idea/source material from a text file — best when
+  pasting a lot of text or a structured outline (avoids shell-quoting issues).
+  It takes precedence over `--idea`.
+- You can also **skip AI generation entirely** and author `storyboard/storyboard.json`
+  by hand with any number of frames/transitions, then go straight to Step 3.
+  See the structure in [Step 2](#step-2--review--edit).
+
 ### Step 2 — review & edit
 
 Open `storyboard/storyboard.md` for a readable overview, or edit
@@ -197,6 +221,8 @@ normalized to exactly 1920×1080), then renders the clips using the
 | `--motion-prompt "..."` | Override the global/per-transition motion prompt. |
 | `--style-prompt "..."` | Override the global style prompt (Mode A). |
 | `--idea "..."` | The video idea (Mode B). |
+| `--idea-file PATH` | Read the idea/source material from a file (Mode B); overrides `--idea`. |
+| `--frame-count N` | Mode B: number of key frames (overrides config). `0` = let the model decide. |
 | `--from-scratch` | Use Mode B. |
 | `--create-storyboard` | Mode B: create storyboard and stop. |
 | `--approve-storyboard` | Mode B: generate after review. |
