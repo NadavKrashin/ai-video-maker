@@ -57,18 +57,25 @@ cp .env.example .env
 ```env
 OPENAI_API_KEY=sk-...
 
-# Kling auth — use ONE scheme (auto-detected):
-# (a) single API key (most common; console shows one "api-key-kling-..." value)
-KLING_API_KEY=api-key-kling-...
-# (b) OR an Access Key + Secret Key pair (leave KLING_API_KEY blank if you use this)
-# KLING_ACCESS_KEY=...
-# KLING_SECRET_KEY=...
+# Kling auth — official platform uses an Access Key + Secret Key pair:
+KLING_ACCESS_KEY=...
+KLING_SECRET_KEY=...
+# (Third-party resellers may give a single bearer key instead; if so, set
+#  KLING_API_KEY and leave the pair blank.)
+# KLING_API_KEY=
 ```
 
-> **Kling auth:** if your Kling console shows a single **API Key**, set
-> `KLING_API_KEY` and leave the AK/SK pair blank — it's sent directly as a Bearer
-> token. If it shows an **Access Key + Secret Key** pair, set those two instead
-> and the app signs a short-lived JWT. If both are set, the single API key wins.
+> **Kling auth (important):** the official Kling Open Platform issues an
+> **Access Key + Secret Key** pair and the app signs a short-lived HS256 JWT from
+> them (sent as `Authorization: Bearer <jwt>`). The **Secret Key is shown only
+> once**, at creation time — the value the console lists afterwards (e.g.
+> `api-key-kling-…`) is the **Access Key**. If you've lost the Secret Key, create
+> a new key and copy both values immediately. Use `api-singapore.klingai.com`
+> (set in `config.json`) for the international API — `api.klingai.com` is the
+> mainland-China host and will return `401` for international keys.
+>
+> Auto-detection: if `KLING_API_KEY` is set it's sent verbatim as the Bearer
+> token (reseller mode); otherwise the AK/SK pair is signed into a JWT.
 
 Keys are loaded from `.env` via `python-dotenv` — they are **never hardcoded**,
 and `.env` is git-ignored.
