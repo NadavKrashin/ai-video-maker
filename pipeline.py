@@ -124,16 +124,19 @@ class Config(BaseModel):
     # Higgsfield (image-to-video) settings.
     # model_id is the path segment of POST https://platform.higgsfield.ai/{model_id}.
     # Browse models at https://cloud.higgsfield.ai/explore.
-    higgsfield_model_id: str = "higgsfield-ai/dop/standard"
-    # Optional generation args — only sent when non-empty. Some are model-specific.
-    higgsfield_resolution: str = ""        # e.g. "720p", "1080p"
-    higgsfield_aspect_ratio: str = ""      # e.g. "16:9"
+    higgsfield_model_id: str = "kling-video/v3/pro/image-to-video"
+    # The request field name for the START frame image URL. Higgsfield's models
+    # generally use "image_url"; some (fal-style) use "start_image_url".
+    higgsfield_start_frame_field: str = "image_url"
     # End-frame ("last frame") support is model-dependent and the field name
     # varies per model. Leave empty to send only the start frame + motion prompt
     # (works on every image-to-video model). To get a true start->end transition,
     # set this to the exact end-frame argument name your chosen model documents
     # (e.g. "end_image_url"); the pipeline will upload the end frame and pass it.
-    higgsfield_end_frame_field: str = ""
+    higgsfield_end_frame_field: str = "end_image_url"
+    # Optional generation args — only sent when non-empty. Some are model-specific.
+    higgsfield_resolution: str = ""        # e.g. "720p", "1080p"
+    higgsfield_aspect_ratio: str = ""      # e.g. "16:9"
     # Any extra model-specific arguments merged into every request.
     higgsfield_extra_arguments: dict[str, Any] = Field(default_factory=dict)
 
@@ -620,8 +623,8 @@ class HiggsfieldClient:
         duration: int,
     ) -> dict[str, Any]:
         args: dict[str, Any] = {
-            "image_url": start_url,      # start frame
-            "prompt": motion_prompt,     # motion prompt
+            self.config.higgsfield_start_frame_field: start_url,  # start frame
+            "prompt": motion_prompt,                              # motion prompt
             "duration": duration,
         }
         # End frame is only sent when the model documents a field for it.
