@@ -2,7 +2,7 @@
 
 A local Python pipeline that turns images (or a raw idea) into short, consistent
 1920×1080 video clips using **OpenAI** (image generation/editing + storyboard
-planning) and **Higgsfield** (image-to-video).
+planning) and **fal** or **Higgsfield** (image-to-video; selectable, default fal).
 
 It produces individual clips between consecutive key frames — **it does not
 combine them**. You assemble the final cut yourself in **Premiere Pro**.
@@ -14,9 +14,9 @@ combine them**. You assemble the final cut yourself in **Premiere Pro**.
 ### Mode A — Image-to-video from your images (default)
 1. Put source images in `input_images/`.
 2. Every image is styled into a consistent 1920×1080 look.
-3. Each **consecutive styled pair** is sent to Higgsfield (default model: Kling
-   v2.1 Pro): image 1 = start frame, image 2 = end frame → one 5s or 10s clip.
-   (End-frame use is configurable — see "Start/end frames" below.)
+3. Each **consecutive styled pair** is sent to the video provider (default: fal,
+   model Kling v2.1 Pro): image 1 = start frame, image 2 = end frame → one 5s or
+   10s clip. (Provider/model/end-frame are configurable — see below.)
 4. `n` images → `n − 1` clips, written to `clips/`.
 
 ### Mode B — Generate from scratch (`--from-scratch`)
@@ -26,7 +26,7 @@ combine them**. You assemble the final cut yourself in **Premiere Pro**.
 3. The plan is saved to `storyboard/storyboard.json` and `storyboard/storyboard.md`,
    then the app **stops and asks you to review/approve it**.
 4. After you approve, it generates every key frame at 1920×1080.
-5. Then it sends consecutive frame pairs to Higgsfield → `n − 1` clips.
+5. Then it sends consecutive frame pairs to the video provider → `n − 1` clips.
 
 ---
 
@@ -34,7 +34,8 @@ combine them**. You assemble the final cut yourself in **Premiere Pro**.
 
 - Python **3.11+**
 - An OpenAI API key
-- Higgsfield credentials (from https://cloud.higgsfield.ai)
+- A video-provider key: **fal** (default — from https://fal.ai/dashboard/keys),
+  or Higgsfield (from https://cloud.higgsfield.ai)
 
 ## Setup
 
@@ -58,53 +59,58 @@ cp .env.example .env
 ```env
 OPENAI_API_KEY=sk-...
 
-# Higgsfield auth — use EITHER the single combined key...
-HF_KEY=your-api-key:your-api-secret
-# ...OR the separate pair (leave HF_KEY blank if you use these):
-# HF_API_KEY=your-api-key
-# HF_API_SECRET=your-api-secret
+# Video provider (default fal) — one key from https://fal.ai/dashboard/keys:
+FAL_KEY=your-fal-key
+
+# Only if you set "video_provider": "higgsfield" in config.json:
+# HF_KEY=your-api-key:your-api-secret   # or HF_API_KEY + HF_API_SECRET
 ```
 
-> **Higgsfield auth:** get your credentials at
-> [cloud.higgsfield.ai](https://cloud.higgsfield.ai). The official
-> `higgsfield-client` SDK reads `HF_KEY` (or `HF_API_KEY` + `HF_API_SECRET`) from
-> the environment — `.env` is loaded automatically. Local images are uploaded to
-> Higgsfield via the SDK, so you don't need to host them yourself.
+> **Video auth:** the pipeline uses the provider set by `video_provider` in
+> `config.json` (default `fal`). For fal, get a key at
+> [fal.ai/dashboard/keys](https://fal.ai/dashboard/keys) and set `FAL_KEY`. For
+> Higgsfield, set `HF_KEY` (or `HF_API_KEY` + `HF_API_SECRET`). Either way, local
+> images are uploaded to the provider automatically — you don't host them.
 
 Keys are loaded from `.env` via `python-dotenv` — they are **never hardcoded**,
 and `.env` is git-ignored.
 
 ### Configure (optional)
 
-Edit `config.json` to change style prompts, motion prompt, default duration,
-the Higgsfield model id, retry settings, etc. It is validated on startup, so
-typos are caught early.
+Edit `config.json` to change the video provider, style prompts, motion prompt,
+default duration, the model id, retry settings, etc. It is validated on startup,
+so typos are caught early.
 
-### Start/end frames (important)
+### Provider, model & start/end frames (important)
 
-The pipeline is built around **consecutive frame pairs** (start → end). The
-default model — **Kling v2.1 Pro** (`kling-video/v2.1/pro/image-to-video`) — is
-confirmed available on Higgsfield and supports both a start frame and an end
-frame, so each clip interpolates from one styled frame to the next:
+The pipeline is built around **consecutive frame pairs** (start → end). Pick the
+provider with `video_provider` (`"fal"` or `"higgsfield"`). Each provider has its
+own block of settings, so you can keep both configured and just flip the switch.
+
+**Default — fal + Kling v2.1 Pro** (supports start + end frame, so each clip
+interpolates from one styled frame to the next):
 
 ```json
-"higgsfield_model_id": "kling-video/v2.1/pro/image-to-video",
-"higgsfield_start_frame_field": "image_url",
-"higgsfield_end_frame_field": "tail_image_url",
-"higgsfield_duration_as_string": false
+"video_provider": "fal",
+"fal_model_id": "fal-ai/kling-video/v2.1/pro/image-to-video",
+"fal_start_frame_field": "image_url",
+"fal_end_frame_field": "tail_image_url",
+"fal_duration_as_string": true
 ```
 
-- **Start frame** is sent under `higgsfield_start_frame_field` (default
-  `image_url`). **End frame** is sent under `higgsfield_end_frame_field`
-  (default `tail_image_url`); set it to `""` to send only the start frame.
-- Higgsfield expects `duration` as an **integer** (`5`/`10`), so
-  `higgsfield_duration_as_string` is `false`. Only set it `true` if a model you
-  switch to requires a string enum instead.
-- **To use a different model** (e.g. Kling 3.0 once you have its exact id from
-  the Higgsfield dashboard), set `higgsfield_model_id`. If a clip fails with a
-  4xx about an unknown field, adjust `higgsfield_start_frame_field` /
-  `higgsfield_end_frame_field` to that model's field names.
-- Add extra model-specific args via `higgsfield_extra_arguments`
+- **Start frame** → `*_start_frame_field` (`image_url`). **End frame** →
+  `*_end_frame_field` (`tail_image_url`); set it to `""` for start-frame-only.
+- `duration` format differs by provider: **fal** wants a string enum
+  (`"5"`/`"10"`, so `fal_duration_as_string: true`); **Higgsfield** wants an
+  integer (`higgsfield_duration_as_string: false`). These defaults are correct.
+- **Kling 3.0 on fal:** set `fal_model_id` to
+  `"fal-ai/kling-video/v3/pro/image-to-video"`, `fal_start_frame_field` to
+  `"start_image_url"`, and `fal_end_frame_field` to `"end_image_url"`.
+- **Why fal is the default:** fal documents the Kling schema and validates
+  inputs, so the end frame is actually applied (and unknown fields error instead
+  of being silently ignored). Higgsfield's public API accepted the request but
+  ignored the end frame.
+- Add extra model-specific args via `fal_extra_arguments`
   (e.g. `{"negative_prompt": "blur, distortion, low quality"}`).
 
 ---
@@ -210,7 +216,7 @@ normalized to exactly 1920×1080), then renders the clips using the
 - Detailed logs for every run are written to `logs/pipeline_<timestamp>.log`.
 
 The pipeline also has built-in retry with exponential backoff for transient API
-errors, and it waits on Higgsfield jobs until they complete, fail, or time out.
+errors, and it waits on provider jobs until they complete, fail, or time out.
 
 ---
 
@@ -230,14 +236,15 @@ Premiere Pro and arrange them on the timeline to build your final video.
 
 ---
 
-## Notes on the Higgsfield client
+## Notes on the video clients
 
-All Higgsfield-specific details (auth, image upload, job submission, waiting for
-completion, and result download) are isolated in the `HiggsfieldClient` class in
-`pipeline.py`. It uses the official [`higgsfield-client`](https://pypi.org/project/higgsfield-client/)
-SDK, which handles authentication and uploading local images to hosted URLs.
-The request fields, model id, and end-frame field are driven by `config.json`
-(`higgsfield_model_id`, `higgsfield_end_frame_field`, `higgsfield_extra_arguments`),
-with comments marking each spot that may need adjustment per the
-[Higgsfield API docs](https://docs.higgsfield.ai) if a model expects different
-parameters.
+Both providers share a base class (`SubscribeVideoClient`) in `pipeline.py`,
+with thin subclasses `FalClient` and `HiggsfieldClient` (selected by
+`make_video_client` via `video_provider`). Each uses that provider's official
+SDK — [`fal-client`](https://pypi.org/project/fal-client/) /
+[`higgsfield-client`](https://pypi.org/project/higgsfield-client/) — which handle
+authentication and uploading local images to hosted URLs. The model id, frame
+field names, duration format, and extra arguments are all driven by `config.json`
+(`fal_*` / `higgsfield_*`), so swapping models or providers needs no code
+changes. See the [fal docs](https://docs.fal.ai) /
+[Higgsfield docs](https://docs.higgsfield.ai) for model-specific parameters.

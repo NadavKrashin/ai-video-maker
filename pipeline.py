@@ -121,7 +121,22 @@ class Config(BaseModel):
     openai_image_model: str = "gpt-image-1"
     openai_text_model: str = "gpt-4o"
 
-    # Higgsfield (image-to-video) settings.
+    # Which image-to-video provider to use: "fal" or "higgsfield".
+    video_provider: str = "fal"
+
+    # --- fal.ai (image-to-video) settings. Auth via FAL_KEY. ---
+    # Kling v2.1 Pro on fal supports an end/tail frame (start->end interpolation).
+    # For Kling 3.0 use: model "fal-ai/kling-video/v3/pro/image-to-video",
+    # start field "start_image_url", end field "end_image_url".
+    fal_model_id: str = "fal-ai/kling-video/v2.1/pro/image-to-video"
+    fal_start_frame_field: str = "image_url"
+    fal_end_frame_field: str = "tail_image_url"
+    fal_duration_as_string: bool = True   # fal Kling uses a string enum ("5"/"10")
+    fal_resolution: str = ""
+    fal_aspect_ratio: str = ""
+    fal_extra_arguments: dict[str, Any] = Field(default_factory=dict)
+
+    # --- Higgsfield (image-to-video) settings. Auth via HF_KEY. ---
     # model_id is the path segment of POST https://platform.higgsfield.ai/{model_id}.
     # Browse models at https://cloud.higgsfield.ai/explore.
     higgsfield_model_id: str = "kling-video/v2.1/pro/image-to-video"
@@ -548,52 +563,59 @@ class OpenAIClient:
 
 
 # --------------------------------------------------------------------------- #
-# Higgsfield client (isolated). Image-to-video generation via the official SDK.
+# Video clients (isolated). Image-to-video generation.
 # --------------------------------------------------------------------------- #
 #
-# ALL Higgsfield-specific details are confined to this class. The official
-# `higgsfield-client` SDK handles auth, file upload (local image -> hosted URL),
-# job submission and polling. Docs: https://docs.higgsfield.ai
+# Two providers are supported, selected by config.video_provider:
+#   * "fal"        -> fal.ai (recommended for start+end frame interpolation;
+#                     Kling on fal supports an end/tail frame). Auth: FAL_KEY.
+#   * "higgsfield" -> Higgsfield. Auth: HF_KEY (or HF_API_KEY + HF_API_SECRET).
 #
-# AUTH (read from .env by the SDK):
-#   * HF_KEY="<api_key>:<api_secret>"   (single combined value), OR
-#   * HF_API_KEY + HF_API_SECRET
-#   Get credentials at https://cloud.higgsfield.ai.
-#
-# REQUEST SHAPE (POST https://platform.higgsfield.ai/{model_id}):
-#   The documented image-to-video request takes `image_url` (a hosted URL),
-#   `prompt` (motion prompt) and `duration`. The completed response contains
-#   `video.url`. Start-frame + end-frame ("last frame") interpolation is
-#   MODEL-DEPENDENT — see `higgsfield_end_frame_field` in config.
-#
-# ADJUST IF NEEDED:
-#   * config.higgsfield_model_id          -> which model to call
-#   * _build_arguments()                  -> request field names / extra args
-#   * config.higgsfield_end_frame_field   -> enable a true start->end transition
+# Both fal-client and higgsfield-client expose the SAME interface:
+#   upload_file(path) -> hosted URL, and subscribe(model_id, args) -> result
+#   dict with result["video"]["url"]. So the shared logic lives in the base
+#   class below; each subclass only supplies its SDK + credential check.
 # --------------------------------------------------------------------------- #
-class HiggsfieldClient:
-    def __init__(self, config: Config) -> None:
+@dataclass
+class VideoBackend:
+    """Provider-specific settings, read from config."""
+    model_id: str
+    start_frame_field: str
+    end_frame_field: str
+    duration_as_string: bool
+    resolution: str
+    aspect_ratio: str
+    extra_arguments: dict[str, Any]
+
+
+class SubscribeVideoClient:
+    """
+    Base image-to-video client for fal-style SDKs (fal-client, higgsfield-client).
+
+    Subclasses implement `_import_sdk()` and `_check_credentials()`.
+    """
+
+    provider: str = "video"
+
+    def __init__(self, config: Config, backend: VideoBackend) -> None:
         self.config = config
+        self.backend = backend
         self._sdk = None  # lazily imported
         # Cache uploaded-image URLs so a frame shared by two consecutive clips
         # is only uploaded once per run.
         self._upload_cache: dict[Path, str] = {}
 
+    # --- provider hooks (override in subclasses) --------------------------- #
+    def _import_sdk(self):  # pragma: no cover - trivial
+        raise NotImplementedError
+
+    def _check_credentials(self) -> None:  # pragma: no cover - trivial
+        raise NotImplementedError
+
     def _ensure_sdk(self):
         if self._sdk is None:
-            # The SDK reads HF_KEY (or HF_API_KEY + HF_API_SECRET) from the env,
-            # which python-dotenv has already loaded from .env.
-            if not os.environ.get("HF_KEY") and not (
-                os.environ.get("HF_API_KEY") and os.environ.get("HF_API_SECRET")
-            ):
-                raise RuntimeError(
-                    "Higgsfield credentials missing. Set HF_KEY "
-                    '("<api_key>:<api_secret>") or HF_API_KEY + HF_API_SECRET '
-                    "in your .env file."
-                )
-            import higgsfield_client  # imported lazily
-
-            self._sdk = higgsfield_client
+            self._check_credentials()
+            self._sdk = self._import_sdk()
         return self._sdk
 
     # --- UPLOAD ------------------------------------------------------------ #
@@ -610,7 +632,7 @@ class HiggsfieldClient:
             _call,
             max_retries=self.config.max_retries,
             base_delay=self.config.retry_base_delay_seconds,
-            description=f"Higgsfield upload ({path.name})",
+            description=f"{self.provider} upload ({path.name})",
         )
         self._upload_cache[path] = url
         return url
@@ -623,22 +645,21 @@ class HiggsfieldClient:
         motion_prompt: str,
         duration: int,
     ) -> dict[str, Any]:
-        duration_value: Any = (
-            str(duration) if self.config.higgsfield_duration_as_string else duration
-        )
+        b = self.backend
+        duration_value: Any = str(duration) if b.duration_as_string else duration
         args: dict[str, Any] = {
-            self.config.higgsfield_start_frame_field: start_url,  # start frame
-            "prompt": motion_prompt,                              # motion prompt
+            b.start_frame_field: start_url,  # start frame
+            "prompt": motion_prompt,         # motion prompt
             "duration": duration_value,
         }
         # End frame is only sent when the model documents a field for it.
-        if end_url and self.config.higgsfield_end_frame_field:
-            args[self.config.higgsfield_end_frame_field] = end_url
-        if self.config.higgsfield_resolution:
-            args["resolution"] = self.config.higgsfield_resolution
-        if self.config.higgsfield_aspect_ratio:
-            args["aspect_ratio"] = self.config.higgsfield_aspect_ratio
-        args.update(self.config.higgsfield_extra_arguments)
+        if end_url and b.end_frame_field:
+            args[b.end_frame_field] = end_url
+        if b.resolution:
+            args["resolution"] = b.resolution
+        if b.aspect_ratio:
+            args["aspect_ratio"] = b.aspect_ratio
+        args.update(b.extra_arguments)
         return args
 
     # --- SUBMIT + WAIT ----------------------------------------------------- #
@@ -648,13 +669,13 @@ class HiggsfieldClient:
 
         def _call() -> str:
             # subscribe() submits and blocks until the job reaches a terminal
-            # state, returning the result dict (or raising on failure/NSFW).
-            result = sdk.subscribe(self.config.higgsfield_model_id, arguments)
+            # state, returning the result dict (or raising on failure).
+            result = sdk.subscribe(self.backend.model_id, arguments)
             video = (result or {}).get("video") or {}
             url = video.get("url")
             if not url:
                 raise RuntimeError(
-                    f"Higgsfield finished without a video URL: {result}"
+                    f"{self.provider} finished without a video URL: {result}"
                 )
             return url
 
@@ -662,19 +683,17 @@ class HiggsfieldClient:
             _call,
             max_retries=self.config.max_retries,
             base_delay=self.config.retry_base_delay_seconds,
-            description="Higgsfield generate",
+            description=f"{self.provider} generate",
         )
 
     # --- DOWNLOAD ---------------------------------------------------------- #
     def download(self, video_url: str, dst: Path) -> None:
-        """Stream the result video to `dst`."""
+        """Stream the result video to `dst` (atomic via a .part temp file)."""
         import requests
 
         dst.parent.mkdir(parents=True, exist_ok=True)
 
         def _call() -> None:
-            # Download to a temp file, then atomically rename, so an interrupted
-            # download never leaves a partial .mp4 that would be skipped later.
             tmp = dst.with_suffix(dst.suffix + ".part")
             with requests.get(video_url, stream=True, timeout=300) as resp:
                 resp.raise_for_status()
@@ -688,7 +707,7 @@ class HiggsfieldClient:
             _call,
             max_retries=self.config.max_retries,
             base_delay=self.config.retry_base_delay_seconds,
-            description=f"Higgsfield download -> {dst.name}",
+            description=f"{self.provider} download -> {dst.name}",
         )
 
     # --- High-level convenience -------------------------------------------- #
@@ -701,21 +720,97 @@ class HiggsfieldClient:
         dst: Path,
     ) -> None:
         start_url = self._upload(start_frame)
-        end_url = (
-            self._upload(end_frame)
-            if self.config.higgsfield_end_frame_field
-            else None
-        )
+        end_url = self._upload(end_frame) if self.backend.end_frame_field else None
         arguments = self._build_arguments(start_url, end_url, motion_prompt, duration)
         logger.info(
-            "Higgsfield job: %s (model=%s, start=%s%s)",
+            "%s job: %s (model=%s, start=%s%s)",
+            self.provider,
             dst.name,
-            self.config.higgsfield_model_id,
+            self.backend.model_id,
             start_frame.name,
             f", end={end_frame.name}" if end_url else "",
         )
         video_url = self._generate_video_url(arguments)
         self.download(video_url, dst)
+
+
+class FalClient(SubscribeVideoClient):
+    """fal.ai backend. Docs: https://docs.fal.ai — auth via FAL_KEY."""
+
+    provider = "fal"
+
+    def __init__(self, config: Config) -> None:
+        super().__init__(
+            config,
+            VideoBackend(
+                model_id=config.fal_model_id,
+                start_frame_field=config.fal_start_frame_field,
+                end_frame_field=config.fal_end_frame_field,
+                duration_as_string=config.fal_duration_as_string,
+                resolution=config.fal_resolution,
+                aspect_ratio=config.fal_aspect_ratio,
+                extra_arguments=config.fal_extra_arguments,
+            ),
+        )
+
+    def _check_credentials(self) -> None:
+        if not os.environ.get("FAL_KEY"):
+            raise RuntimeError(
+                "fal credentials missing. Set FAL_KEY in your .env file "
+                "(get one at https://fal.ai/dashboard/keys)."
+            )
+
+    def _import_sdk(self):
+        import fal_client  # imported lazily
+
+        return fal_client
+
+
+class HiggsfieldClient(SubscribeVideoClient):
+    """Higgsfield backend. Docs: https://docs.higgsfield.ai — auth via HF_KEY."""
+
+    provider = "higgsfield"
+
+    def __init__(self, config: Config) -> None:
+        super().__init__(
+            config,
+            VideoBackend(
+                model_id=config.higgsfield_model_id,
+                start_frame_field=config.higgsfield_start_frame_field,
+                end_frame_field=config.higgsfield_end_frame_field,
+                duration_as_string=config.higgsfield_duration_as_string,
+                resolution=config.higgsfield_resolution,
+                aspect_ratio=config.higgsfield_aspect_ratio,
+                extra_arguments=config.higgsfield_extra_arguments,
+            ),
+        )
+
+    def _check_credentials(self) -> None:
+        if not os.environ.get("HF_KEY") and not (
+            os.environ.get("HF_API_KEY") and os.environ.get("HF_API_SECRET")
+        ):
+            raise RuntimeError(
+                "Higgsfield credentials missing. Set HF_KEY "
+                '("<api_key>:<api_secret>") or HF_API_KEY + HF_API_SECRET '
+                "in your .env file."
+            )
+
+    def _import_sdk(self):
+        import higgsfield_client  # imported lazily
+
+        return higgsfield_client
+
+
+def make_video_client(config: Config) -> SubscribeVideoClient:
+    """Instantiate the video client selected by config.video_provider."""
+    provider = (config.video_provider or "fal").lower()
+    if provider == "fal":
+        return FalClient(config)
+    if provider == "higgsfield":
+        return HiggsfieldClient(config)
+    raise SystemExit(
+        f"Unknown video_provider {provider!r}. Use 'fal' or 'higgsfield'."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -761,7 +856,7 @@ class Pipeline:
         self.failed = FailedJobStore(FAILED_JOBS_FILE)
         self.summary = RunSummary()
         self.openai = OpenAIClient(config)
-        self.higgsfield = HiggsfieldClient(config)
+        self.video_client = make_video_client(config)
 
     # ------------------------------ Mode A ------------------------------- #
     def run_mode_a(self) -> None:
@@ -986,7 +1081,7 @@ class Pipeline:
             return
 
         for start, end, motion, duration in tqdm(
-            pairs, desc="Generating Higgsfield clips", unit="clip"
+            pairs, desc="Generating clips", unit="clip"
         ):
             dst = self._clip_name(start, end)
             job_id = f"clip:{dst.name}"
@@ -1015,7 +1110,7 @@ class Pipeline:
                 continue
 
             try:
-                self.higgsfield.generate_clip(start, end, motion, duration, dst)
+                self.video_client.generate_clip(start, end, motion, duration, dst)
                 self.state.set(job_id, "done", output=str(dst))
                 self.summary.videos_created += 1
                 logger.info("Clip ready: %s", dst.name)

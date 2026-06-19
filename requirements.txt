@@ -5,4 +5,5 @@ python-dotenv>=1.0.0
 tqdm>=4.66.0
 pydantic>=2.6.0
 requests>=2.31.0
+fal-client>=0.4.0
 higgsfield-client>=0.1.0
