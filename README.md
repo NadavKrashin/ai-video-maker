@@ -15,7 +15,7 @@ combine them**. You assemble the final cut yourself in **Premiere Pro**.
 1. Put source images in `input_images/`.
 2. Every image is styled into a consistent 1920×1080 look.
 3. Each **consecutive styled pair** is sent to the video provider (default: fal,
-   model Kling v2.1 Pro): image 1 = start frame, image 2 = end frame → one 5s or
+   model Kling 3.0): image 1 = start frame, image 2 = end frame → one 5s or
    10s clip. (Provider/model/end-frame are configurable — see below.)
 4. `n` images → `n − 1` clips, written to `clips/`.
 
@@ -87,25 +87,26 @@ The pipeline is built around **consecutive frame pairs** (start → end). Pick t
 provider with `video_provider` (`"fal"` or `"higgsfield"`). Each provider has its
 own block of settings, so you can keep both configured and just flip the switch.
 
-**Default — fal + Kling v2.1 Pro** (supports start + end frame, so each clip
+**Default — fal + Kling 3.0** (supports start + end frame, so each clip
 interpolates from one styled frame to the next):
 
 ```json
 "video_provider": "fal",
-"fal_model_id": "fal-ai/kling-video/v2.1/pro/image-to-video",
-"fal_start_frame_field": "image_url",
-"fal_end_frame_field": "tail_image_url",
+"fal_model_id": "fal-ai/kling-video/v3/pro/image-to-video",
+"fal_start_frame_field": "start_image_url",
+"fal_end_frame_field": "end_image_url",
 "fal_duration_as_string": true
 ```
 
-- **Start frame** → `*_start_frame_field` (`image_url`). **End frame** →
-  `*_end_frame_field` (`tail_image_url`); set it to `""` for start-frame-only.
-- `duration` format differs by provider: **fal** wants a string enum
-  (`"5"`/`"10"`, so `fal_duration_as_string: true`); **Higgsfield** wants an
-  integer (`higgsfield_duration_as_string: false`). These defaults are correct.
-- **Kling 3.0 on fal:** set `fal_model_id` to
-  `"fal-ai/kling-video/v3/pro/image-to-video"`, `fal_start_frame_field` to
-  `"start_image_url"`, and `fal_end_frame_field` to `"end_image_url"`.
+- **Start frame** → `*_start_frame_field` (`start_image_url` for v3). **End
+  frame** → `*_end_frame_field` (`end_image_url` for v3); set it to `""` for
+  start-frame-only.
+- `duration` format differs by provider: **fal** wants a string enum (so
+  `fal_duration_as_string: true`); **Higgsfield** wants an integer
+  (`higgsfield_duration_as_string: false`). These defaults are correct.
+- **Cheaper option — Kling v2.1 Pro on fal:** set `fal_model_id` to
+  `"fal-ai/kling-video/v2.1/pro/image-to-video"`, `fal_start_frame_field` to
+  `"image_url"`, and `fal_end_frame_field` to `"tail_image_url"`.
 - **Why fal is the default:** fal documents the Kling schema and validates
   inputs, so the end frame is actually applied (and unknown fields error instead
   of being silently ignored). Higgsfield's public API accepted the request but
