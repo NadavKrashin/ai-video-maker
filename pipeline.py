@@ -589,11 +589,17 @@ class OpenAIClient:
             tmp.unlink(missing_ok=True)
 
     # --- Mode B: storyboard planning --------------------------------------- #
-    def create_storyboard(self, idea: str, frame_count: int) -> Storyboard:
+    def create_storyboard(
+        self, idea: str, frame_count: int, default_duration: Optional[int] = None
+    ) -> Storyboard:
         """Ask the text model to produce a structured storyboard for `idea`.
 
         If `frame_count` <= 0, the model chooses the number of frames that best
         fits the provided content instead of a fixed count.
+
+        If `default_duration` is set (5 or 10), every clip is forced to that
+        length; otherwise the model picks a per-clip duration (5 or 10) for each
+        transition so the video can mix short and long clips.
         """
         client = self._ensure_client()
 
@@ -606,7 +612,29 @@ class OpenAIClient:
             "form a continuous, consistent visual flow. Each image_prompt must "
             "be fully self-contained and restate the recurring visual identity "
             "(character looks, wardrobe, environment, palette, lighting) so a "
-            "text-to-image model produces consistent results frame to frame."
+            "text-to-image model produces consistent results frame to frame. "
+            "ADJACENT-FRAME CONTINUITY (most important for smooth transitions): "
+            "each frame is animated only into the very next frame, so every "
+            "consecutive pair must be CLOSELY related and easy to interpolate "
+            "between. Treat consecutive frames as moments a second or two apart "
+            "in the SAME shot, not separate cuts: keep the same location, "
+            "background, subjects, and overall composition from one frame to the "
+            "next, and change only ONE thing at a time by a small, smooth amount "
+            "(a slight camera push/pan, a subject moving or turning a little, a "
+            "gradual change in light or expression). Avoid hard cuts, teleporting "
+            "the camera, swapping the setting, or introducing/removing major "
+            "elements between consecutive frames. When the scene genuinely must "
+            "change, bridge it gradually across two or three frames (e.g. push in, "
+            "pass behind an object, or fade through a doorway) rather than jumping. "
+            "In each image_prompt, explicitly describe the frame as a small, "
+            "natural continuation of the previous one so the start and end of "
+            "every clip share the same framing and content. "
+            "PER-CLIP DURATION: for each frame, also pick duration_to_next — the "
+            "length in seconds (either 5 or 10) of the clip that animates this "
+            "frame into the next one. Choose 10 when the transition covers more "
+            "motion or a larger, slower change that needs room to breathe, and 5 "
+            "for quick, subtle changes. Vary it across the video; do not make "
+            "them all the same. The last frame's duration_to_next is ignored."
         )
         if self.config.avoid_text_only_frames:
             system += (
@@ -640,13 +668,20 @@ class OpenAIClient:
             '      "id": "001",\n'
             '      "description": str,             // what happens in this frame\n'
             '      "image_prompt": str,            // full detailed image prompt\n'
-            '      "negative_prompt": str          // things to avoid\n'
+            '      "negative_prompt": str,         // things to avoid\n'
+            '      "duration_to_next": 5 | 10      // seconds of the clip into the next frame\n'
             "    }, ...\n"
             "  ]\n"
             "}\n"
             "Do not include output_path or transitions; those are added later. "
-            "Frame ids must be zero-padded 3-digit strings starting at 001."
+            "Frame ids must be zero-padded 3-digit strings starting at 001. "
+            "duration_to_next must be exactly 5 or 10."
         )
+        if default_duration:
+            user += (
+                f" Override: use duration_to_next = {default_duration} for every "
+                "frame."
+            )
 
         def _call() -> str:
             resp = client.chat.completions.create(
@@ -666,12 +701,27 @@ class OpenAIClient:
             base_delay=self.config.retry_base_delay_seconds,
             description="OpenAI create_storyboard",
         )
-        return self._assemble_storyboard(json.loads(raw))
+        return self._assemble_storyboard(json.loads(raw), default_duration)
 
-    def _assemble_storyboard(self, data: dict[str, Any]) -> Storyboard:
-        """Normalise the model JSON and attach output paths + transitions."""
+    def _coerce_duration(self, value: Any, fallback: int) -> int:
+        """Return `value` if it is a valid clip duration, else `fallback`."""
+        try:
+            d = int(value)
+        except (TypeError, ValueError):
+            return fallback
+        return d if d in VALID_DURATIONS else fallback
+
+    def _assemble_storyboard(
+        self, data: dict[str, Any], default_duration: Optional[int] = None
+    ) -> Storyboard:
+        """Normalise the model JSON and attach output paths + transitions.
+
+        Each transition takes the start frame's ``duration_to_next`` (5 or 10),
+        unless ``default_duration`` forces every clip to one length.
+        """
         frames_in = data.get("frames", [])
         frames: list[Frame] = []
+        durations: list[int] = []
         for i, fr in enumerate(frames_in, start=1):
             fid = str(fr.get("id") or f"{i:03d}").zfill(3)
             frames.append(
@@ -683,9 +733,15 @@ class OpenAIClient:
                     output_path=f"generated_frames/{fid}.png",
                 )
             )
+            durations.append(
+                default_duration
+                or self._coerce_duration(
+                    fr.get("duration_to_next"), self.config.duration
+                )
+            )
 
         transitions: list[Transition] = []
-        for a, b in zip(frames, frames[1:]):
+        for idx, (a, b) in enumerate(zip(frames, frames[1:])):
             tid = f"{a.id}_to_{b.id}"
             transitions.append(
                 Transition(
@@ -693,7 +749,7 @@ class OpenAIClient:
                     start_frame=a.output_path,
                     end_frame=b.output_path,
                     motion_prompt=self.config.motion_prompt,
-                    duration=self.config.duration,
+                    duration=durations[idx],
                     output_path=f"clips/{tid}.mp4",
                 )
             )
@@ -701,7 +757,9 @@ class OpenAIClient:
         return Storyboard(
             project_title=data.get("project_title", "Untitled Project"),
             style=data.get("style", self.config.scratch_style_prompt),
-            duration_per_clip=self.config.duration,
+            # Fallback length used only when a transition has no duration of its
+            # own; individual clips can differ (see Transition.duration).
+            duration_per_clip=default_duration or self.config.duration,
             target_width=self.config.target_width,
             target_height=self.config.target_height,
             concept=data.get("concept", ""),
@@ -1138,7 +1196,9 @@ class Pipeline:
                         "write %s + %s", DEFAULT_STORYBOARD_JSON, STORYBOARD_MD)
             return
 
-        storyboard = self.openai.create_storyboard(idea, frame_count)
+        storyboard = self.openai.create_storyboard(
+            idea, frame_count, default_duration=self.args.duration
+        )
         storyboard.save(DEFAULT_STORYBOARD_JSON)
         write_storyboard_markdown(storyboard, STORYBOARD_MD)
 
@@ -1370,9 +1430,14 @@ def write_storyboard_markdown(storyboard: Storyboard, path: Path) -> None:
     lines.append(f"**Style:** {storyboard.style}\n")
     if storyboard.concept:
         lines.append(f"**Concept:** {storyboard.concept}\n")
+    durs = sorted({tr.duration for tr in storyboard.transitions})
+    if len(durs) > 1:
+        dur_desc = "mixed clip lengths (" + "/".join(f"{d}s" for d in durs) + ")"
+    else:
+        dur_desc = f"{(durs[0] if durs else storyboard.duration_per_clip)}s per clip"
     lines.append(
         f"**Output:** {storyboard.target_width}x{storyboard.target_height}, "
-        f"{storyboard.duration_per_clip}s per clip\n"
+        f"{dur_desc}\n"
     )
 
     if storyboard.scenes:

@@ -206,6 +206,13 @@ You can tweak:
 - each frame's `image_prompt` / `negative_prompt`
 - each transition's `motion_prompt` and `duration`
 
+**Mixing clip lengths:** in Mode B each clip can be a different length. When the
+storyboard is created the model picks a `duration` of `5` or `10` per transition
+(longer for bigger/slower motion, shorter for subtle changes), so a single video
+can mix 5s and 10s clips. Override any clip by editing its transition `duration`
+in the JSON. Passing `--duration 5` or `--duration 10` forces **every** clip to
+that one length (at create time and at approve time); omit it to keep the mix.
+
 ### Step 3 — approve and generate
 
 ```bash
