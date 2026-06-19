@@ -10,7 +10,7 @@
   "openai_image_model": "gpt-image-1",
   "openai_text_model": "gpt-4o",
   "kling_model": "kling-v1",
-  "kling_base_url": "https://api.klingai.com",
+  "kling_base_url": "https://api-singapore.klingai.com",
   "kling_poll_interval_seconds": 10,
   "kling_poll_timeout_seconds": 900,
   "max_retries": 5,
