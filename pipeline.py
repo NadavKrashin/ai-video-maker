@@ -125,14 +125,13 @@ class Config(BaseModel):
     video_provider: str = "fal"
 
     # --- fal.ai (image-to-video) settings. Auth via FAL_KEY. ---
-    # Default: Kling 3.0 (start_image_url + end_image_url, start->end interpolation).
-    # For the cheaper Kling v2.1 Pro use: model
-    # "fal-ai/kling-video/v2.1/pro/image-to-video", start field "image_url",
-    # end field "tail_image_url".
-    fal_model_id: str = "fal-ai/kling-video/v3/pro/image-to-video"
-    fal_start_frame_field: str = "start_image_url"
-    fal_end_frame_field: str = "end_image_url"
-    fal_duration_as_string: bool = True   # fal Kling uses a string enum
+    # Default: Kling v2.1 Pro (image_url + tail_image_url, start->end interpolation).
+    # For Kling 3.0 use: model "fal-ai/kling-video/v3/pro/image-to-video",
+    # start field "start_image_url", end field "end_image_url".
+    fal_model_id: str = "fal-ai/kling-video/v2.1/pro/image-to-video"
+    fal_start_frame_field: str = "image_url"
+    fal_end_frame_field: str = "tail_image_url"
+    fal_duration_as_string: bool = True   # fal Kling uses a string enum ("5"/"10")
     fal_resolution: str = ""
     fal_aspect_ratio: str = ""
     fal_extra_arguments: dict[str, Any] = Field(default_factory=dict)
