@@ -31,7 +31,7 @@
   "default_sfx_prompt": "Ambient sound and natural sound effects matching the on-screen action. No music, no speech, no narration.",
   "sfx_negative_prompt": "music, speech, voice, narration, song",
   "sfx_extra_arguments": {},
-  "sfx_fade_seconds": 0.2,
+  "sfx_fade_seconds": 0.35,
   "music_model_id": "fal-ai/elevenlabs/music",
   "music_prompt": "Soft cinematic instrumental underscore, gentle and warm, no vocals.",
   "music_volume": 0.25,
