@@ -669,12 +669,16 @@ class HiggsfieldClient:
         dst.parent.mkdir(parents=True, exist_ok=True)
 
         def _call() -> None:
+            # Download to a temp file, then atomically rename, so an interrupted
+            # download never leaves a partial .mp4 that would be skipped later.
+            tmp = dst.with_suffix(dst.suffix + ".part")
             with requests.get(video_url, stream=True, timeout=300) as resp:
                 resp.raise_for_status()
-                with dst.open("wb") as fh:
+                with tmp.open("wb") as fh:
                     for chunk in resp.iter_content(chunk_size=1 << 16):
                         if chunk:
                             fh.write(chunk)
+            tmp.replace(dst)
 
         with_retries(
             _call,
@@ -806,7 +810,7 @@ class Pipeline:
             styled.append(dst)
             job_id = f"style:{dst.name}"
 
-            if dst.exists() and not self.force and self.state.is_done(job_id):
+            if dst.exists() and not self.force:
                 self.summary.styled_skipped += 1
                 logger.info("Skip styled (done): %s", dst.name)
                 continue
@@ -929,7 +933,7 @@ class Pipeline:
             dst = PROJECT_ROOT / frame.output_path
             job_id = f"frame:{frame.id}"
 
-            if dst.exists() and not self.force and self.state.is_done(job_id):
+            if dst.exists() and not self.force:
                 self.summary.styled_skipped += 1
                 logger.info("Skip frame (done): %s", dst.name)
                 continue
@@ -983,7 +987,7 @@ class Pipeline:
             dst = self._clip_name(start, end)
             job_id = f"clip:{dst.name}"
 
-            if dst.exists() and not self.force and self.state.is_done(job_id):
+            if dst.exists() and not self.force:
                 self.summary.videos_skipped += 1
                 logger.info("Skip clip (done): %s", dst.name)
                 continue
