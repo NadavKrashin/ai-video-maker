@@ -4,6 +4,9 @@ A local Python pipeline that turns images (or a raw idea) into short, consistent
 1920×1080 video clips using **OpenAI** (image generation/editing + storyboard
 planning) and **fal** or **Higgsfield** (image-to-video; selectable, default fal).
 
+Clips are silent by default; an opt-in [audio step](#audio-sound) can add
+motion-matched sound effects per clip plus a background-music bed (via **fal**).
+
 It produces individual clips between consecutive key frames and then
 **concatenates them, in order, into `output/final_video.mp4`** using `ffmpeg`
 (requires `ffmpeg` on your `PATH`). You can disable that step with `--no-combine`
@@ -237,6 +240,10 @@ normalized to exactly 1920×1080), then renders the clips using the
 | `--only-video` | Only generate videos from existing images. |
 | `--combine` | Only concatenate existing `clips/` into `output/final_video.mp4`; no generation. |
 | `--no-combine` | Skip building the final combined video at the end of a run. |
+| `--add-audio` | Force audio on for this run (per-clip SFX + music bed), ignoring `audio_mode`. |
+| `--no-audio` | Force audio off for this run, even if `audio_mode` is `"post"`. |
+| `--audio-only` | Add SFX + music to existing `clips/` and rebuild `output/final_video.mp4` (no generation). |
+| `--music-prompt "..."` | Override the background-music prompt for this run. |
 | `--duration 5` / `--duration 10` | Force every clip to this length. Omit in Mode B to let clips mix 5s/10s. |
 | `--motion-prompt "..."` | Override the global/per-transition motion prompt. |
 | `--style-prompt "..."` | Override the global style prompt (Mode A). |
@@ -273,7 +280,7 @@ errors, and it waits on provider jobs until they complete, fail, or time out.
 | `styled_images/` | Mode A styled frames (`001_styled.png`, …) |
 | `generated_frames/` | Mode B generated frames (`001.png`, …) |
 | `clips/` | Rendered clips (`001_to_002.mp4`, …) |
-| `output/` | Combined `final_video.mp4` (all clips concatenated in order) |
+| `output/` | Combined `final_video.mp4` (all clips concatenated in order) + `music.mp3` (the generated bed, when audio is on) |
 | `storyboard/` | `storyboard.json` + `storyboard.md` (Mode B) |
 | `logs/` | Run logs + `state.json` |
 | `failed_jobs/` | `failed_jobs.json` |
@@ -284,6 +291,77 @@ share a codec, otherwise a re-encode fallback). Use `--no-combine` to skip this
 and assemble the cut yourself in an editor, or `--combine` to (re)build the final
 video from whatever is already in `clips/`. Re-running won't overwrite an
 existing `final_video.mp4` unless you pass `--force`.
+
+---
+
+## Audio (sound)
+
+The video providers above output **silent** clips. Sound is added in a separate,
+opt-in step that runs entirely through **fal** (same `FAL_KEY`, no extra account),
+so it works no matter which provider rendered the clips. Two independent layers:
+
+1. **Per-clip SFX / ambient** — each silent clip is sent to a *video→audio* model
+   (default `fal-ai/mmaudio-v2`), which watches the clip and returns the **same
+   clip with synchronized sound muxed in**. Because it reads the actual pixels,
+   every clip gets its own motion-matched audio even when they share a prompt.
+2. **Music bed** — one instrumental track (default `fal-ai/elevenlabs/music`) is
+   generated from a single prompt and mixed, **ducked**, under the SFX across the
+   whole `output/final_video.mp4`. The track is looped/trimmed to the video length.
+
+### Turning it on
+
+It is **off by default** (`"audio_mode": "none"`) so existing runs are unchanged.
+Enable it either permanently in `config.json` (`"audio_mode": "post"`) or per-run:
+
+```bash
+# Generate clips AND add sound in one run
+python pipeline.py --add-audio
+
+# Mode B with sound (the storyboard also plans per-clip + music prompts)
+python pipeline.py --from-scratch --approve-storyboard --add-audio \
+  --storyboard-file storyboard/storyboard.json
+
+# Already have silent clips? Add SFX + music and rebuild the final video only:
+python pipeline.py --audio-only
+
+# Override just the music bed for a run:
+python pipeline.py --add-audio --music-prompt "Upbeat playful ukulele, no vocals"
+
+# Force-off for one run even if config has audio_mode: post
+python pipeline.py --no-audio
+```
+
+Cost is roughly **$0.20–0.50 per full video** (MMAudio is ~$0.001/s; music is one
+short call). Requires `ffmpeg`/`ffprobe` on your `PATH` for the music mix.
+
+### Where the prompts come from
+
+- **Mode A:** every clip uses `default_sfx_prompt`; the bed uses `music_prompt`
+  (from `config.json`). Audio still differs per clip because MMAudio reads the video.
+- **Mode B:** the storyboard step asks OpenAI to also write a `sound_to_next` per
+  transition and one `music_prompt` for the whole video. These land in
+  `storyboard.json` (and are shown in `storyboard.md`) and are **fully editable**
+  before you approve — same as the motion prompts. Blank ones fall back to config.
+
+### Config keys
+
+| Key | Meaning |
+|-----|---------|
+| `audio_mode` | `"none"` (silent, default) or `"post"` (add sound). |
+| `sfx_model_id` | fal video→audio model. Default `fal-ai/mmaudio-v2`. |
+| `sfx_num_steps` | MMAudio sampling steps. |
+| `default_sfx_prompt` | SFX prompt for Mode A and as the Mode B fallback. |
+| `sfx_negative_prompt` | What the SFX model should avoid (music/speech). |
+| `sfx_extra_arguments` | Extra model-specific args merged into each SFX call. |
+| `music_model_id` | fal text→music model. Default `fal-ai/elevenlabs/music`. |
+| `music_prompt` | Background-music description (Mode A / fallback). |
+| `music_volume` | `0..1`, how loud the bed sits under the SFX (default `0.25`). |
+| `music_extra_arguments` | Extra model-specific args for the music call. |
+
+Swap the SFX or music model by changing the id (e.g. `fal-ai/lyria2`,
+`cassetteai/music-generator`, `fal-ai/thinksound`) — no code changes. SFX and
+music are state-tracked like every other stage, so interrupted runs resume and
+finished clips are skipped (`--force` redoes them).
 
 ---
 

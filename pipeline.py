@@ -62,6 +62,7 @@ LOGS_DIR = PROJECT_ROOT / "logs"
 FAILED_JOBS_DIR = PROJECT_ROOT / "failed_jobs"
 
 FINAL_VIDEO = OUTPUT_DIR / "final_video.mp4"
+MUSIC_FILE = OUTPUT_DIR / "music.mp3"
 
 STATE_FILE = LOGS_DIR / "state.json"
 FAILED_JOBS_FILE = FAILED_JOBS_DIR / "failed_jobs.json"
@@ -169,6 +170,34 @@ class Config(BaseModel):
     # Any extra model-specific arguments merged into every request.
     higgsfield_extra_arguments: dict[str, Any] = Field(default_factory=dict)
 
+    # --- Audio (post-generation sound). Always uses fal (auth via FAL_KEY), ---
+    # regardless of which provider rendered the silent clips. Two layers:
+    #   * SFX/ambient: a video->audio model is run on each silent clip; it
+    #     returns the SAME clip with synced sound muxed in (replaces the file).
+    #   * Music bed: one track generated from `music_prompt`, mixed (ducked) under
+    #     the SFX across the whole concatenated final video.
+    # Leave audio_mode "none" to keep the old silent behaviour unchanged.
+    audio_mode: str = "none"                # "none" | "post"
+    # Video->audio model (returns video with synchronized audio).
+    sfx_model_id: str = "fal-ai/mmaudio-v2"
+    sfx_num_steps: int = 25
+    # Used for every Mode A clip, and as the fallback when a Mode B transition
+    # has no sound_prompt of its own.
+    default_sfx_prompt: str = (
+        "Ambient sound and natural sound effects matching the on-screen action. "
+        "No music, no speech, no narration."
+    )
+    sfx_negative_prompt: str = "music, speech, voice, narration, song"
+    sfx_extra_arguments: dict[str, Any] = Field(default_factory=dict)
+    # Music model (text -> a music track). ElevenLabs Music via fal by default;
+    # swap for fal-ai/lyria2, cassetteai/music-generator, beatoven/..., etc.
+    music_model_id: str = "fal-ai/elevenlabs/music"
+    music_prompt: str = (
+        "Soft cinematic instrumental underscore, gentle and warm, no vocals."
+    )
+    music_volume: float = 0.25              # 0..1, ducked under the SFX
+    music_extra_arguments: dict[str, Any] = Field(default_factory=dict)
+
     # Retry behaviour.
     max_retries: int = 5
     retry_base_delay_seconds: float = 2.0
@@ -201,6 +230,9 @@ class Transition(BaseModel):
     end_frame: str
     motion_prompt: str
     duration: int = 5
+    # Optional per-clip SFX/ambient guidance for the video->audio step. Empty
+    # falls back to config.default_sfx_prompt.
+    sound_prompt: str = ""
     output_path: str
 
 
@@ -212,6 +244,8 @@ class Storyboard(BaseModel):
     target_height: int = 1080
     concept: str = ""
     scenes: list[str] = Field(default_factory=list)
+    # Optional global background-music description for the audio step.
+    music_prompt: str = ""
     frames: list[Frame]
     transitions: list[Transition] = Field(default_factory=list)
 
@@ -456,6 +490,86 @@ def combine_clips(clips: list[Path], output: Path) -> None:
         list_path.unlink(missing_ok=True)
 
 
+def _require_ffmpeg(tool: str = "ffmpeg") -> None:
+    if shutil.which(tool) is None:
+        raise RuntimeError(
+            f"{tool} not found on PATH. Install it (e.g. `brew install ffmpeg`) "
+            "to add audio."
+        )
+
+
+def ffprobe_duration(path: Path) -> Optional[float]:
+    """Return the media duration in seconds, or None if it can't be read."""
+    if shutil.which("ffprobe") is None:
+        return None
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+        ],
+        capture_output=True, text=True,
+    )
+    try:
+        return float(result.stdout.strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def has_audio_stream(path: Path) -> bool:
+    """True if `path` contains at least one audio stream."""
+    if shutil.which("ffprobe") is None:
+        return False
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-select_streams", "a",
+            "-show_entries", "stream=index", "-of", "csv=p=0", str(path),
+        ],
+        capture_output=True, text=True,
+    )
+    return bool(result.stdout.strip())
+
+
+def mux_music(video: Path, music: Path, volume: float) -> None:
+    """Mix a (looped) music track under `video`'s audio, in place.
+
+    If the video already has an audio track (e.g. SFX), the music is ducked to
+    `volume` and mixed under it. If it has none, the music becomes the only
+    audio. The music is looped/trimmed to the video length either way.
+    """
+    _require_ffmpeg()
+    tmp = video.with_suffix(".muxed.mp4")
+    vol = max(0.0, min(1.0, volume))
+
+    if has_audio_stream(video):
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(video),
+            "-stream_loop", "-1", "-i", str(music),
+            "-filter_complex",
+            f"[1:a]volume={vol}[m];"
+            f"[0:a][m]amix=inputs=2:duration=first:dropout_transition=0[a]",
+            "-map", "0:v", "-map", "[a]",
+            "-c:v", "copy", "-c:a", "aac", "-shortest", str(tmp),
+        ]
+    else:
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(video),
+            "-stream_loop", "-1", "-i", str(music),
+            "-filter:a", f"volume={vol}",
+            "-map", "0:v", "-map", "1:a",
+            "-c:v", "copy", "-c:a", "aac", "-shortest", str(tmp),
+        ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"ffmpeg music mux failed:\n{result.stderr.strip()[-2000:]}"
+        )
+    tmp.replace(video)
+
+
 def list_input_images(directory: Path) -> list[Path]:
     files = [
         p
@@ -634,7 +748,14 @@ class OpenAIClient:
             "frame into the next one. Choose 10 when the transition covers more "
             "motion or a larger, slower change that needs room to breathe, and 5 "
             "for quick, subtle changes. Vary it across the video; do not make "
-            "them all the same. The last frame's duration_to_next is ignored."
+            "them all the same. The last frame's duration_to_next is ignored. "
+            "SOUND: for each frame, also write sound_to_next — a short phrase "
+            "describing the diegetic ambient sound and sound effects for the clip "
+            "that animates this frame into the next one (e.g. 'waves lapping, gulls "
+            "calling, soft wind'). Describe real on-screen/world sounds only — no "
+            "music, no speech, no narration. Also write one music_prompt for the "
+            "whole video: a short description of a single instrumental background "
+            "track (mood, genre, instrumentation, no vocals)."
         )
         if self.config.avoid_text_only_frames:
             system += (
@@ -663,13 +784,15 @@ class OpenAIClient:
             '  "style": str,                       // overall visual style sentence\n'
             '  "concept": str,                     // overall concept paragraph\n'
             '  "scenes": [str, ...],               // scene list\n'
+            '  "music_prompt": str,                // one instrumental bed for the whole video, no vocals\n'
             '  "frames": [\n'
             "    {\n"
             '      "id": "001",\n'
             '      "description": str,             // what happens in this frame\n'
             '      "image_prompt": str,            // full detailed image prompt\n'
             '      "negative_prompt": str,         // things to avoid\n'
-            '      "duration_to_next": 5 | 10      // seconds of the clip into the next frame\n'
+            '      "duration_to_next": 5 | 10,     // seconds of the clip into the next frame\n'
+            '      "sound_to_next": str            // ambient sound/SFX for that clip; no music, no speech\n'
             "    }, ...\n"
             "  ]\n"
             "}\n"
@@ -722,6 +845,7 @@ class OpenAIClient:
         frames_in = data.get("frames", [])
         frames: list[Frame] = []
         durations: list[int] = []
+        sound_prompts: list[str] = []
         for i, fr in enumerate(frames_in, start=1):
             fid = str(fr.get("id") or f"{i:03d}").zfill(3)
             frames.append(
@@ -739,6 +863,7 @@ class OpenAIClient:
                     fr.get("duration_to_next"), self.config.duration
                 )
             )
+            sound_prompts.append(str(fr.get("sound_to_next", "") or ""))
 
         transitions: list[Transition] = []
         for idx, (a, b) in enumerate(zip(frames, frames[1:])):
@@ -750,6 +875,7 @@ class OpenAIClient:
                     end_frame=b.output_path,
                     motion_prompt=self.config.motion_prompt,
                     duration=durations[idx],
+                    sound_prompt=sound_prompts[idx],
                     output_path=f"clips/{tid}.mp4",
                 )
             )
@@ -764,6 +890,7 @@ class OpenAIClient:
             target_height=self.config.target_height,
             concept=data.get("concept", ""),
             scenes=list(data.get("scenes", [])),
+            music_prompt=str(data.get("music_prompt", "") or ""),
             frames=frames,
             transitions=transitions,
         )
@@ -1021,6 +1148,130 @@ def make_video_client(config: Config) -> SubscribeVideoClient:
 
 
 # --------------------------------------------------------------------------- #
+# Audio client (post-generation sound). Always uses fal (FAL_KEY).
+# --------------------------------------------------------------------------- #
+def _extract_fal_url(result: Optional[dict[str, Any]], keys: tuple[str, ...]) -> str:
+    """Pull a media URL out of a fal result, trying several common shapes."""
+    result = result or {}
+    for key in (*keys, "url"):
+        value = result.get(key)
+        if isinstance(value, dict) and value.get("url"):
+            return value["url"]
+        if isinstance(value, str) and value.startswith("http"):
+            return value
+        if (
+            isinstance(value, list)
+            and value
+            and isinstance(value[0], dict)
+            and value[0].get("url")
+        ):
+            return value[0]["url"]
+    raise RuntimeError(f"fal result had no media URL: {result}")
+
+
+class AudioClient:
+    """fal-backed audio generation: per-clip SFX (video->audio) + music (text).
+
+    Uses the fal SDK directly (auth via FAL_KEY) so audio works no matter which
+    provider rendered the silent clips.
+    """
+
+    provider = "fal-audio"
+
+    def __init__(self, config: Config) -> None:
+        self.config = config
+        self._sdk = None
+
+    def _ensure_sdk(self):
+        if self._sdk is None:
+            if not os.environ.get("FAL_KEY"):
+                raise RuntimeError(
+                    "fal credentials missing for audio. Set FAL_KEY in your .env "
+                    "file (get one at https://fal.ai/dashboard/keys)."
+                )
+            import fal_client  # imported lazily
+
+            self._sdk = fal_client
+        return self._sdk
+
+    def _upload(self, path: Path) -> str:
+        sdk = self._ensure_sdk()
+
+        def _call() -> str:
+            return sdk.upload_file(path)
+
+        return with_retries(
+            _call,
+            max_retries=self.config.max_retries,
+            base_delay=self.config.retry_base_delay_seconds,
+            description=f"audio upload ({path.name})",
+        )
+
+    def _subscribe(self, model_id: str, arguments: dict[str, Any],
+                   keys: tuple[str, ...]) -> str:
+        sdk = self._ensure_sdk()
+
+        def _call() -> str:
+            result = sdk.subscribe(model_id, arguments)
+            return _extract_fal_url(result, keys)
+
+        return with_retries(
+            _call,
+            max_retries=self.config.max_retries,
+            base_delay=self.config.retry_base_delay_seconds,
+            description=f"audio generate ({model_id})",
+        )
+
+    def _download(self, url: str, dst: Path) -> None:
+        import requests
+
+        dst.parent.mkdir(parents=True, exist_ok=True)
+
+        def _call() -> None:
+            tmp = dst.with_suffix(dst.suffix + ".part")
+            with requests.get(url, stream=True, timeout=300) as resp:
+                resp.raise_for_status()
+                with tmp.open("wb") as fh:
+                    for chunk in resp.iter_content(chunk_size=1 << 16):
+                        if chunk:
+                            fh.write(chunk)
+            tmp.replace(dst)
+
+        with_retries(
+            _call,
+            max_retries=self.config.max_retries,
+            base_delay=self.config.retry_base_delay_seconds,
+            description=f"audio download -> {dst.name}",
+        )
+
+    # --- SFX: video -> the same video with synced audio ------------------- #
+    def add_sfx(self, clip: Path, prompt: str, duration: int) -> None:
+        """Generate synced SFX/ambient audio for `clip` and replace it in place."""
+        clip_url = self._upload(clip)
+        arguments: dict[str, Any] = {
+            "video_url": clip_url,
+            "prompt": prompt,
+            "negative_prompt": self.config.sfx_negative_prompt,
+            "duration": float(duration),
+            "num_steps": self.config.sfx_num_steps,
+        }
+        arguments.update(self.config.sfx_extra_arguments)
+        logger.info("SFX job: %s (model=%s)", clip.name, self.config.sfx_model_id)
+        url = self._subscribe(self.config.sfx_model_id, arguments, ("video",))
+        self._download(url, clip)
+
+    # --- Music: text -> an instrumental track ----------------------------- #
+    def generate_music(self, prompt: str, dst: Path) -> None:
+        arguments: dict[str, Any] = {"prompt": prompt}
+        arguments.update(self.config.music_extra_arguments)
+        logger.info("Music job: %s (model=%s)", dst.name, self.config.music_model_id)
+        url = self._subscribe(
+            self.config.music_model_id, arguments, ("audio", "audio_file", "video")
+        )
+        self._download(url, dst)
+
+
+# --------------------------------------------------------------------------- #
 # Pipeline orchestration
 # --------------------------------------------------------------------------- #
 @dataclass
@@ -1032,6 +1283,10 @@ class RunSummary:
     videos_created: int = 0
     videos_skipped: int = 0
     videos_failed: int = 0
+    sfx_created: int = 0
+    sfx_skipped: int = 0
+    sfx_failed: int = 0
+    music_added: bool = False
     final_video: Optional[Path] = None
 
     def print(self) -> None:
@@ -1044,6 +1299,12 @@ class RunSummary:
         print(f"  Videos created         : {self.videos_created}")
         print(f"  Videos skipped         : {self.videos_skipped}")
         print(f"  Videos failed          : {self.videos_failed}")
+        if self.sfx_created or self.sfx_skipped or self.sfx_failed:
+            print(f"  Clip SFX created       : {self.sfx_created}")
+            print(f"  Clip SFX skipped       : {self.sfx_skipped}")
+            print(f"  Clip SFX failed        : {self.sfx_failed}")
+        if self.music_added:
+            print(f"  Music bed              : added")
         if self.final_video:
             print(f"  Final video            : {self.final_video}")
         print(f"\n  Output folders:")
@@ -1067,6 +1328,17 @@ class Pipeline:
         self.summary = RunSummary()
         self.openai = OpenAIClient(config)
         self.video_client = make_video_client(config)
+        self.audio_client = AudioClient(config)
+        # Audio is on when config.audio_mode == "post", unless overridden by
+        # --add-audio / --no-audio for a single run.
+        if getattr(args, "no_audio", False):
+            self.audio_enabled = False
+        elif getattr(args, "add_audio", False) or getattr(args, "audio_only", False):
+            self.audio_enabled = True
+        else:
+            self.audio_enabled = (config.audio_mode or "none").lower() == "post"
+        # Resolved at storyboard-approval time (Mode B); falls back to config.
+        self._storyboard_music_prompt: str = ""
 
     # ------------------------------ Mode A ------------------------------- #
     def run_mode_a(self) -> None:
@@ -1219,6 +1491,7 @@ class Pipeline:
             len(storyboard.frames),
         )
         self.summary.input_count = len(storyboard.frames)
+        self._storyboard_music_prompt = storyboard.music_prompt or ""
 
         if not self.args.only_video:
             self._generate_frames(storyboard)
@@ -1227,8 +1500,8 @@ class Pipeline:
             logger.info("--only-style set: skipping video generation.")
             return
 
-        # Build transition pairs from the storyboard (per-transition motion).
-        pairs: list[tuple[Path, Path, str, int]] = []
+        # Build transition pairs from the storyboard (per-transition motion + sound).
+        pairs: list[tuple[Path, Path, str, int, str]] = []
         transitions = storyboard.transitions or self._derive_transitions(storyboard)
         for tr in transitions:
             pairs.append(
@@ -1237,6 +1510,7 @@ class Pipeline:
                     PROJECT_ROOT / tr.end_frame,
                     self.args.motion_prompt or tr.motion_prompt,
                     self.args.duration or tr.duration,
+                    tr.sound_prompt,
                 )
             )
         self._generate_clips_with_prompts(pairs)
@@ -1309,28 +1583,24 @@ class Pipeline:
     def _generate_clips(
         self, pairs: list[tuple[Path, Path]], motion_prompt: str
     ) -> None:
+        # Mode A has no per-clip sound prompt; "" falls back to default_sfx_prompt.
         enriched = [
-            (a, b, motion_prompt, self.duration) for a, b in pairs
+            (a, b, motion_prompt, self.duration, "") for a, b in pairs
         ]
         self._generate_clips_with_prompts(enriched)
 
     def _generate_clips_with_prompts(
-        self, pairs: list[tuple[Path, Path, str, int]]
+        self, pairs: list[tuple[Path, Path, str, int, str]]
     ) -> None:
         if not pairs:
             logger.warning("No transition pairs to render.")
             return
 
-        for start, end, motion, duration in tqdm(
+        for start, end, motion, duration, sound_prompt in tqdm(
             pairs, desc="Generating clips", unit="clip"
         ):
             dst = self._clip_name(start, end)
             job_id = f"clip:{dst.name}"
-
-            if dst.exists() and not self.force:
-                self.summary.videos_skipped += 1
-                logger.info("Skip clip (done): %s", dst.name)
-                continue
 
             if self.dry_run:
                 # Frames may not exist yet during a dry-run (styling was also
@@ -1340,28 +1610,63 @@ class Pipeline:
                     dst.name, duration, start.name, end.name, motion,
                 )
                 self.summary.videos_created += 1
+                if self.audio_enabled:
+                    logger.info(
+                        "[dry-run] would add SFX to %s | sound=%r",
+                        dst.name, sound_prompt or self.config.default_sfx_prompt,
+                    )
                 continue
 
-            if not start.exists() or not end.exists():
-                self.summary.videos_failed += 1
-                self.failed.record(
-                    job_id, "clip",
-                    f"Missing frame(s): {start.name} / {end.name}",
-                )
-                continue
+            if dst.exists() and not self.force:
+                self.summary.videos_skipped += 1
+                logger.info("Skip clip (done): %s", dst.name)
+            else:
+                if not start.exists() or not end.exists():
+                    self.summary.videos_failed += 1
+                    self.failed.record(
+                        job_id, "clip",
+                        f"Missing frame(s): {start.name} / {end.name}",
+                    )
+                    continue
+                try:
+                    self.video_client.generate_clip(
+                        start, end, motion, duration, dst
+                    )
+                    self.state.set(job_id, "done", output=str(dst))
+                    self.summary.videos_created += 1
+                    logger.info("Clip ready: %s", dst.name)
+                except Exception as exc:  # noqa: BLE001
+                    self.summary.videos_failed += 1
+                    self.state.set(job_id, "failed")
+                    self.failed.record(
+                        job_id, "clip", str(exc),
+                        start=str(start), end=str(end),
+                    )
+                    continue
 
-            try:
-                self.video_client.generate_clip(start, end, motion, duration, dst)
-                self.state.set(job_id, "done", output=str(dst))
-                self.summary.videos_created += 1
-                logger.info("Clip ready: %s", dst.name)
-            except Exception as exc:  # noqa: BLE001
-                self.summary.videos_failed += 1
-                self.state.set(job_id, "failed")
-                self.failed.record(
-                    job_id, "clip", str(exc),
-                    start=str(start), end=str(end),
-                )
+            # Per-clip SFX/ambient sound (replaces the clip with an audio-bearing
+            # version). Tracked separately so it resumes independently of video.
+            if self.audio_enabled and dst.exists():
+                self._add_sfx(dst, sound_prompt, duration)
+
+    def _add_sfx(self, clip: Path, sound_prompt: str, duration: int) -> None:
+        """Run the video->audio model on `clip`, replacing it with a sounded one."""
+        job_id = f"sfx:{clip.name}"
+        if self.state.is_done(job_id) and not self.force:
+            self.summary.sfx_skipped += 1
+            logger.info("Skip SFX (done): %s", clip.name)
+            return
+
+        prompt = sound_prompt.strip() or self.config.default_sfx_prompt
+        try:
+            self.audio_client.add_sfx(clip, prompt, duration)
+            self.state.set(job_id, "done")
+            self.summary.sfx_created += 1
+            logger.info("SFX added: %s", clip.name)
+        except Exception as exc:  # noqa: BLE001
+            self.summary.sfx_failed += 1
+            self.state.set(job_id, "failed")
+            self.failed.record(job_id, "sfx", str(exc), clip=str(clip))
 
     @staticmethod
     def _clip_name(start: Path, end: Path) -> Path:
@@ -1371,7 +1676,7 @@ class Pipeline:
             return m.group(1) if m else p.stem
         return CLIPS_DIR / f"{stem_id(start)}_to_{stem_id(end)}.mp4"
 
-    def _combine_clips(self) -> None:
+    def _combine_clips(self, force_rebuild: bool = False) -> None:
         """Concatenate all generated clips into output/final_video.mp4."""
         clips = find_generated_clips(CLIPS_DIR)
         if not clips:
@@ -1385,7 +1690,7 @@ class Pipeline:
             )
             return
 
-        if FINAL_VIDEO.exists() and not self.force:
+        if FINAL_VIDEO.exists() and not self.force and not force_rebuild:
             logger.info(
                 "Final video already exists (use --force to rebuild): %s",
                 FINAL_VIDEO,
@@ -1400,10 +1705,80 @@ class Pipeline:
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to combine clips: %s", exc)
             self.failed.record("combine", "combine", str(exc))
+            return
+
+        # Lay a single music bed under the whole video (ducked under the SFX).
+        if self.audio_enabled:
+            self._add_music()
+
+    def _resolve_music_prompt(self) -> str:
+        return (
+            self.args.music_prompt
+            or self._storyboard_music_prompt
+            or self.config.music_prompt
+        )
+
+    def _add_music(self) -> None:
+        """Generate one music track and mix it under output/final_video.mp4."""
+        prompt = self._resolve_music_prompt().strip()
+        if not prompt:
+            logger.info("No music_prompt set; skipping music bed.")
+            return
+
+        job_id = "music:final"
+        try:
+            if not (MUSIC_FILE.exists() and not self.force):
+                self.audio_client.generate_music(prompt, MUSIC_FILE)
+            mux_music(FINAL_VIDEO, MUSIC_FILE, self.config.music_volume)
+            self.state.set(job_id, "done")
+            self.summary.music_added = True
+            logger.info("Music bed added to %s", FINAL_VIDEO)
+        except Exception as exc:  # noqa: BLE001
+            self.state.set(job_id, "failed")
+            self.failed.record(job_id, "music", str(exc))
+
+    # --------------------------- audio retrofit -------------------------- #
+    def _run_audio_only(self) -> None:
+        """Add SFX + music to clips already in clips/, then rebuild the final video.
+
+        Per-clip SFX prompts are taken from --storyboard-file if it exists
+        (Mode B), otherwise every clip uses config.default_sfx_prompt.
+        """
+        clips = find_generated_clips(CLIPS_DIR)
+        if not clips:
+            logger.warning("No clips in %s to add audio to.", CLIPS_DIR)
+            return
+
+        sound_map: dict[str, str] = {}
+        sb_path = Path(self.args.storyboard_file)
+        if not sb_path.is_absolute():
+            sb_path = PROJECT_ROOT / sb_path
+        if sb_path.exists():
+            try:
+                sb = Storyboard.load(sb_path)
+                self._storyboard_music_prompt = sb.music_prompt or ""
+                for tr in sb.transitions:
+                    sound_map[Path(tr.output_path).name] = tr.sound_prompt
+                logger.info("Using per-clip sound prompts from %s", sb_path.name)
+            except SystemExit:
+                logger.warning("Could not read %s; using default SFX prompt.", sb_path)
+
+        for clip in tqdm(clips, desc="Adding clip SFX", unit="clip"):
+            if self.dry_run:
+                logger.info("[dry-run] would add SFX to %s", clip.name)
+                continue
+            duration = int(round(ffprobe_duration(clip) or self.duration))
+            self._add_sfx(clip, sound_map.get(clip.name, ""), duration)
+
+        # Rebuild the final video so the new audio is included, then add music.
+        self._combine_clips(force_rebuild=True)
 
     # ------------------------------- run --------------------------------- #
     def run(self) -> None:
         try:
+            if getattr(self.args, "audio_only", False):
+                self._run_audio_only()
+                return
             if self.args.combine:
                 # Standalone: just stitch the existing clips together.
                 self._combine_clips()
@@ -1430,6 +1805,8 @@ def write_storyboard_markdown(storyboard: Storyboard, path: Path) -> None:
     lines.append(f"**Style:** {storyboard.style}\n")
     if storyboard.concept:
         lines.append(f"**Concept:** {storyboard.concept}\n")
+    if storyboard.music_prompt:
+        lines.append(f"**Music:** {storyboard.music_prompt}\n")
     durs = sorted({tr.duration for tr in storyboard.transitions})
     if len(durs) > 1:
         dur_desc = "mixed clip lengths (" + "/".join(f"{d}s" for d in durs) + ")"
@@ -1463,6 +1840,8 @@ def write_storyboard_markdown(storyboard: Storyboard, path: Path) -> None:
             lines.append(f"- **Start:** `{tr.start_frame}`")
             lines.append(f"- **End:** `{tr.end_frame}`")
             lines.append(f"- **Motion prompt:** {tr.motion_prompt}")
+            if tr.sound_prompt:
+                lines.append(f"- **Sound prompt:** {tr.sound_prompt}")
             lines.append(f"- **Output:** `{tr.output_path}`")
             lines.append("")
 
@@ -1491,6 +1870,17 @@ def build_parser() -> argparse.ArgumentParser:
                         "(no image/video generation).")
     p.add_argument("--no-combine", action="store_true",
                    help="Skip combining clips into a final video at the end of a run.")
+    p.add_argument("--add-audio", action="store_true",
+                   help="Force audio on for this run (per-clip SFX + music bed), "
+                        "regardless of config.audio_mode.")
+    p.add_argument("--no-audio", action="store_true",
+                   help="Force audio off for this run, even if config.audio_mode "
+                        "is \"post\".")
+    p.add_argument("--audio-only", action="store_true",
+                   help="Add SFX + music to existing clips/ and rebuild "
+                        "output/final_video.mp4 (no image/video generation).")
+    p.add_argument("--music-prompt", default=None,
+                   help="Override the background-music prompt for this run.")
     p.add_argument("--duration", type=int, choices=sorted(VALID_DURATIONS),
                    help="Clip duration in seconds (5 or 10).")
     p.add_argument("--motion-prompt", default=None,
@@ -1530,6 +1920,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.only_style and args.only_video:
         parser.error("--only-style and --only-video are mutually exclusive.")
+
+    if args.add_audio and args.no_audio:
+        parser.error("--add-audio and --no-audio are mutually exclusive.")
 
     config = Config.load((PROJECT_ROOT / args.config) if not Path(args.config).is_absolute() else Path(args.config))
 

@@ -25,6 +25,16 @@
   "higgsfield_resolution": "",
   "higgsfield_aspect_ratio": "",
   "higgsfield_extra_arguments": {},
+  "audio_mode": "none",
+  "sfx_model_id": "fal-ai/mmaudio-v2",
+  "sfx_num_steps": 25,
+  "default_sfx_prompt": "Ambient sound and natural sound effects matching the on-screen action. No music, no speech, no narration.",
+  "sfx_negative_prompt": "music, speech, voice, narration, song",
+  "sfx_extra_arguments": {},
+  "music_model_id": "fal-ai/elevenlabs/music",
+  "music_prompt": "Soft cinematic instrumental underscore, gentle and warm, no vocals.",
+  "music_volume": 0.25,
+  "music_extra_arguments": {},
   "max_retries": 5,
   "retry_base_delay_seconds": 2.0
 }
