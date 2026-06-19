@@ -124,16 +124,17 @@ class Config(BaseModel):
     # Higgsfield (image-to-video) settings.
     # model_id is the path segment of POST https://platform.higgsfield.ai/{model_id}.
     # Browse models at https://cloud.higgsfield.ai/explore.
-    higgsfield_model_id: str = "kling-video/v3/pro/image-to-video"
-    # The request field name for the START frame image URL. Higgsfield's models
-    # generally use "image_url"; some (fal-style) use "start_image_url".
+    higgsfield_model_id: str = "kling-video/v2.1/pro/image-to-video"
+    # The request field name for the START frame image URL. Higgsfield/Kling
+    # models use "image_url"; some (fal-style) use "start_image_url".
     higgsfield_start_frame_field: str = "image_url"
     # End-frame ("last frame") support is model-dependent and the field name
-    # varies per model. Leave empty to send only the start frame + motion prompt
-    # (works on every image-to-video model). To get a true start->end transition,
-    # set this to the exact end-frame argument name your chosen model documents
-    # (e.g. "end_image_url"); the pipeline will upload the end frame and pass it.
-    higgsfield_end_frame_field: str = "end_image_url"
+    # varies per model. Leave empty to send only the start frame + motion prompt.
+    # Kling v2.1/v2.5 use "tail_image_url"; some models use "end_image_url".
+    higgsfield_end_frame_field: str = "tail_image_url"
+    # Kling models expect duration as a STRING enum ("5"/"10"); some models
+    # (e.g. higgsfield-ai/dop/*) expect an integer. Toggle accordingly.
+    higgsfield_duration_as_string: bool = True
     # Optional generation args — only sent when non-empty. Some are model-specific.
     higgsfield_resolution: str = ""        # e.g. "720p", "1080p"
     higgsfield_aspect_ratio: str = ""      # e.g. "16:9"
@@ -622,10 +623,13 @@ class HiggsfieldClient:
         motion_prompt: str,
         duration: int,
     ) -> dict[str, Any]:
+        duration_value: Any = (
+            str(duration) if self.config.higgsfield_duration_as_string else duration
+        )
         args: dict[str, Any] = {
             self.config.higgsfield_start_frame_field: start_url,  # start frame
             "prompt": motion_prompt,                              # motion prompt
-            "duration": duration,
+            "duration": duration_value,
         }
         # End frame is only sent when the model documents a field for it.
         if end_url and self.config.higgsfield_end_frame_field:

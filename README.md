@@ -15,7 +15,7 @@ combine them**. You assemble the final cut yourself in **Premiere Pro**.
 1. Put source images in `input_images/`.
 2. Every image is styled into a consistent 1920×1080 look.
 3. Each **consecutive styled pair** is sent to Higgsfield (default model: Kling
-   3.0): image 1 = start frame, image 2 = end frame → one 5s or 10s clip.
+   v2.1 Pro): image 1 = start frame, image 2 = end frame → one 5s or 10s clip.
    (End-frame use is configurable — see "Start/end frames" below.)
 4. `n` images → `n − 1` clips, written to `clips/`.
 
@@ -82,27 +82,30 @@ typos are caught early.
 
 ### Start/end frames (important)
 
-The pipeline is built around **consecutive frame pairs** (start → end), and the
-default model — **Kling 3.0** (`kling-video/v3/pro/image-to-video`) — supports
-both a start frame and an end frame, so each clip interpolates from one styled
-frame to the next. This is configured in `config.json`:
+The pipeline is built around **consecutive frame pairs** (start → end). The
+default model — **Kling v2.1 Pro** (`kling-video/v2.1/pro/image-to-video`) — is
+confirmed available on Higgsfield and supports both a start frame and an end
+frame, so each clip interpolates from one styled frame to the next:
 
 ```json
-"higgsfield_model_id": "kling-video/v3/pro/image-to-video",
+"higgsfield_model_id": "kling-video/v2.1/pro/image-to-video",
 "higgsfield_start_frame_field": "image_url",
-"higgsfield_end_frame_field": "end_image_url"
+"higgsfield_end_frame_field": "tail_image_url",
+"higgsfield_duration_as_string": true
 ```
 
 - **Start frame** is sent under `higgsfield_start_frame_field` (default
   `image_url`). **End frame** is sent under `higgsfield_end_frame_field`
-  (default `end_image_url`); leave it `""` to send only the start frame.
-- **If a clip fails with a 4xx about an unknown/invalid field**, the model wants
-  different field names. Check the model's page at
-  [cloud.higgsfield.ai/explore](https://cloud.higgsfield.ai/explore) and adjust
-  `higgsfield_start_frame_field` / `higgsfield_end_frame_field` (e.g. some Kling
-  builds use `start_image_url` instead of `image_url`).
-- Switch models with `higgsfield_model_id`, and add any extra model-specific
-  arguments via `higgsfield_extra_arguments` (e.g. `{"generate_audio": false}`).
+  (default `tail_image_url`); set it to `""` to send only the start frame.
+- Kling models expect `duration` as a **string** (`"5"`/`"10"`); that's what
+  `higgsfield_duration_as_string: true` produces. Set it to `false` for models
+  (like `higgsfield-ai/dop/*`) that expect an integer.
+- **To use a different model** (e.g. Kling 3.0 once you have its exact id from
+  the Higgsfield dashboard), set `higgsfield_model_id`. If a clip fails with a
+  4xx about an unknown field, adjust `higgsfield_start_frame_field` /
+  `higgsfield_end_frame_field` to that model's field names.
+- Add extra model-specific args via `higgsfield_extra_arguments`
+  (e.g. `{"negative_prompt": "blur, distortion, low quality"}`).
 
 ---
 
