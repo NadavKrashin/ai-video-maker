@@ -91,15 +91,15 @@ frame, so each clip interpolates from one styled frame to the next:
 "higgsfield_model_id": "kling-video/v2.1/pro/image-to-video",
 "higgsfield_start_frame_field": "image_url",
 "higgsfield_end_frame_field": "tail_image_url",
-"higgsfield_duration_as_string": true
+"higgsfield_duration_as_string": false
 ```
 
 - **Start frame** is sent under `higgsfield_start_frame_field` (default
   `image_url`). **End frame** is sent under `higgsfield_end_frame_field`
   (default `tail_image_url`); set it to `""` to send only the start frame.
-- Kling models expect `duration` as a **string** (`"5"`/`"10"`); that's what
-  `higgsfield_duration_as_string: true` produces. Set it to `false` for models
-  (like `higgsfield-ai/dop/*`) that expect an integer.
+- Higgsfield expects `duration` as an **integer** (`5`/`10`), so
+  `higgsfield_duration_as_string` is `false`. Only set it `true` if a model you
+  switch to requires a string enum instead.
 - **To use a different model** (e.g. Kling 3.0 once you have its exact id from
   the Higgsfield dashboard), set `higgsfield_model_id`. If a clip fails with a
   4xx about an unknown field, adjust `higgsfield_start_frame_field` /

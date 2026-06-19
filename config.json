@@ -12,7 +12,7 @@
   "higgsfield_model_id": "kling-video/v2.1/pro/image-to-video",
   "higgsfield_start_frame_field": "image_url",
   "higgsfield_end_frame_field": "tail_image_url",
-  "higgsfield_duration_as_string": true,
+  "higgsfield_duration_as_string": false,
   "higgsfield_resolution": "",
   "higgsfield_aspect_ratio": "",
   "higgsfield_extra_arguments": {},

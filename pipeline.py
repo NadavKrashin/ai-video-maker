@@ -132,9 +132,9 @@ class Config(BaseModel):
     # varies per model. Leave empty to send only the start frame + motion prompt.
     # Kling v2.1/v2.5 use "tail_image_url"; some models use "end_image_url".
     higgsfield_end_frame_field: str = "tail_image_url"
-    # Kling models expect duration as a STRING enum ("5"/"10"); some models
-    # (e.g. higgsfield-ai/dop/*) expect an integer. Toggle accordingly.
-    higgsfield_duration_as_string: bool = True
+    # Higgsfield expects duration as an INTEGER (5/10) for Kling. Set True only
+    # if a model you switch to requires a string enum ("5"/"10") instead.
+    higgsfield_duration_as_string: bool = False
     # Optional generation args — only sent when non-empty. Some are model-specific.
     higgsfield_resolution: str = ""        # e.g. "720p", "1080p"
     higgsfield_aspect_ratio: str = ""      # e.g. "16:9"
