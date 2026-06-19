@@ -353,6 +353,7 @@ short call). Requires `ffmpeg`/`ffprobe` on your `PATH` for the music mix.
 | `default_sfx_prompt` | SFX prompt for Mode A and as the Mode B fallback. |
 | `sfx_negative_prompt` | What the SFX model should avoid (music/speech). |
 | `sfx_extra_arguments` | Extra model-specific args merged into each SFX call. |
+| `sfx_fade_seconds` | Fade each clip's SFX in/out by this many seconds so hard cuts aren't abrupt (the music bed carries the dip). Sync-preserving; `0` disables. Default `0.2`. |
 | `music_model_id` | fal text→music model. Default `fal-ai/elevenlabs/music`. |
 | `music_prompt` | Background-music description (Mode A / fallback). |
 | `music_volume` | `0..1`, how loud the bed sits under the SFX (default `0.25`). |
@@ -362,6 +363,17 @@ Swap the SFX or music model by changing the id (e.g. `fal-ai/lyria2`,
 `cassetteai/music-generator`, `fal-ai/thinksound`) — no code changes. SFX and
 music are state-tracked like every other stage, so interrupted runs resume and
 finished clips are skipped (`--force` redoes them).
+
+### Smoothing clip-to-clip sound
+
+Each clip's SFX is generated independently, so the ambience can change abruptly
+at a cut. `sfx_fade_seconds` softens that by fading every clip's audio in/out at
+its edges; the continuous music bed fills the brief dip, so the result is smooth
+without overlapping clips (your hard cuts and A/V sync are untouched). The fade
+is tracked separately from SFX (`fade:<clip>` in `state.json`), so if you already
+generated SFX on a set of clips you can add fades **without re-paying for SFX** —
+just run `python pipeline.py --audio-only` again (SFX is skipped, fades apply, the
+existing `music.mp3` is reused). Set `sfx_fade_seconds: 0` to disable.
 
 ---
 

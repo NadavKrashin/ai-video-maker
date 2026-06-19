@@ -189,6 +189,12 @@ class Config(BaseModel):
     )
     sfx_negative_prompt: str = "music, speech, voice, narration, song"
     sfx_extra_arguments: dict[str, Any] = Field(default_factory=dict)
+    # Smooth hard cuts between clips: fade each clip's SFX in at the start and
+    # out at the end by this many seconds, so the ambience dips gracefully at a
+    # cut (the continuous music bed carries the dip) instead of switching
+    # abruptly. Sync is preserved (the fade is inside the clip, no overlap).
+    # Set 0 to disable.
+    sfx_fade_seconds: float = 0.2
     # Music model (text -> a music track). ElevenLabs Music via fal by default;
     # swap for fal-ai/lyria2, cassetteai/music-generator, beatoven/..., etc.
     music_model_id: str = "fal-ai/elevenlabs/music"
@@ -527,6 +533,37 @@ def has_audio_stream(path: Path) -> bool:
         capture_output=True, text=True,
     )
     return bool(result.stdout.strip())
+
+
+def apply_edge_fades(clip: Path, fade: float) -> None:
+    """Fade the clip's audio in at the start and out at the end, in place.
+
+    Softens the hard cut at each clip boundary without overlapping clips, so the
+    total duration and A/V sync are preserved. No-op when the clip has no audio
+    or is too short to hold two fades.
+    """
+    if fade <= 0 or not has_audio_stream(clip):
+        return
+    duration = ffprobe_duration(clip)
+    if not duration or duration <= fade * 2:
+        return
+
+    _require_ffmpeg()
+    tmp = clip.with_suffix(".faded.mp4")
+    out_start = max(0.0, duration - fade)
+    cmd = [
+        "ffmpeg", "-y", "-i", str(clip),
+        "-af", f"afade=t=in:st=0:d={fade},afade=t=out:st={out_start:.3f}:d={fade}",
+        "-map", "0:v", "-map", "0:a",
+        "-c:v", "copy", "-c:a", "aac", str(tmp),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"ffmpeg edge-fade failed for {clip.name}:\n{result.stderr.strip()[-1500:]}"
+        )
+    tmp.replace(clip)
 
 
 def mux_music(video: Path, music: Path, volume: float) -> None:
@@ -1655,18 +1692,38 @@ class Pipeline:
         if self.state.is_done(job_id) and not self.force:
             self.summary.sfx_skipped += 1
             logger.info("Skip SFX (done): %s", clip.name)
-            return
+        else:
+            prompt = sound_prompt.strip() or self.config.default_sfx_prompt
+            try:
+                self.audio_client.add_sfx(clip, prompt, duration)
+                self.state.set(job_id, "done")
+                self.summary.sfx_created += 1
+                logger.info("SFX added: %s", clip.name)
+            except Exception as exc:  # noqa: BLE001
+                self.summary.sfx_failed += 1
+                self.state.set(job_id, "failed")
+                self.failed.record(job_id, "sfx", str(exc), clip=str(clip))
+                return  # no audio to fade
 
-        prompt = sound_prompt.strip() or self.config.default_sfx_prompt
+        # Edge-fade is tracked separately so it can be applied to clips that
+        # already have SFX (e.g. from an earlier run) WITHOUT re-paying for it,
+        # and so it runs exactly once per clip.
+        self._fade_clip(clip)
+
+    def _fade_clip(self, clip: Path) -> None:
+        """Apply the boundary edge-fade once; safe to call on any sounded clip."""
+        if self.config.sfx_fade_seconds <= 0:
+            return
+        job_id = f"fade:{clip.name}"
+        if self.state.is_done(job_id) and not self.force:
+            return
         try:
-            self.audio_client.add_sfx(clip, prompt, duration)
+            apply_edge_fades(clip, self.config.sfx_fade_seconds)
             self.state.set(job_id, "done")
-            self.summary.sfx_created += 1
-            logger.info("SFX added: %s", clip.name)
         except Exception as exc:  # noqa: BLE001
-            self.summary.sfx_failed += 1
-            self.state.set(job_id, "failed")
-            self.failed.record(job_id, "sfx", str(exc), clip=str(clip))
+            # A fade failure must not discard the (already generated) SFX; leave
+            # it unmarked so a later run retries.
+            logger.warning("Edge-fade skipped for %s: %s", clip.name, exc)
 
     @staticmethod
     def _clip_name(start: Path, end: Path) -> Path:
