@@ -2,7 +2,7 @@
 
 A local Python pipeline that turns images (or a raw idea) into short, consistent
 1920×1080 video clips using **OpenAI** (image generation/editing + storyboard
-planning) and **KlingAI** (image-to-video).
+planning) and **Higgsfield** (image-to-video).
 
 It produces individual clips between consecutive key frames — **it does not
 combine them**. You assemble the final cut yourself in **Premiere Pro**.
@@ -14,8 +14,9 @@ combine them**. You assemble the final cut yourself in **Premiere Pro**.
 ### Mode A — Image-to-video from your images (default)
 1. Put source images in `input_images/`.
 2. Every image is styled into a consistent 1920×1080 look.
-3. Each **consecutive styled pair** is sent to KlingAI:
-   image 1 = start frame, image 2 = end frame → one 5s or 10s clip.
+3. Each **consecutive styled pair** is sent to Higgsfield: image 1 is the start
+   frame; image 2 is used as the end frame only if your chosen model supports it
+   (see "Start/end frames" below) → one 5s or 10s clip.
 4. `n` images → `n − 1` clips, written to `clips/`.
 
 ### Mode B — Generate from scratch (`--from-scratch`)
@@ -25,7 +26,7 @@ combine them**. You assemble the final cut yourself in **Premiere Pro**.
 3. The plan is saved to `storyboard/storyboard.json` and `storyboard/storyboard.md`,
    then the app **stops and asks you to review/approve it**.
 4. After you approve, it generates every key frame at 1920×1080.
-5. Then it sends consecutive frame pairs to KlingAI → `n − 1` clips.
+5. Then it sends consecutive frame pairs to Higgsfield → `n − 1` clips.
 
 ---
 
@@ -33,7 +34,7 @@ combine them**. You assemble the final cut yourself in **Premiere Pro**.
 
 - Python **3.11+**
 - An OpenAI API key
-- KlingAI access key + secret key
+- Higgsfield credentials (from https://cloud.higgsfield.ai)
 
 ## Setup
 
@@ -57,25 +58,18 @@ cp .env.example .env
 ```env
 OPENAI_API_KEY=sk-...
 
-# Kling auth — official platform uses an Access Key + Secret Key pair:
-KLING_ACCESS_KEY=...
-KLING_SECRET_KEY=...
-# (Third-party resellers may give a single bearer key instead; if so, set
-#  KLING_API_KEY and leave the pair blank.)
-# KLING_API_KEY=
+# Higgsfield auth — use EITHER the single combined key...
+HF_KEY=your-api-key:your-api-secret
+# ...OR the separate pair (leave HF_KEY blank if you use these):
+# HF_API_KEY=your-api-key
+# HF_API_SECRET=your-api-secret
 ```
 
-> **Kling auth (important):** the official Kling Open Platform issues an
-> **Access Key + Secret Key** pair and the app signs a short-lived HS256 JWT from
-> them (sent as `Authorization: Bearer <jwt>`). The **Secret Key is shown only
-> once**, at creation time — the value the console lists afterwards (e.g.
-> `api-key-kling-…`) is the **Access Key**. If you've lost the Secret Key, create
-> a new key and copy both values immediately. Use `api-singapore.klingai.com`
-> (set in `config.json`) for the international API — `api.klingai.com` is the
-> mainland-China host and will return `401` for international keys.
->
-> Auto-detection: if `KLING_API_KEY` is set it's sent verbatim as the Bearer
-> token (reseller mode); otherwise the AK/SK pair is signed into a JWT.
+> **Higgsfield auth:** get your credentials at
+> [cloud.higgsfield.ai](https://cloud.higgsfield.ai). The official
+> `higgsfield-client` SDK reads `HF_KEY` (or `HF_API_KEY` + `HF_API_SECRET`) from
+> the environment — `.env` is loaded automatically. Local images are uploaded to
+> Higgsfield via the SDK, so you don't need to host them yourself.
 
 Keys are loaded from `.env` via `python-dotenv` — they are **never hardcoded**,
 and `.env` is git-ignored.
@@ -83,8 +77,25 @@ and `.env` is git-ignored.
 ### Configure (optional)
 
 Edit `config.json` to change style prompts, motion prompt, default duration,
-model names, the Kling base URL, retry/poll settings, etc. It is validated on
-startup, so typos are caught early.
+the Higgsfield model id, retry settings, etc. It is validated on startup, so
+typos are caught early.
+
+### Start/end frames (important)
+
+The pipeline is built around **consecutive frame pairs** (start → end). However,
+Higgsfield's image-to-video models take a single start `image_url` + a motion
+prompt by default; **end-frame ("last frame") support is model-dependent**.
+
+- **Default:** only the start frame + motion prompt are sent. This works on every
+  image-to-video model. You still get `n − 1` clips; in Mode B the per-transition
+  motion prompt describes the movement toward the next frame.
+- **True start→end transition:** if your chosen model documents an end-frame
+  argument, set `higgsfield_end_frame_field` in `config.json` to that exact field
+  name (e.g. `"end_image_url"`). The pipeline will then upload and pass the end
+  frame too. Browse models and their parameters at
+  [cloud.higgsfield.ai/explore](https://cloud.higgsfield.ai/explore).
+- Pick the model with `higgsfield_model_id` (default `higgsfield-ai/dop/standard`).
+  Add any extra model-specific args via `higgsfield_extra_arguments`.
 
 ---
 
@@ -189,7 +200,7 @@ normalized to exactly 1920×1080), then renders the clips using the
 - Detailed logs for every run are written to `logs/pipeline_<timestamp>.log`.
 
 The pipeline also has built-in retry with exponential backoff for transient API
-errors, and it polls Kling jobs until they complete, fail, or time out.
+errors, and it waits on Higgsfield jobs until they complete, fail, or time out.
 
 ---
 
@@ -209,9 +220,14 @@ Premiere Pro and arrange them on the timeline to build your final video.
 
 ---
 
-## Notes on the Kling client
+## Notes on the Higgsfield client
 
-All KlingAI-specific details (auth/JWT signing, the submit endpoint, the polling
-status fields, and the result download) are isolated in the `KlingClient` class
-in `pipeline.py`, with comments marking each spot that may need adjustment to
-match the **official Kling API docs** if endpoints or field names change.
+All Higgsfield-specific details (auth, image upload, job submission, waiting for
+completion, and result download) are isolated in the `HiggsfieldClient` class in
+`pipeline.py`. It uses the official [`higgsfield-client`](https://pypi.org/project/higgsfield-client/)
+SDK, which handles authentication and uploading local images to hosted URLs.
+The request fields, model id, and end-frame field are driven by `config.json`
+(`higgsfield_model_id`, `higgsfield_end_frame_field`, `higgsfield_extra_arguments`),
+with comments marking each spot that may need adjustment per the
+[Higgsfield API docs](https://docs.higgsfield.ai) if a model expects different
+parameters.

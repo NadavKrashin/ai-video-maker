@@ -9,10 +9,11 @@
   "default_frame_count": 8,
   "openai_image_model": "gpt-image-1",
   "openai_text_model": "gpt-4o",
-  "kling_model": "kling-v1",
-  "kling_base_url": "https://api-singapore.klingai.com",
-  "kling_poll_interval_seconds": 10,
-  "kling_poll_timeout_seconds": 900,
+  "higgsfield_model_id": "higgsfield-ai/dop/standard",
+  "higgsfield_resolution": "",
+  "higgsfield_aspect_ratio": "16:9",
+  "higgsfield_end_frame_field": "",
+  "higgsfield_extra_arguments": {},
   "max_retries": 5,
   "retry_base_delay_seconds": 2.0
 }

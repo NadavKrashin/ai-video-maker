@@ -6,14 +6,15 @@ Two workflows:
 
   Mode A (default): Image-to-video from images you provide in input_images/.
       * Style every image to a consistent 1920x1080 look (OpenAI image edit).
-      * Send each consecutive styled pair to KlingAI (start frame -> end frame)
-        to produce one short clip. n images -> n-1 clips.
+      * Send each consecutive styled pair to Higgsfield to produce one short
+        clip (start frame, plus an optional model-dependent end frame).
+        n images -> n-1 clips.
 
   Mode B (--from-scratch): Generate a video from a raw idea.
       * Ask OpenAI to write a full storyboard (concept, scenes, frames,
         per-frame image prompts, per-transition motion prompts).
       * Save it to storyboard/storyboard.json + .md and STOP for human review.
-      * Only after --approve-storyboard: generate frames, then Kling clips.
+      * Only after --approve-storyboard: generate frames, then Higgsfield clips.
 
 Final clips are NOT combined — the user assembles them in Premiere Pro.
 
@@ -119,10 +120,22 @@ class Config(BaseModel):
     # Model / endpoint settings (safe to edit).
     openai_image_model: str = "gpt-image-1"
     openai_text_model: str = "gpt-4o"
-    kling_model: str = "kling-v1"
-    kling_base_url: str = "https://api.klingai.com"
-    kling_poll_interval_seconds: int = 10
-    kling_poll_timeout_seconds: int = 900
+
+    # Higgsfield (image-to-video) settings.
+    # model_id is the path segment of POST https://platform.higgsfield.ai/{model_id}.
+    # Browse models at https://cloud.higgsfield.ai/explore.
+    higgsfield_model_id: str = "higgsfield-ai/dop/standard"
+    # Optional generation args — only sent when non-empty. Some are model-specific.
+    higgsfield_resolution: str = ""        # e.g. "720p", "1080p"
+    higgsfield_aspect_ratio: str = ""      # e.g. "16:9"
+    # End-frame ("last frame") support is model-dependent and the field name
+    # varies per model. Leave empty to send only the start frame + motion prompt
+    # (works on every image-to-video model). To get a true start->end transition,
+    # set this to the exact end-frame argument name your chosen model documents
+    # (e.g. "end_image_url"); the pipeline will upload the end frame and pass it.
+    higgsfield_end_frame_field: str = ""
+    # Any extra model-specific arguments merged into every request.
+    higgsfield_extra_arguments: dict[str, Any] = Field(default_factory=dict)
 
     # Retry behaviour.
     max_retries: int = 5
@@ -531,165 +544,118 @@ class OpenAIClient:
 
 
 # --------------------------------------------------------------------------- #
-# Kling client (isolated). Image-to-video generation.
+# Higgsfield client (isolated). Image-to-video generation via the official SDK.
 # --------------------------------------------------------------------------- #
 #
-# ALL Kling-specific details are confined to this class. If the official Kling
-# API changes, you should only need to edit the marked sections below:
-#   * _auth_token       -> auth / signing
-#   * submit_image2video-> request endpoint + payload
-#   * _poll             -> status endpoint + status field names
-#   * download          -> result URL field + download
+# ALL Higgsfield-specific details are confined to this class. The official
+# `higgsfield-client` SDK handles auth, file upload (local image -> hosted URL),
+# job submission and polling. Docs: https://docs.higgsfield.ai
 #
-# AUTH MODES (auto-detected from .env):
-#   * API key mode  : set KLING_API_KEY=<single api-key-kling-... value>.
-#                     Sent directly as `Authorization: Bearer <KLING_API_KEY>`.
-#   * AK/SK mode    : set KLING_ACCESS_KEY + KLING_SECRET_KEY. A short-lived
-#                     HS256 JWT is signed and sent as the Bearer token.
-# If both are present, the single API key takes precedence.
+# AUTH (read from .env by the SDK):
+#   * HF_KEY="<api_key>:<api_secret>"   (single combined value), OR
+#   * HF_API_KEY + HF_API_SECRET
+#   Get credentials at https://cloud.higgsfield.ai.
 #
-# Reference: consult the official KlingAI API documentation for exact paths,
-# payload field names, and status values, and adjust accordingly.
+# REQUEST SHAPE (POST https://platform.higgsfield.ai/{model_id}):
+#   The documented image-to-video request takes `image_url` (a hosted URL),
+#   `prompt` (motion prompt) and `duration`. The completed response contains
+#   `video.url`. Start-frame + end-frame ("last frame") interpolation is
+#   MODEL-DEPENDENT — see `higgsfield_end_frame_field` in config.
+#
+# ADJUST IF NEEDED:
+#   * config.higgsfield_model_id          -> which model to call
+#   * _build_arguments()                  -> request field names / extra args
+#   * config.higgsfield_end_frame_field   -> enable a true start->end transition
 # --------------------------------------------------------------------------- #
-class KlingClient:
+class HiggsfieldClient:
     def __init__(self, config: Config) -> None:
         self.config = config
-        self.base_url = config.kling_base_url.rstrip("/")
-        self._api_key = os.environ.get("KLING_API_KEY")
-        self._access_key = os.environ.get("KLING_ACCESS_KEY")
-        self._secret_key = os.environ.get("KLING_SECRET_KEY")
+        self._sdk = None  # lazily imported
+        # Cache uploaded-image URLs so a frame shared by two consecutive clips
+        # is only uploaded once per run.
+        self._upload_cache: dict[Path, str] = {}
 
-    def _require_credentials(self) -> None:
-        if self._api_key:
-            return
-        if self._access_key and self._secret_key:
-            return
-        raise RuntimeError(
-            "No Kling credentials found. Set KLING_API_KEY (single key), or "
-            "KLING_ACCESS_KEY + KLING_SECRET_KEY, in your .env file."
-        )
+    def _ensure_sdk(self):
+        if self._sdk is None:
+            # The SDK reads HF_KEY (or HF_API_KEY + HF_API_SECRET) from the env,
+            # which python-dotenv has already loaded from .env.
+            if not os.environ.get("HF_KEY") and not (
+                os.environ.get("HF_API_KEY") and os.environ.get("HF_API_SECRET")
+            ):
+                raise RuntimeError(
+                    "Higgsfield credentials missing. Set HF_KEY "
+                    '("<api_key>:<api_secret>") or HF_API_KEY + HF_API_SECRET '
+                    "in your .env file."
+                )
+            import higgsfield_client  # imported lazily
 
-    # --- AUTH / SIGNING ---------------------------------------------------- #
-    def _auth_token(self) -> str:
-        """
-        Return the Bearer token for requests.
+            self._sdk = higgsfield_client
+        return self._sdk
 
-        ADJUST IF NEEDED:
-        * Single API key  -> used verbatim.
-        * AK/SK pair      -> signed into an HS256 JWT whose payload contains the
-          access key as `iss`, plus `exp`/`nbf`. If the official docs specify
-          different claims or a different signing method, edit this method only.
-        """
-        self._require_credentials()
-
-        # API key mode: send the key directly.
-        if self._api_key:
-            return self._api_key
-
-        # AK/SK mode: sign a short-lived JWT.
-        import jwt  # PyJWT, imported lazily
-
-        now = int(time.time())
-        payload = {
-            "iss": self._access_key,
-            "exp": now + 1800,  # valid 30 minutes
-            "nbf": now - 5,
-        }
-        headers = {"alg": "HS256", "typ": "JWT"}
-        token = jwt.encode(payload, self._secret_key, algorithm="HS256", headers=headers)
-        return token if isinstance(token, str) else token.decode("utf-8")
-
-    def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self._auth_token()}",
-            "Content-Type": "application/json",
-        }
-
-    @staticmethod
-    def _encode_image(path: Path) -> str:
-        """Kling accepts base64-encoded images (or public URLs)."""
-        return base64.b64encode(path.read_bytes()).decode("utf-8")
-
-    # --- SUBMIT ------------------------------------------------------------ #
-    def submit_image2video(
-        self,
-        start_frame: Path,
-        end_frame: Path,
-        motion_prompt: str,
-        duration: int,
-    ) -> str:
-        """
-        Submit a start-frame + end-frame image-to-video job. Returns task_id.
-
-        ADJUST IF NEEDED: endpoint path and payload field names below follow the
-        commonly documented Kling image2video API (`image` = start frame,
-        `image_tail` = end frame). Verify against the official docs.
-        """
-        import requests
-
-        url = f"{self.base_url}/v1/videos/image2video"
-        payload = {
-            "model_name": self.config.kling_model,
-            "mode": "std",
-            "duration": str(duration),
-            "image": self._encode_image(start_frame),       # start frame
-            "image_tail": self._encode_image(end_frame),    # end frame
-            "prompt": motion_prompt,
-        }
+    # --- UPLOAD ------------------------------------------------------------ #
+    def _upload(self, path: Path) -> str:
+        """Upload a local image and return its hosted URL (cached per run)."""
+        if path in self._upload_cache:
+            return self._upload_cache[path]
+        sdk = self._ensure_sdk()
 
         def _call() -> str:
-            resp = requests.post(
-                url, headers=self._headers(), json=payload, timeout=60
-            )
-            resp.raise_for_status()
-            body = resp.json()
-            # ADJUST IF NEEDED: task id location in the response.
-            task_id = (body.get("data") or {}).get("task_id") or body.get("task_id")
-            if not task_id:
-                raise RuntimeError(f"No task_id in Kling response: {body}")
-            return task_id
+            return sdk.upload_file(path)
+
+        url = with_retries(
+            _call,
+            max_retries=self.config.max_retries,
+            base_delay=self.config.retry_base_delay_seconds,
+            description=f"Higgsfield upload ({path.name})",
+        )
+        self._upload_cache[path] = url
+        return url
+
+    # --- BUILD REQUEST ----------------------------------------------------- #
+    def _build_arguments(
+        self,
+        start_url: str,
+        end_url: Optional[str],
+        motion_prompt: str,
+        duration: int,
+    ) -> dict[str, Any]:
+        args: dict[str, Any] = {
+            "image_url": start_url,      # start frame
+            "prompt": motion_prompt,     # motion prompt
+            "duration": duration,
+        }
+        # End frame is only sent when the model documents a field for it.
+        if end_url and self.config.higgsfield_end_frame_field:
+            args[self.config.higgsfield_end_frame_field] = end_url
+        if self.config.higgsfield_resolution:
+            args["resolution"] = self.config.higgsfield_resolution
+        if self.config.higgsfield_aspect_ratio:
+            args["aspect_ratio"] = self.config.higgsfield_aspect_ratio
+        args.update(self.config.higgsfield_extra_arguments)
+        return args
+
+    # --- SUBMIT + WAIT ----------------------------------------------------- #
+    def _generate_video_url(self, arguments: dict[str, Any]) -> str:
+        """Submit the job, wait for completion, and return the video URL."""
+        sdk = self._ensure_sdk()
+
+        def _call() -> str:
+            # subscribe() submits and blocks until the job reaches a terminal
+            # state, returning the result dict (or raising on failure/NSFW).
+            result = sdk.subscribe(self.config.higgsfield_model_id, arguments)
+            video = (result or {}).get("video") or {}
+            url = video.get("url")
+            if not url:
+                raise RuntimeError(
+                    f"Higgsfield finished without a video URL: {result}"
+                )
+            return url
 
         return with_retries(
             _call,
             max_retries=self.config.max_retries,
             base_delay=self.config.retry_base_delay_seconds,
-            description=f"Kling submit ({start_frame.name}->{end_frame.name})",
-        )
-
-    # --- POLL -------------------------------------------------------------- #
-    def _poll(self, task_id: str) -> str:
-        """
-        Poll until the job succeeds (returns the video URL), fails, or times out.
-
-        ADJUST IF NEEDED: status endpoint path and the status string values
-        ("succeed" / "failed") below follow the documented Kling API.
-        """
-        import requests
-
-        url = f"{self.base_url}/v1/videos/image2video/{task_id}"
-        deadline = time.time() + self.config.kling_poll_timeout_seconds
-
-        while time.time() < deadline:
-            resp = requests.get(url, headers=self._headers(), timeout=60)
-            resp.raise_for_status()
-            data = (resp.json().get("data") or {})
-            status = data.get("task_status", "")
-            logger.debug("Kling task %s status=%s", task_id, status)
-
-            if status == "succeed":
-                videos = (data.get("task_result") or {}).get("videos") or []
-                if not videos:
-                    raise RuntimeError(f"Kling job {task_id} succeeded but no video URL")
-                return videos[0]["url"]  # ADJUST IF NEEDED: result URL field
-            if status == "failed":
-                raise RuntimeError(
-                    f"Kling job {task_id} failed: {data.get('task_status_msg', '')}"
-                )
-            time.sleep(self.config.kling_poll_interval_seconds)
-
-        raise TimeoutError(
-            f"Kling job {task_id} did not finish within "
-            f"{self.config.kling_poll_timeout_seconds}s"
+            description="Higgsfield generate",
         )
 
     # --- DOWNLOAD ---------------------------------------------------------- #
@@ -711,7 +677,7 @@ class KlingClient:
             _call,
             max_retries=self.config.max_retries,
             base_delay=self.config.retry_base_delay_seconds,
-            description=f"Kling download -> {dst.name}",
+            description=f"Higgsfield download -> {dst.name}",
         )
 
     # --- High-level convenience -------------------------------------------- #
@@ -723,9 +689,21 @@ class KlingClient:
         duration: int,
         dst: Path,
     ) -> None:
-        task_id = self.submit_image2video(start_frame, end_frame, motion_prompt, duration)
-        logger.info("Kling job submitted: %s (task_id=%s)", dst.name, task_id)
-        video_url = self._poll(task_id)
+        start_url = self._upload(start_frame)
+        end_url = (
+            self._upload(end_frame)
+            if self.config.higgsfield_end_frame_field
+            else None
+        )
+        arguments = self._build_arguments(start_url, end_url, motion_prompt, duration)
+        logger.info(
+            "Higgsfield job: %s (model=%s, start=%s%s)",
+            dst.name,
+            self.config.higgsfield_model_id,
+            start_frame.name,
+            f", end={end_frame.name}" if end_url else "",
+        )
+        video_url = self._generate_video_url(arguments)
         self.download(video_url, dst)
 
 
@@ -772,7 +750,7 @@ class Pipeline:
         self.failed = FailedJobStore(FAILED_JOBS_FILE)
         self.summary = RunSummary()
         self.openai = OpenAIClient(config)
-        self.kling = KlingClient(config)
+        self.higgsfield = HiggsfieldClient(config)
 
     # ------------------------------ Mode A ------------------------------- #
     def run_mode_a(self) -> None:
@@ -997,7 +975,7 @@ class Pipeline:
             return
 
         for start, end, motion, duration in tqdm(
-            pairs, desc="Generating Kling clips", unit="clip"
+            pairs, desc="Generating Higgsfield clips", unit="clip"
         ):
             dst = self._clip_name(start, end)
             job_id = f"clip:{dst.name}"
@@ -1026,7 +1004,7 @@ class Pipeline:
                 continue
 
             try:
-                self.kling.generate_clip(start, end, motion, duration, dst)
+                self.higgsfield.generate_clip(start, end, motion, duration, dst)
                 self.state.set(job_id, "done", output=str(dst))
                 self.summary.videos_created += 1
                 logger.info("Clip ready: %s", dst.name)
@@ -1108,7 +1086,7 @@ def write_storyboard_markdown(storyboard: Storyboard, path: Path) -> None:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="pipeline.py",
-        description="Local AI video maker (image-to-video via OpenAI + KlingAI).",
+        description="Local AI video maker (image-to-video via OpenAI + Higgsfield).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("--config", default="config.json", help="Path to config JSON.")
