@@ -34,7 +34,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -204,6 +206,12 @@ class Config(BaseModel):
     music_volume: float = 0.25              # 0..1, ducked under the SFX
     music_extra_arguments: dict[str, Any] = Field(default_factory=dict)
 
+    # How many image/clip/SFX API jobs to run at once. These steps are
+    # I/O-bound (waiting on the provider), so a small thread pool runs them in
+    # parallel. Raise for speed; lower to 1 if you hit provider rate limits
+    # (transient 429s are already retried with backoff). CLI: --concurrency.
+    max_parallel_requests: int = 4
+
     # Retry behaviour.
     max_retries: int = 5
     retry_base_delay_seconds: float = 2.0
@@ -281,6 +289,9 @@ class StateStore:
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        # Guards both the in-memory dict and the file write so parallel workers
+        # can record job status without corrupting state.json.
+        self._lock = threading.Lock()
         self._data: dict[str, Any] = {"jobs": {}}
         if path.exists():
             try:
@@ -290,19 +301,21 @@ class StateStore:
                 logger.warning("Could not parse %s; starting fresh.", path)
 
     def status(self, job_id: str) -> Optional[str]:
-        entry = self._data["jobs"].get(job_id)
-        return entry.get("status") if entry else None
+        with self._lock:
+            entry = self._data["jobs"].get(job_id)
+            return entry.get("status") if entry else None
 
     def is_done(self, job_id: str) -> bool:
         return self.status(job_id) == "done"
 
     def set(self, job_id: str, status: str, **extra: Any) -> None:
-        self._data["jobs"][job_id] = {
-            "status": status,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            **extra,
-        }
-        self._flush()
+        with self._lock:
+            self._data["jobs"][job_id] = {
+                "status": status,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                **extra,
+            }
+            self._flush()
 
     def _flush(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -316,18 +329,20 @@ class FailedJobStore:
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        self._lock = threading.Lock()
         self.failures: list[dict[str, Any]] = []
 
     def record(self, job_id: str, kind: str, error: str, **extra: Any) -> None:
-        self.failures.append(
-            {
-                "job_id": job_id,
-                "kind": kind,
-                "error": error,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                **extra,
-            }
-        )
+        with self._lock:
+            self.failures.append(
+                {
+                    "job_id": job_id,
+                    "kind": kind,
+                    "error": error,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    **extra,
+                }
+            )
         logger.error("FAILED [%s] %s: %s", kind, job_id, error)
 
     def flush(self) -> None:
@@ -1376,6 +1391,44 @@ class Pipeline:
             self.audio_enabled = (config.audio_mode or "none").lower() == "post"
         # Resolved at storyboard-approval time (Mode B); falls back to config.
         self._storyboard_music_prompt: str = ""
+        # Concurrency for the I/O-bound generation steps.
+        self.concurrency: int = max(
+            1, args.concurrency or config.max_parallel_requests
+        )
+        # Guards summary counters when workers run in parallel (StateStore and
+        # FailedJobStore guard themselves).
+        self._lock = threading.Lock()
+
+    def _map_parallel(
+        self,
+        items: list[Any],
+        worker: Callable[[Any], None],
+        desc: str,
+        unit: str = "item",
+    ) -> None:
+        """Run `worker` over `items`, in parallel unless dry-run/concurrency=1.
+
+        Workers must handle (and record) their own errors; any unexpected
+        exception is logged so one bad item can't sink the whole batch.
+        """
+        if not items:
+            return
+        workers = 1 if self.dry_run else self.concurrency
+        if workers <= 1:
+            for item in tqdm(items, desc=desc, unit=unit):
+                worker(item)
+            return
+
+        logger.info("%s: %d job(s), %d in parallel", desc, len(items), workers)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(worker, item) for item in items]
+            for fut in tqdm(
+                as_completed(futures), total=len(futures), desc=desc, unit=unit
+            ):
+                try:
+                    fut.result()
+                except Exception as exc:  # noqa: BLE001 - workers self-report
+                    logger.error("Unexpected worker error: %s", exc)
 
     # ------------------------------ Mode A ------------------------------- #
     def run_mode_a(self) -> None:
@@ -1419,37 +1472,45 @@ class Pipeline:
 
     def _style_images(self, images: list[Path]) -> list[Path]:
         style_prompt = self.args.style_prompt or self.config.style_prompt
-        styled: list[Path] = []
+        styled = [
+            STYLED_IMAGES_DIR / f"{i:03d}_styled.png"
+            for i in range(1, len(images) + 1)
+        ]
 
-        for idx, src in enumerate(
-            tqdm(images, desc="Styling images", unit="img"), start=1
-        ):
-            dst = STYLED_IMAGES_DIR / f"{idx:03d}_styled.png"
-            styled.append(dst)
+        def work(job: tuple[int, Path]) -> None:
+            idx, src = job
+            dst = styled[idx - 1]
             job_id = f"style:{dst.name}"
 
             if dst.exists() and not self.force:
-                self.summary.styled_skipped += 1
+                with self._lock:
+                    self.summary.styled_skipped += 1
                 logger.info("Skip styled (done): %s", dst.name)
-                continue
+                return
 
             if self.dry_run:
                 logger.info("[dry-run] would style %s -> %s", src.name, dst.name)
-                self.summary.styled_created += 1
-                continue
+                with self._lock:
+                    self.summary.styled_created += 1
+                return
 
             try:
                 self.openai.style_image(src, style_prompt, dst)
                 if not verify_dimensions(dst, self.config.target_width, self.config.target_height):
                     raise RuntimeError(f"{dst.name} is not {self.config.target_width}x{self.config.target_height}")
-                self.state.set(job_id, "done", output=str(dst))
-                self.summary.styled_created += 1
+                with self._lock:
+                    self.state.set(job_id, "done", output=str(dst))
+                    self.summary.styled_created += 1
                 logger.info("Styled: %s", dst.name)
             except Exception as exc:  # noqa: BLE001
-                self.summary.styled_failed += 1
-                self.state.set(job_id, "failed")
-                self.failed.record(job_id, "style", str(exc), source=str(src))
+                with self._lock:
+                    self.summary.styled_failed += 1
+                    self.state.set(job_id, "failed")
+                    self.failed.record(job_id, "style", str(exc), source=str(src))
 
+        self._map_parallel(
+            list(enumerate(images, start=1)), work, "Styling images", "img"
+        )
         return styled
 
     # ------------------------------ Mode B ------------------------------- #
@@ -1571,16 +1632,15 @@ class Pipeline:
         return derived
 
     def _generate_frames(self, storyboard: Storyboard) -> None:
-        for frame in tqdm(
-            storyboard.frames, desc="Generating frames", unit="frame"
-        ):
+        def work(frame: Frame) -> None:
             dst = PROJECT_ROOT / frame.output_path
             job_id = f"frame:{frame.id}"
 
             if dst.exists() and not self.force:
-                self.summary.styled_skipped += 1
+                with self._lock:
+                    self.summary.styled_skipped += 1
                 logger.info("Skip frame (done): %s", dst.name)
-                continue
+                return
 
             # Reinforce style consistency in every prompt.
             full_prompt = (
@@ -1598,20 +1658,27 @@ class Pipeline:
 
             if self.dry_run:
                 logger.info("[dry-run] would generate frame %s -> %s", frame.id, dst.name)
-                self.summary.styled_created += 1
-                continue
+                with self._lock:
+                    self.summary.styled_created += 1
+                return
 
             try:
                 self.openai.generate_image(full_prompt, dst)
                 if not verify_dimensions(dst, self.config.target_width, self.config.target_height):
                     raise RuntimeError(f"{dst.name} is not {self.config.target_width}x{self.config.target_height}")
-                self.state.set(job_id, "done", output=str(dst))
-                self.summary.styled_created += 1
+                with self._lock:
+                    self.state.set(job_id, "done", output=str(dst))
+                    self.summary.styled_created += 1
                 logger.info("Generated frame: %s", dst.name)
             except Exception as exc:  # noqa: BLE001
-                self.summary.styled_failed += 1
-                self.state.set(job_id, "failed")
-                self.failed.record(job_id, "frame", str(exc), frame_id=frame.id)
+                with self._lock:
+                    self.summary.styled_failed += 1
+                    self.state.set(job_id, "failed")
+                    self.failed.record(job_id, "frame", str(exc), frame_id=frame.id)
+
+        self._map_parallel(
+            list(storyboard.frames), work, "Generating frames", "frame"
+        )
 
     # ------------------------- shared video step ------------------------- #
     def _motion_prompt(self) -> str:
@@ -1633,9 +1700,8 @@ class Pipeline:
             logger.warning("No transition pairs to render.")
             return
 
-        for start, end, motion, duration, sound_prompt in tqdm(
-            pairs, desc="Generating clips", unit="clip"
-        ):
+        def work(pair: tuple[Path, Path, str, int, str]) -> None:
+            start, end, motion, duration, sound_prompt = pair
             dst = self._clip_name(start, end)
             job_id = f"clip:{dst.name}"
 
@@ -1646,63 +1712,73 @@ class Pipeline:
                     "[dry-run] would render %s (%ss): %s -> %s | motion=%r",
                     dst.name, duration, start.name, end.name, motion,
                 )
-                self.summary.videos_created += 1
+                with self._lock:
+                    self.summary.videos_created += 1
                 if self.audio_enabled:
                     logger.info(
                         "[dry-run] would add SFX to %s | sound=%r",
                         dst.name, sound_prompt or self.config.default_sfx_prompt,
                     )
-                continue
+                return
 
             if dst.exists() and not self.force:
-                self.summary.videos_skipped += 1
+                with self._lock:
+                    self.summary.videos_skipped += 1
                 logger.info("Skip clip (done): %s", dst.name)
             else:
                 if not start.exists() or not end.exists():
-                    self.summary.videos_failed += 1
-                    self.failed.record(
-                        job_id, "clip",
-                        f"Missing frame(s): {start.name} / {end.name}",
-                    )
-                    continue
+                    with self._lock:
+                        self.summary.videos_failed += 1
+                        self.failed.record(
+                            job_id, "clip",
+                            f"Missing frame(s): {start.name} / {end.name}",
+                        )
+                    return
                 try:
                     self.video_client.generate_clip(
                         start, end, motion, duration, dst
                     )
-                    self.state.set(job_id, "done", output=str(dst))
-                    self.summary.videos_created += 1
+                    with self._lock:
+                        self.state.set(job_id, "done", output=str(dst))
+                        self.summary.videos_created += 1
                     logger.info("Clip ready: %s", dst.name)
                 except Exception as exc:  # noqa: BLE001
-                    self.summary.videos_failed += 1
-                    self.state.set(job_id, "failed")
-                    self.failed.record(
-                        job_id, "clip", str(exc),
-                        start=str(start), end=str(end),
-                    )
-                    continue
+                    with self._lock:
+                        self.summary.videos_failed += 1
+                        self.state.set(job_id, "failed")
+                        self.failed.record(
+                            job_id, "clip", str(exc),
+                            start=str(start), end=str(end),
+                        )
+                    return
 
             # Per-clip SFX/ambient sound (replaces the clip with an audio-bearing
             # version). Tracked separately so it resumes independently of video.
             if self.audio_enabled and dst.exists():
                 self._add_sfx(dst, sound_prompt, duration)
 
+        self._map_parallel(list(pairs), work, "Generating clips", "clip")
+
     def _add_sfx(self, clip: Path, sound_prompt: str, duration: int) -> None:
         """Run the video->audio model on `clip`, replacing it with a sounded one."""
         job_id = f"sfx:{clip.name}"
         if self.state.is_done(job_id) and not self.force:
-            self.summary.sfx_skipped += 1
+            with self._lock:
+                self.summary.sfx_skipped += 1
             logger.info("Skip SFX (done): %s", clip.name)
         else:
             prompt = sound_prompt.strip() or self.config.default_sfx_prompt
             try:
                 self.audio_client.add_sfx(clip, prompt, duration)
-                self.state.set(job_id, "done")
-                self.summary.sfx_created += 1
+                with self._lock:
+                    self.state.set(job_id, "done")
+                    self.summary.sfx_created += 1
                 logger.info("SFX added: %s", clip.name)
             except Exception as exc:  # noqa: BLE001
-                self.summary.sfx_failed += 1
-                self.state.set(job_id, "failed")
-                self.failed.record(job_id, "sfx", str(exc), clip=str(clip))
+                with self._lock:
+                    self.summary.sfx_failed += 1
+                    self.state.set(job_id, "failed")
+                    self.failed.record(job_id, "sfx", str(exc), clip=str(clip))
                 return  # no audio to fade
 
         # Edge-fade is tracked separately so it can be applied to clips that
@@ -1820,12 +1896,14 @@ class Pipeline:
             except SystemExit:
                 logger.warning("Could not read %s; using default SFX prompt.", sb_path)
 
-        for clip in tqdm(clips, desc="Adding clip SFX", unit="clip"):
+        def work(clip: Path) -> None:
             if self.dry_run:
                 logger.info("[dry-run] would add SFX to %s", clip.name)
-                continue
+                return
             duration = int(round(ffprobe_duration(clip) or self.duration))
             self._add_sfx(clip, sound_map.get(clip.name, ""), duration)
+
+        self._map_parallel(list(clips), work, "Adding clip SFX", "clip")
 
         # Rebuild the final video so the new audio is included, then add music.
         self._combine_clips(force_rebuild=True)
@@ -1940,6 +2018,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Override the background-music prompt for this run.")
     p.add_argument("--duration", type=int, choices=sorted(VALID_DURATIONS),
                    help="Clip duration in seconds (5 or 10).")
+    p.add_argument("--concurrency", type=int, default=None,
+                   help="How many image/clip/SFX API jobs to run in parallel "
+                        "(overrides config.max_parallel_requests). 1 = sequential.")
     p.add_argument("--motion-prompt", default=None,
                    help="Override the global motion prompt.")
     p.add_argument("--style-prompt", default=None,

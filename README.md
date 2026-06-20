@@ -245,6 +245,7 @@ normalized to exactly 1920×1080), then renders the clips using the
 | `--audio-only` | Add SFX + music to existing `clips/` and rebuild `output/final_video.mp4` (no generation). |
 | `--music-prompt "..."` | Override the background-music prompt for this run. |
 | `--duration 5` / `--duration 10` | Force every clip to this length. Omit in Mode B to let clips mix 5s/10s. |
+| `--concurrency N` | Run N image/clip/SFX API jobs in parallel (overrides `max_parallel_requests`). `1` = sequential. |
 | `--motion-prompt "..."` | Override the global/per-transition motion prompt. |
 | `--style-prompt "..."` | Override the global style prompt (Mode A). |
 | `--idea "..."` | The video idea (Mode B). |
@@ -254,6 +255,28 @@ normalized to exactly 1920×1080), then renders the clips using the
 | `--create-storyboard` | Mode B: create storyboard and stop. |
 | `--approve-storyboard` | Mode B: generate after review. |
 | `--storyboard-file ...` | Storyboard JSON path for approval. |
+
+---
+
+## Parallelism (speed)
+
+Image styling, frame generation, and clip+SFX rendering are I/O-bound (most of
+the time is spent waiting on the provider), so they run **in parallel** across a
+small thread pool. Control it with `max_parallel_requests` in `config.json`
+(default `4`) or `--concurrency N` per run:
+
+```bash
+python pipeline.py --concurrency 8     # render up to 8 clips at once
+python pipeline.py --concurrency 1     # fully sequential (old behaviour)
+```
+
+Each clip's SFX and edge-fade run inside that clip's worker, so audio is
+parallelised too. Job state (`logs/state.json`) and failure tracking are
+thread-safe, so resume/skip and `failed_jobs.json` work exactly as before.
+Higher concurrency is faster but more likely to hit provider **rate limits**;
+transient 429s are retried with backoff, but if you see a lot of them, lower the
+number. Dry-runs always run sequentially so the planned-work log stays ordered.
+The final `ffmpeg` concatenation and the music bed run once, after all clips.
 
 ---
 

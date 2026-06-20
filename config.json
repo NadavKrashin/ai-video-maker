@@ -36,6 +36,7 @@
   "music_prompt": "Soft cinematic instrumental underscore, gentle and warm, no vocals.",
   "music_volume": 0.25,
   "music_extra_arguments": {},
+  "max_parallel_requests": 4,
   "max_retries": 5,
   "retry_base_delay_seconds": 2.0
 }
