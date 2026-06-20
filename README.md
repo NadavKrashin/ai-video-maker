@@ -290,6 +290,14 @@ The final `ffmpeg` concatenation and the music bed run once, after all clips.
   error message and context. Fix the cause (e.g. a bad prompt, rate limit) and
   re-run; only the unfinished/failed jobs will be retried.
 - Detailed logs for every run are written to `logs/pipeline_<timestamp>.log`.
+- **Missing frames are bridged automatically.** If a frame fails to generate
+  (e.g. frame 4), the clip step doesn't leave a hole — it pairs the nearest
+  surviving neighbours directly (…`3→5`…) so the final video stays continuous.
+  The bridged clip is named after the frames it actually joins (`003_to_005.mp4`)
+  and inherits the motion/sound/duration of the surviving start frame's
+  transition. It's logged as a warning so you know it happened; fix the frame and
+  re-run to get the original `3→4`/`4→5` clips back. (A bridged `3→5` is a bigger
+  jump, so that one clip interpolates a larger change.)
 
 The pipeline also has built-in retry with exponential backoff for transient API
 errors, and it waits on provider jobs until they complete, fail, or time out.

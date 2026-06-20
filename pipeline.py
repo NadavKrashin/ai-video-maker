@@ -1466,7 +1466,7 @@ class Pipeline:
             return
 
         self._generate_clips(
-            [(styled[i], styled[i + 1]) for i in range(len(styled) - 1)],
+            self._bridge_pairs(styled),
             motion_prompt=self._motion_prompt(),
         )
 
@@ -1598,19 +1598,26 @@ class Pipeline:
             logger.info("--only-style set: skipping video generation.")
             return
 
-        # Build transition pairs from the storyboard (per-transition motion + sound).
-        pairs: list[tuple[Path, Path, str, int, str]] = []
+        # Pair surviving frames in order, bridging over any that failed. Each
+        # pair takes its motion/sound/duration from the transition leaving its
+        # start frame (for a bridged pair, that frame's original outgoing one).
         transitions = storyboard.transitions or self._derive_transitions(storyboard)
-        for tr in transitions:
-            pairs.append(
-                (
-                    PROJECT_ROOT / tr.start_frame,
-                    PROJECT_ROOT / tr.end_frame,
-                    self.args.motion_prompt or tr.motion_prompt,
-                    self.args.duration or tr.duration,
-                    tr.sound_prompt,
-                )
+        tr_by_start: dict[str, Transition] = {
+            (PROJECT_ROOT / tr.start_frame).name: tr for tr in transitions
+        }
+        frames_ordered = [PROJECT_ROOT / f.output_path for f in storyboard.frames]
+
+        pairs: list[tuple[Path, Path, str, int, str]] = []
+        for a, b in self._bridge_pairs(frames_ordered):
+            tr = tr_by_start.get(a.name)
+            motion = self.args.motion_prompt or (
+                tr.motion_prompt if tr else storyboard.style
             )
+            duration = self.args.duration or (
+                tr.duration if tr else storyboard.duration_per_clip
+            )
+            sound = tr.sound_prompt if tr else ""
+            pairs.append((a, b, motion, duration, sound))
         self._generate_clips_with_prompts(pairs)
 
     @staticmethod
@@ -1683,6 +1690,28 @@ class Pipeline:
     # ------------------------- shared video step ------------------------- #
     def _motion_prompt(self) -> str:
         return self.args.motion_prompt or self.config.motion_prompt
+
+    def _bridge_pairs(self, ordered: list[Path]) -> list[tuple[Path, Path]]:
+        """Pair consecutive frames, bridging over any that are missing on disk.
+
+        If a frame failed to generate, it is skipped and its nearest existing
+        neighbours are paired directly (e.g. frame 4 missing -> ...3->5...), so
+        the final video stays continuous instead of leaving a gap. During a
+        dry-run the files don't exist yet, so the naive full pairing is used for
+        the plan.
+        """
+        if self.dry_run:
+            existing = list(ordered)
+        else:
+            existing = [p for p in ordered if p.exists()]
+            missing = len(ordered) - len(existing)
+            if missing:
+                logger.warning(
+                    "%d frame(s) missing; bridging over them by pairing the "
+                    "nearest existing neighbours so the video stays continuous.",
+                    missing,
+                )
+        return [(existing[i], existing[i + 1]) for i in range(len(existing) - 1)]
 
     def _generate_clips(
         self, pairs: list[tuple[Path, Path]], motion_prompt: str
