@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-video-maker"
+version = "0.1.0"
+description = "Local AI video maker: image-to-video via OpenAI + fal/Higgsfield."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.30.0",
+    "Pillow>=10.0.0",
+    "python-dotenv>=1.0.0",
+    "tqdm>=4.66.0",
+    "pydantic>=2.6.0",
+    "requests>=2.31.0",
+    "fal-client>=0.4.0",
+    "higgsfield-client>=0.1.0",
+]
+
+[project.scripts]
+ai-video-maker = "ai_video_maker.cli:main"
+
+[tool.setuptools]
+packages = ["ai_video_maker", "ai_video_maker.media", "ai_video_maker.clients"]

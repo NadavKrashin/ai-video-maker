@@ -448,8 +448,9 @@ existing `music.mp3` is reused). Set `sfx_fade_seconds: 0` to disable.
 
 ## Notes on the video clients
 
-Both providers share a base class (`SubscribeVideoClient`) in `pipeline.py`,
-with thin subclasses `FalClient` and `HiggsfieldClient` (selected by
+Both providers share a base class (`SubscribeVideoClient`) in
+`ai_video_maker/clients/video.py`, with thin subclasses `FalClient` and
+`HiggsfieldClient` (selected by
 `make_video_client` via `video_provider`). Each uses that provider's official
 SDK — [`fal-client`](https://pypi.org/project/fal-client/) /
 [`higgsfield-client`](https://pypi.org/project/higgsfield-client/) — which handle
@@ -458,3 +459,41 @@ field names, duration format, and extra arguments are all driven by `config.json
 (`fal_*` / `higgsfield_*`), so swapping models or providers needs no code
 changes. See the [fal docs](https://docs.fal.ai) /
 [Higgsfield docs](https://docs.higgsfield.ai) for model-specific parameters.
+
+---
+
+## Code layout
+
+The pipeline lives in the `ai_video_maker/` package; `pipeline.py` at the repo
+root is a thin shim that calls into it, so every `python pipeline.py …` command
+above works unchanged. After `pip install -e .` you can also run the
+`ai-video-maker` console command.
+
+```
+ai_video_maker/
+  cli.py             # argument parsing + main() entry point
+  config.py          # Config — validated config.json (pydantic)
+  workspace.py       # Workspace — all per-movie paths, derived from one base dir
+  options.py         # RunOptions — one run's choices (CLI flags or an API request)
+  runner.py          # Pipeline — orchestration (Mode A / Mode B / combine / audio)
+  summary.py         # RunSummary — end-of-run report
+  models.py          # Frame / Transition / Storyboard
+  storyboard_md.py   # storyboard -> markdown for review
+  state.py           # StateStore (resume) + FailedJobStore
+  retry.py           # exponential-backoff retry helper
+  constants.py       # shared constants
+  media/
+    images.py        # Pillow normalisation + image listing
+    ffmpeg.py        # concat, ffprobe, edge fades, music mux
+  clients/
+    openai_client.py # image generation/editing + storyboard text
+    video.py         # fal / Higgsfield image-to-video clients
+    audio.py         # fal SFX + music
+pipeline.py          # backwards-compatible entry-point shim
+pyproject.toml       # package metadata, deps, `ai-video-maker` console script
+```
+
+The pipeline is built from three explicit inputs — `Config`, `Workspace`, and
+`RunOptions` — and reads no global state, so the same `Pipeline(config,
+workspace, options)` orchestration can later be driven by an API instead of the
+CLI (each request builds its own `Workspace` + `RunOptions`).
