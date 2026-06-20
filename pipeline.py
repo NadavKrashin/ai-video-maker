@@ -54,14 +54,21 @@ from tqdm import tqdm
 # Paths & constants
 # --------------------------------------------------------------------------- #
 PROJECT_ROOT = Path(__file__).resolve().parent
-INPUT_IMAGES_DIR = PROJECT_ROOT / "input_images"
-GENERATED_FRAMES_DIR = PROJECT_ROOT / "generated_frames"
-STYLED_IMAGES_DIR = PROJECT_ROOT / "styled_images"
-STORYBOARD_DIR = PROJECT_ROOT / "storyboard"
-CLIPS_DIR = PROJECT_ROOT / "clips"
-OUTPUT_DIR = PROJECT_ROOT / "output"
-LOGS_DIR = PROJECT_ROOT / "logs"
-FAILED_JOBS_DIR = PROJECT_ROOT / "failed_jobs"
+PROJECTS_DIR = PROJECT_ROOT / "projects"
+
+# All per-movie artifacts live under WORKSPACE. By default that is PROJECT_ROOT
+# (the original top-level layout). With --project NAME it becomes
+# projects/NAME/, so each movie gets its own frames/clips/output/state and they
+# never collide. The dir constants below are recomputed by configure_workspace().
+WORKSPACE = PROJECT_ROOT
+INPUT_IMAGES_DIR = WORKSPACE / "input_images"
+GENERATED_FRAMES_DIR = WORKSPACE / "generated_frames"
+STYLED_IMAGES_DIR = WORKSPACE / "styled_images"
+STORYBOARD_DIR = WORKSPACE / "storyboard"
+CLIPS_DIR = WORKSPACE / "clips"
+OUTPUT_DIR = WORKSPACE / "output"
+LOGS_DIR = WORKSPACE / "logs"
+FAILED_JOBS_DIR = WORKSPACE / "failed_jobs"
 
 FINAL_VIDEO = OUTPUT_DIR / "final_video.mp4"
 MUSIC_FILE = OUTPUT_DIR / "music.mp3"
@@ -84,6 +91,45 @@ ALL_DIRS = [
     LOGS_DIR,
     FAILED_JOBS_DIR,
 ]
+
+
+def configure_workspace(base: Path) -> None:
+    """Point every per-movie path at `base`, isolating one movie's artifacts.
+
+    Called once at startup. `base` is PROJECT_ROOT by default, or
+    projects/<name>/ when --project is used. `.env` and config.json are NOT
+    moved — they stay shared at the top level.
+    """
+    global WORKSPACE, INPUT_IMAGES_DIR, GENERATED_FRAMES_DIR, STYLED_IMAGES_DIR
+    global STORYBOARD_DIR, CLIPS_DIR, OUTPUT_DIR, LOGS_DIR, FAILED_JOBS_DIR
+    global FINAL_VIDEO, MUSIC_FILE, STATE_FILE, FAILED_JOBS_FILE
+    global DEFAULT_STORYBOARD_JSON, STORYBOARD_MD, ALL_DIRS
+
+    WORKSPACE = base
+    INPUT_IMAGES_DIR = base / "input_images"
+    GENERATED_FRAMES_DIR = base / "generated_frames"
+    STYLED_IMAGES_DIR = base / "styled_images"
+    STORYBOARD_DIR = base / "storyboard"
+    CLIPS_DIR = base / "clips"
+    OUTPUT_DIR = base / "output"
+    LOGS_DIR = base / "logs"
+    FAILED_JOBS_DIR = base / "failed_jobs"
+    FINAL_VIDEO = OUTPUT_DIR / "final_video.mp4"
+    MUSIC_FILE = OUTPUT_DIR / "music.mp3"
+    STATE_FILE = LOGS_DIR / "state.json"
+    FAILED_JOBS_FILE = FAILED_JOBS_DIR / "failed_jobs.json"
+    DEFAULT_STORYBOARD_JSON = STORYBOARD_DIR / "storyboard.json"
+    STORYBOARD_MD = STORYBOARD_DIR / "storyboard.md"
+    ALL_DIRS = [
+        INPUT_IMAGES_DIR,
+        GENERATED_FRAMES_DIR,
+        STYLED_IMAGES_DIR,
+        STORYBOARD_DIR,
+        CLIPS_DIR,
+        OUTPUT_DIR,
+        LOGS_DIR,
+        FAILED_JOBS_DIR,
+    ]
 
 T = TypeVar("T")
 logger = logging.getLogger("pipeline")
@@ -1581,7 +1627,7 @@ class Pipeline:
     def _run_approved_storyboard(self) -> None:
         sb_path = Path(self.args.storyboard_file)
         if not sb_path.is_absolute():
-            sb_path = PROJECT_ROOT / sb_path
+            sb_path = WORKSPACE / sb_path
         storyboard = Storyboard.load(sb_path)
         logger.info(
             "Approved storyboard %r with %d frame(s).",
@@ -1603,9 +1649,9 @@ class Pipeline:
         # start frame (for a bridged pair, that frame's original outgoing one).
         transitions = storyboard.transitions or self._derive_transitions(storyboard)
         tr_by_start: dict[str, Transition] = {
-            (PROJECT_ROOT / tr.start_frame).name: tr for tr in transitions
+            (WORKSPACE / tr.start_frame).name: tr for tr in transitions
         }
-        frames_ordered = [PROJECT_ROOT / f.output_path for f in storyboard.frames]
+        frames_ordered = [WORKSPACE / f.output_path for f in storyboard.frames]
 
         pairs: list[tuple[Path, Path, str, int, str]] = []
         for a, b in self._bridge_pairs(frames_ordered):
@@ -1640,7 +1686,7 @@ class Pipeline:
 
     def _generate_frames(self, storyboard: Storyboard) -> None:
         def work(frame: Frame) -> None:
-            dst = PROJECT_ROOT / frame.output_path
+            dst = WORKSPACE / frame.output_path
             job_id = f"frame:{frame.id}"
 
             if dst.exists() and not self.force:
@@ -1914,7 +1960,7 @@ class Pipeline:
         sound_map: dict[str, str] = {}
         sb_path = Path(self.args.storyboard_file)
         if not sb_path.is_absolute():
-            sb_path = PROJECT_ROOT / sb_path
+            sb_path = WORKSPACE / sb_path
         if sb_path.exists():
             try:
                 sb = Storyboard.load(sb_path)
@@ -2022,6 +2068,11 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("--config", default="config.json", help="Path to config JSON.")
+    p.add_argument("--project", default=None,
+                   help="Name of an isolated movie workspace under projects/. "
+                        "Each project keeps its own input_images/, frames, clips, "
+                        "output, storyboard and state, so separate movies never "
+                        "collide. Omit to use the shared top-level folders.")
     p.add_argument("--force", action="store_true", help="Redo completed outputs.")
     p.add_argument("--dry-run", action="store_true",
                    help="Print planned work without spending API credits.")
@@ -2079,11 +2130,21 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    # Isolate this movie's artifacts under projects/<name>/ when requested.
+    if args.project:
+        name = args.project.strip().strip("/")
+        if not name or name in {".", ".."} or "/" in name or "\\" in name:
+            parser.error(f"Invalid --project name: {args.project!r}")
+        configure_workspace(PROJECTS_DIR / name)
+
     for d in ALL_DIRS:
         d.mkdir(parents=True, exist_ok=True)
 
     setup_logging()
     load_dotenv(PROJECT_ROOT / ".env")
+
+    if args.project:
+        logger.info("Project workspace: %s", WORKSPACE)
 
     if args.only_style and args.only_video:
         parser.error("--only-style and --only-video are mutually exclusive.")

@@ -25,5 +25,8 @@ failed_jobs/*
 storyboard/storyboard.json
 storyboard/storyboard.md
 
+# Per-movie isolated workspaces (--project NAME).
+projects/
+
 # Keep the placeholder files so the folder structure is committed.
 !**/.gitkeep

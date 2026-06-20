@@ -15,6 +15,40 @@ without regenerating anything.
 
 ---
 
+## Making more than one movie (`--project`)
+
+By default every run shares the same top-level folders (`input_images/`,
+`generated_frames/`, `clips/`, `output/`, `logs/state.json`, …). That's fine for
+one movie, but because clips are named by position (`001_to_002.mp4`, …) and
+their "done" status is remembered in `state.json`, **starting a second movie in
+the same folder collides with the first** — the app sees the old files/state and
+skips work, mixing the two.
+
+To keep movies separate, give each one a name:
+
+```bash
+python pipeline.py --project sealion          # Mode A, isolated workspace
+python pipeline.py --project robots --from-scratch --create-storyboard --idea "..."
+```
+
+Everything for that movie lives under `projects/<name>/` — its own
+`input_images/`, frames, `clips/`, `output/final_video.mp4`, `storyboard/`, and
+`logs/state.json`. Different projects never touch each other, each resumes
+independently, and there's no need to `--force` or delete files between movies.
+
+- **Mode A:** put that movie's images in `projects/<name>/input_images/` (the
+  folder is created for you on first run).
+- **Mode B:** the storyboard is written to and read from
+  `projects/<name>/storyboard/storyboard.json`; pass the same `--project` to
+  every step (`--create-storyboard`, then `--approve-storyboard`).
+- `config.json` and `.env` stay shared at the top level — only the generated
+  artifacts are isolated.
+- Omit `--project` to use the original top-level layout (unchanged).
+
+The `projects/` folder is git-ignored.
+
+---
+
 ## Two modes
 
 ### Mode A — Image-to-video from your images (default)
@@ -234,6 +268,7 @@ normalized to exactly 1920×1080), then renders the clips using the
 | Flag | Description |
 |------|-------------|
 | `--config config.json` | Path to the config file. |
+| `--project NAME` | Isolate this movie under `projects/NAME/` (own input, frames, clips, output, storyboard, state). Omit for the shared top-level layout. |
 | `--force` | Redo outputs even if already completed. |
 | `--dry-run` | Print planned work; spend no API credits. |
 | `--only-style` | Only style/generate images; skip video. |
