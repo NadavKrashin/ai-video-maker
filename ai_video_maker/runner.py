@@ -11,14 +11,15 @@ import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 from tqdm import tqdm
 
 from .clients.audio import AudioClient
 from .clients.openai_client import OpenAIClient
-from .clients.video import make_video_client
+from .clients.video import VideoClient
 from .config import Config
+from .errors import PipelineError, StoryboardError
 from .logging_setup import logger
 from .media.ffmpeg import (
     apply_edge_fades,
@@ -55,7 +56,7 @@ class Pipeline:
         self.failed = FailedJobStore(workspace.failed_jobs_file)
         self.summary = RunSummary()
         self.openai = OpenAIClient(config)
-        self.video_client = make_video_client(config)
+        self.video_client = VideoClient(config)
         self.audio_client = AudioClient(config)
         # Audio is on when config.audio_mode == "post", unless overridden by
         # --add-audio / --no-audio for a single run.
@@ -113,7 +114,7 @@ class Pipeline:
         self.summary.input_count = len(images)
 
         if not images:
-            raise SystemExit(
+            raise PipelineError(
                 f"No supported images found in {self.workspace.input_images_dir}. "
                 f"Supported: {sorted(SUPPORTED_IMAGE_EXTS)}"
             )
@@ -201,7 +202,7 @@ class Pipeline:
             self._run_approved_storyboard()
             return
 
-        raise SystemExit(
+        raise PipelineError(
             "Mode B requires either --create-storyboard (with --idea) or "
             "--approve-storyboard. See README.md."
         )
@@ -213,14 +214,14 @@ class Pipeline:
             if not path.is_absolute():
                 path = PROJECT_ROOT / path
             if not path.exists():
-                raise SystemExit(f"--idea-file not found: {path}")
+                raise PipelineError(f"--idea-file not found: {path}")
             text = path.read_text(encoding="utf-8").strip()
             if not text:
-                raise SystemExit(f"--idea-file is empty: {path}")
+                raise PipelineError(f"--idea-file is empty: {path}")
             return text
         if self.options.idea:
             return self.options.idea
-        raise SystemExit(
+        raise PipelineError(
             "--create-storyboard requires --idea \"...\" or --idea-file PATH"
         )
 
@@ -604,7 +605,7 @@ class Pipeline:
                 for tr in sb.transitions:
                     sound_map[Path(tr.output_path).name] = tr.sound_prompt
                 logger.info("Using per-clip sound prompts from %s", sb_path.name)
-            except SystemExit:
+            except StoryboardError:
                 logger.warning("Could not read %s; using default SFX prompt.", sb_path)
 
         def work(clip: Path) -> None:

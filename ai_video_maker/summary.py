@@ -38,10 +38,10 @@ class RunSummary:
             print(f"  Clip SFX skipped       : {self.sfx_skipped}")
             print(f"  Clip SFX failed        : {self.sfx_failed}")
         if self.music_added:
-            print(f"  Music bed              : added")
+            print("  Music bed              : added")
         if self.final_video:
             print(f"  Final video            : {self.final_video}")
-        print(f"\n  Output folders:")
+        print("\n  Output folders:")
         print(f"    Styled images   : {workspace.styled_images_dir}")
         print(f"    Generated frames: {workspace.generated_frames_dir}")
         print(f"    Clips           : {workspace.clips_dir}")

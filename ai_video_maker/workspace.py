@@ -14,14 +14,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from .errors import InvalidProjectName
+
 # Repo root = parent of this package directory. Shared (non per-movie) files
 # such as .env and config.json live here.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PROJECTS_DIR = PROJECT_ROOT / "projects"
-
-
-class InvalidProjectName(ValueError):
-    """Raised when a --project / project name is not a safe single path segment."""
 
 
 @dataclass(frozen=True)

@@ -9,16 +9,17 @@ from dotenv import load_dotenv
 
 from .config import Config
 from .constants import VALID_DURATIONS
+from .errors import InvalidProjectName, PipelineError
 from .logging_setup import logger, setup_logging
 from .options import RunOptions
 from .runner import Pipeline
-from .workspace import PROJECT_ROOT, InvalidProjectName, Workspace
+from .workspace import PROJECT_ROOT, Workspace
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="pipeline.py",
-        description="Local AI video maker (image-to-video via OpenAI + Higgsfield).",
+        description="Local AI video maker (image-to-video via OpenAI + fal.ai).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("--config", default="config.json", help="Path to config JSON.")
@@ -107,13 +108,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     config_path = Path(args.config)
     if not config_path.is_absolute():
         config_path = PROJECT_ROOT / config_path
-    config = Config.load(config_path)
 
     if args.dry_run:
         logger.info("DRY-RUN: no API credits will be spent.")
 
-    pipeline = Pipeline(config, workspace, RunOptions.from_args(args))
-    pipeline.run()
+    try:
+        config = Config.load(config_path)
+        Pipeline(config, workspace, RunOptions.from_args(args)).run()
+    except PipelineError as exc:
+        # Expected, user-facing failures (bad config/storyboard/inputs): report
+        # cleanly and exit non-zero instead of dumping a traceback.
+        logger.error("%s", exc)
+        return 1
     return 0
 
 

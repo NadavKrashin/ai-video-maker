@@ -6,6 +6,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, ValidationError
 
+from .errors import StoryboardError
+
 
 class Frame(BaseModel):
     id: str
@@ -43,12 +45,14 @@ class Storyboard(BaseModel):
     @classmethod
     def load(cls, path: Path) -> "Storyboard":
         if not path.exists():
-            raise FileNotFoundError(f"Storyboard file not found: {path}")
-        data = json.loads(path.read_text(encoding="utf-8"))
+            raise StoryboardError(f"Storyboard file not found: {path}")
         try:
+            data = json.loads(path.read_text(encoding="utf-8"))
             return cls(**data)
+        except json.JSONDecodeError as exc:
+            raise StoryboardError(f"{path} is not valid JSON: {exc}") from exc
         except ValidationError as exc:
-            raise SystemExit(f"Invalid storyboard JSON ({path}):\n{exc}") from exc
+            raise StoryboardError(f"Invalid storyboard JSON ({path}):\n{exc}") from exc
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

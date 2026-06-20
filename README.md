@@ -2,10 +2,10 @@
 
 A local Python pipeline that turns images (or a raw idea) into short, consistent
 1920×1080 video clips using **OpenAI** (image generation/editing + storyboard
-planning) and **fal** or **Higgsfield** (image-to-video; selectable, default fal).
+planning) and **fal.ai** (image-to-video).
 
 Clips are silent by default; an opt-in [audio step](#audio-sound) can add
-motion-matched sound effects per clip plus a background-music bed (via **fal**).
+motion-matched sound effects per clip plus a background-music bed (also via **fal**).
 
 It produces individual clips between consecutive key frames and then
 **concatenates them, in order, into `output/final_video.mp4`** using `ffmpeg`
@@ -76,8 +76,7 @@ The `projects/` folder is git-ignored.
 - **ffmpeg** on your `PATH` (used to combine clips; e.g. `brew install ffmpeg`).
   Only needed for the final-combine step — skip it with `--no-combine`.
 - An OpenAI API key
-- A video-provider key: **fal** (default — from https://fal.ai/dashboard/keys),
-  or Higgsfield (from https://cloud.higgsfield.ai)
+- A **fal.ai** key (image-to-video + audio) — from https://fal.ai/dashboard/keys
 
 ## Setup
 
@@ -101,57 +100,46 @@ cp .env.example .env
 ```env
 OPENAI_API_KEY=sk-...
 
-# Video provider (default fal) — one key from https://fal.ai/dashboard/keys:
+# fal.ai key (image-to-video + audio) — from https://fal.ai/dashboard/keys:
 FAL_KEY=your-fal-key
-
-# Only if you set "video_provider": "higgsfield" in config.json:
-# HF_KEY=your-api-key:your-api-secret   # or HF_API_KEY + HF_API_SECRET
 ```
 
-> **Video auth:** the pipeline uses the provider set by `video_provider` in
-> `config.json` (default `fal`). For fal, get a key at
-> [fal.ai/dashboard/keys](https://fal.ai/dashboard/keys) and set `FAL_KEY`. For
-> Higgsfield, set `HF_KEY` (or `HF_API_KEY` + `HF_API_SECRET`). Either way, local
-> images are uploaded to the provider automatically — you don't host them.
+> **Auth:** OpenAI generates/edits the images and plans the storyboard; fal.ai
+> renders every clip and all audio. Local images are uploaded to fal
+> automatically — you don't host them.
 
 Keys are loaded from `.env` via `python-dotenv` — they are **never hardcoded**,
 and `.env` is git-ignored.
 
 ### Configure (optional)
 
-Edit `config.json` to change the video provider, style prompts, motion prompt,
-default duration, the model id, retry settings, etc. It is validated on startup,
-so typos are caught early.
+Edit `config.json` to change the style prompts, motion prompt, default duration,
+the fal model id, retry settings, etc. It is validated on startup (pydantic), so
+typos are caught early.
 
-### Provider, model & start/end frames (important)
+### Model & start/end frames (important)
 
-The pipeline is built around **consecutive frame pairs** (start → end). Pick the
-provider with `video_provider` (`"fal"` or `"higgsfield"`). Each provider has its
-own block of settings, so you can keep both configured and just flip the switch.
+The pipeline is built around **consecutive frame pairs** (start → end). The video
+model and the exact request shape come from the `fal_*` config fields, so you can
+swap models without touching code.
 
-**Default — fal + Kling v2.1 Pro** (supports start + end frame, so each clip
+**Default — Kling v2.1 Pro on fal** (supports start + end frame, so each clip
 interpolates from one styled frame to the next):
 
 ```json
-"video_provider": "fal",
 "fal_model_id": "fal-ai/kling-video/v2.1/pro/image-to-video",
 "fal_start_frame_field": "image_url",
 "fal_end_frame_field": "tail_image_url",
 "fal_duration_as_string": true
 ```
 
-- **Start frame** → `*_start_frame_field` (`image_url`). **End frame** →
-  `*_end_frame_field` (`tail_image_url`); set it to `""` for start-frame-only.
-- `duration` format differs by provider: **fal** wants a string enum (so
-  `fal_duration_as_string: true`); **Higgsfield** wants an integer
-  (`higgsfield_duration_as_string: false`). These defaults are correct.
+- **Start frame** → `fal_start_frame_field` (`image_url`). **End frame** →
+  `fal_end_frame_field` (`tail_image_url`); set it to `""` for start-frame-only.
+- `fal_duration_as_string: true` because fal's Kling expects a string enum
+  (`"5"`/`"10"`); set it `false` for a model that wants an integer.
 - **Kling 3.0 on fal:** set `fal_model_id` to
   `"fal-ai/kling-video/v3/pro/image-to-video"`, `fal_start_frame_field` to
   `"start_image_url"`, and `fal_end_frame_field` to `"end_image_url"`.
-- **Why fal is the default:** fal documents the Kling schema and validates
-  inputs, so the end frame is actually applied (and unknown fields error instead
-  of being silently ignored). Higgsfield's public API accepted the request but
-  ignored the end frame.
 - Add extra model-specific args via `fal_extra_arguments`
   (e.g. `{"negative_prompt": "blur, distortion, low quality"}`).
 
@@ -446,19 +434,17 @@ existing `music.mp3` is reused). Set `sfx_fade_seconds: 0` to disable.
 
 ---
 
-## Notes on the video clients
+## Notes on the video client
 
-Both providers share a base class (`SubscribeVideoClient`) in
-`ai_video_maker/clients/video.py`, with thin subclasses `FalClient` and
-`HiggsfieldClient` (selected by
-`make_video_client` via `video_provider`). Each uses that provider's official
-SDK — [`fal-client`](https://pypi.org/project/fal-client/) /
-[`higgsfield-client`](https://pypi.org/project/higgsfield-client/) — which handle
-authentication and uploading local images to hosted URLs. The model id, frame
-field names, duration format, and extra arguments are all driven by `config.json`
-(`fal_*` / `higgsfield_*`), so swapping models or providers needs no code
-changes. See the [fal docs](https://docs.fal.ai) /
-[Higgsfield docs](https://docs.higgsfield.ai) for model-specific parameters.
+`VideoClient` in `ai_video_maker/clients/video.py` renders one clip per
+consecutive frame pair via fal. It shares the fal SDK loading, credential check,
+upload, and job submission with the audio client through `FalSession`
+(`clients/fal.py`), and downloads results with the shared `download_file`
+(`clients/download.py`). The official [`fal-client`](https://pypi.org/project/fal-client/)
+SDK handles auth and uploading local images to hosted URLs. The model id, frame
+field names, duration format, and extra arguments are all driven by the `fal_*`
+keys in `config.json`, so swapping models needs no code changes. See the
+[fal docs](https://docs.fal.ai) for model-specific parameters.
 
 ---
 
@@ -481,14 +467,17 @@ ai_video_maker/
   storyboard_md.py   # storyboard -> markdown for review
   state.py           # StateStore (resume) + FailedJobStore
   retry.py           # exponential-backoff retry helper
+  errors.py          # PipelineError / ConfigError / StoryboardError
   constants.py       # shared constants
   media/
     images.py        # Pillow normalisation + image listing
     ffmpeg.py        # concat, ffprobe, edge fades, music mux
   clients/
-    openai_client.py # image generation/editing + storyboard text
-    video.py         # fal / Higgsfield image-to-video clients
-    audio.py         # fal SFX + music
+    openai_client.py # image generation/editing + storyboard text (OpenAI)
+    fal.py           # shared fal session: upload + subscribe + result parsing
+    download.py      # shared atomic streaming download
+    video.py         # VideoClient — image-to-video (fal)
+    audio.py         # AudioClient — SFX + music (fal)
 pipeline.py          # backwards-compatible entry-point shim
 pyproject.toml       # package metadata, deps, `ai-video-maker` console script
 ```

@@ -12,10 +12,20 @@ so it can be driven by the CLI or, later, an API. See README.md.
 from __future__ import annotations
 
 from .config import Config
+from .errors import ConfigError, PipelineError, StoryboardError
 from .options import RunOptions
 from .runner import Pipeline
 from .workspace import Workspace
 
 __version__ = "0.1.0"
 
-__all__ = ["Config", "Workspace", "RunOptions", "Pipeline", "__version__"]
+__all__ = [
+    "Config",
+    "Workspace",
+    "RunOptions",
+    "Pipeline",
+    "PipelineError",
+    "ConfigError",
+    "StoryboardError",
+    "__version__",
+]
