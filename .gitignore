@@ -13,20 +13,7 @@ env/
 # OS
 .DS_Store
 
-# Generated media & runtime artifacts (kept out of version control by default).
-# Folders themselves are preserved via .gitkeep.
-input_images/*
-generated_frames/*
-styled_images/*
-clips/*
-output/*
-logs/*
-failed_jobs/*
-storyboard/storyboard.json
-storyboard/storyboard.md
-
-# Per-movie isolated workspaces (--project NAME).
+# Per-movie workspaces hold all generated media & runtime artifacts
+# (input_images/, frames, clips, output, storyboard, logs, state). Each run uses
+# projects/<name>/ (or projects/default/), so the whole tree is ignored.
 projects/
-
-# Keep the placeholder files so the folder structure is committed.
-!**/.gitkeep

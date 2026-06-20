@@ -56,10 +56,11 @@ from tqdm import tqdm
 PROJECT_ROOT = Path(__file__).resolve().parent
 PROJECTS_DIR = PROJECT_ROOT / "projects"
 
-# All per-movie artifacts live under WORKSPACE. By default that is PROJECT_ROOT
-# (the original top-level layout). With --project NAME it becomes
-# projects/NAME/, so each movie gets its own frames/clips/output/state and they
-# never collide. The dir constants below are recomputed by configure_workspace().
+# All per-movie artifacts live under WORKSPACE = projects/<name>/, so each movie
+# gets its own input/frames/clips/output/state and they never collide. main()
+# always calls configure_workspace(): --project NAME -> projects/NAME/, and no
+# --project -> projects/default/. The constants below are just import-time
+# placeholders until configure_workspace() recomputes them.
 WORKSPACE = PROJECT_ROOT
 INPUT_IMAGES_DIR = WORKSPACE / "input_images"
 GENERATED_FRAMES_DIR = WORKSPACE / "generated_frames"
@@ -2130,12 +2131,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    # Isolate this movie's artifacts under projects/<name>/ when requested.
-    if args.project:
-        name = args.project.strip().strip("/")
-        if not name or name in {".", ".."} or "/" in name or "\\" in name:
-            parser.error(f"Invalid --project name: {args.project!r}")
-        configure_workspace(PROJECTS_DIR / name)
+    # Every movie lives in its own workspace under projects/<name>/. Without
+    # --project we use projects/default/ so the repo root stays clean.
+    name = (args.project or "default").strip().strip("/")
+    if not name or name in {".", ".."} or "/" in name or "\\" in name:
+        parser.error(f"Invalid --project name: {args.project!r}")
+    configure_workspace(PROJECTS_DIR / name)
 
     for d in ALL_DIRS:
         d.mkdir(parents=True, exist_ok=True)
@@ -2143,8 +2144,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     setup_logging()
     load_dotenv(PROJECT_ROOT / ".env")
 
-    if args.project:
-        logger.info("Project workspace: %s", WORKSPACE)
+    logger.info("Project workspace: %s", WORKSPACE)
 
     if args.only_style and args.only_video:
         parser.error("--only-style and --only-video are mutually exclusive.")
