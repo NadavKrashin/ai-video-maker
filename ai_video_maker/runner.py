@@ -8,6 +8,7 @@ driven by the CLI or, later, an API request.
 from __future__ import annotations
 
 import re
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -401,11 +402,50 @@ class Pipeline:
         ]
         self._generate_clips_with_prompts(enriched)
 
+    def _confirm_clip_generation(self) -> bool:
+        """Pause after image generation to confirm before generating clips.
+
+        Returns True to proceed. Auto-proceeds without prompting for dry-runs,
+        when the user explicitly asked for clips from existing images
+        (--only-video), when --yes is set, or when stdin isn't interactive
+        (CI/automation). Otherwise it asks at the terminal; a "no" stops before
+        any clip credits are spent, and the clips can be generated later with
+        --only-video.
+        """
+        if (
+            self.dry_run
+            or self.options.only_video
+            or self.options.yes
+            or not sys.stdin.isatty()
+        ):
+            return True
+
+        print("\n" + "=" * 70)
+        print("All images are ready. The next step generates the video clips, "
+              "which spends API credits.")
+        print("You can stop here and generate the clips later by re-running "
+              "with --only-video.")
+        print("=" * 70)
+        try:
+            answer = input("Generate clips now? [y/N] ").strip().lower()
+        except EOFError:
+            return True
+        if answer in ("y", "yes"):
+            return True
+        logger.info(
+            "Clip generation skipped. Re-run with --only-video to generate the "
+            "clips from the existing images."
+        )
+        return False
+
     def _generate_clips_with_prompts(
         self, pairs: list[tuple[Path, Path, str, int, str]]
     ) -> None:
         if not pairs:
             logger.warning("No transition pairs to render.")
+            return
+
+        if not self._confirm_clip_generation():
             return
 
         def work(pair: tuple[Path, Path, str, int, str]) -> None:

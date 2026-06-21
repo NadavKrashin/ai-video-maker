@@ -31,6 +31,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true", help="Redo completed outputs.")
     p.add_argument("--dry-run", action="store_true",
                    help="Print planned work without spending API credits.")
+    p.add_argument("-y", "--yes", action="store_true",
+                   help="Skip the interactive confirmation before clip "
+                        "generation (proceed automatically).")
     p.add_argument("--only-style", action="store_true",
                    help="Only style/generate images; skip video generation.")
     p.add_argument("--only-video", action="store_true",

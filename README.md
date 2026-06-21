@@ -154,13 +154,17 @@ Place your images in `input_images/` (supported: `.jpg`, `.jpeg`, `.png`,
 # Preview the plan without spending any API credits
 python pipeline.py --dry-run
 
-# Full run: style images, then generate clips
+# Full run: style images, then pause to confirm before generating clips
 python pipeline.py
+
+# Full run without the confirmation prompt (proceed straight to clips)
+python pipeline.py --yes
 
 # Only style the images (no video)
 python pipeline.py --only-style
 
 # Only generate videos from already-styled images in styled_images/
+# (also how you resume clip generation if you declined the prompt)
 python pipeline.py --only-video
 
 # Use 10-second clips (Mode A uses one length for every clip)
@@ -259,8 +263,9 @@ normalized to exactly 1920×1080), then renders the clips using the
 | `--project NAME` | Movie workspace under `projects/NAME/` (own input, frames, clips, output, storyboard, state). Defaults to `projects/default/` when omitted. |
 | `--force` | Redo outputs even if already completed. |
 | `--dry-run` | Print planned work; spend no API credits. |
+| `-y`, `--yes` | Skip the interactive confirmation before clip generation (proceed automatically). |
 | `--only-style` | Only style/generate images; skip video. |
-| `--only-video` | Only generate videos from existing images. |
+| `--only-video` | Only generate videos from existing images (also resumes clip generation if you declined the confirmation prompt). |
 | `--combine` | Only concatenate existing `clips/` into `output/final_video.mp4`; no generation. |
 | `--no-combine` | Skip building the final combined video at the end of a run. |
 | `--add-audio` | Force audio on for this run (per-clip SFX + music bed), ignoring `audio_mode`. |

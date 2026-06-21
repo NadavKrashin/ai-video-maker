@@ -18,6 +18,7 @@ class RunOptions:
 
     force: bool = False
     dry_run: bool = False
+    yes: bool = False
     only_style: bool = False
     only_video: bool = False
     combine: bool = False
@@ -44,6 +45,7 @@ class RunOptions:
         return cls(
             force=args.force,
             dry_run=args.dry_run,
+            yes=args.yes,
             only_style=args.only_style,
             only_video=args.only_video,
             combine=args.combine,
