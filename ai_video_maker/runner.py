@@ -12,7 +12,7 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from tqdm import tqdm
 
@@ -617,6 +617,10 @@ class Pipeline:
         if confirm and not self._confirm_combine():
             return
 
+        # Decide the music track BEFORE combining, so the user makes every
+        # choice up front rather than being interrupted after the combine runs.
+        music_file = self._resolve_music_file() if self.audio_enabled else None
+
         logger.info("Combining %d clip(s) into %s", len(clips), final_video)
         try:
             combine_clips(clips, final_video)
@@ -627,9 +631,9 @@ class Pipeline:
             self.failed.record("combine", "combine", str(exc))
             return
 
-        # Lay a single music bed under the whole video (ducked under the SFX).
+        # Lay the chosen music bed under the whole video (ducked under the SFX).
         if self.audio_enabled:
-            self._add_music()
+            self._add_music(music_file)
 
     def _resolve_music_prompt(self) -> str:
         return (
@@ -638,20 +642,80 @@ class Pipeline:
             or self.config.music_prompt
         )
 
-    def _add_music(self) -> None:
-        """Generate one music track and mix it under output/final_video.mp4."""
+    def _resolve_music_file(self) -> Optional[Path]:
+        """Decide which music track to lay under the final video.
+
+        Interactive (a real terminal, no --yes): ask which file to use,
+        defaulting to output/music.mp3. If that file is missing, offer to point
+        at another file, generate one with the text->music model, or skip music.
+        Non-interactive (--yes / no TTY / dry-run): keep the original behaviour —
+        reuse music.mp3 when present, otherwise generate from the prompt.
+
+        Returns a path to a ready music file, or None to proceed without music.
+        """
+        default = self.workspace.music_file
+
+        if self.dry_run or self.options.yes or not sys.stdin.isatty():
+            if default.exists() and not self.force:
+                return default
+            return self._generate_music_file(default)
+
+        print("\n" + "=" * 70)
+        print("Music for the final video.")
+        print(f"Default track: {default}"
+              f"{'' if default.exists() else '  (not found)'}")
+        print("=" * 70)
+        while True:
+            raw = input(
+                "Music file — Enter to use the default, a path to another "
+                "file, or 'g' to generate: "
+            ).strip()
+            if raw.lower() in ("g", "generate"):
+                return self._generate_music_file(default)
+            candidate = default if not raw else Path(raw).expanduser()
+            if candidate.exists():
+                logger.info("Using music file: %s", candidate)
+                return candidate
+
+            print(f"Not found: {candidate}")
+            choice = input(
+                "Use [a]nother file, [g]enerate one, or [s]kip music? "
+                "[a/g/s]: "
+            ).strip().lower()
+            if choice in ("g", "generate"):
+                return self._generate_music_file(default)
+            if choice in ("s", "skip"):
+                logger.info("Proceeding without a music bed.")
+                return None
+            # 'a' / Enter / anything else: loop back and ask for another path.
+
+    def _generate_music_file(self, dst: Path) -> Optional[Path]:
+        """Generate a music track into `dst` from the resolved prompt.
+
+        Returns `dst` on success, or None when there's no prompt or generation
+        fails (the run still finishes, just without a music bed).
+        """
         prompt = self._resolve_music_prompt().strip()
         if not prompt:
             logger.info("No music_prompt set; skipping music bed.")
-            return
+            return None
+        try:
+            self.audio_client.generate_music(prompt, dst)
+            return dst
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Music generation failed: %s", exc)
+            self.failed.record("music:final", "music", str(exc))
+            return None
 
+    def _add_music(self, music_file: Optional[Path]) -> None:
+        """Mix `music_file` under output/final_video.mp4 (ducked under the SFX)."""
+        if music_file is None:
+            return
         job_id = "music:final"
         try:
-            if not (self.workspace.music_file.exists() and not self.force):
-                self.audio_client.generate_music(prompt, self.workspace.music_file)
             mux_music(
                 self.workspace.final_video,
-                self.workspace.music_file,
+                music_file,
                 self.config.music_volume,
             )
             self.state.set(job_id, "done")

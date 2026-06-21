@@ -377,6 +377,14 @@ so it works no matter which provider rendered the clips. Two independent layers:
    generated from a single prompt and mixed, **ducked**, under the SFX across the
    whole `output/final_video.mp4`. The track is looped/trimmed to the video length.
 
+   **Choosing the music (interactive).** When audio is on, just before the clips
+   are combined you're asked which music file to use — Enter accepts the default
+   `output/music.mp3`, or you can type a path to your own track, or `g` to
+   generate one with ElevenLabs. If the file you pick isn't found, you're offered
+   another file, generation, or skipping the music entirely. This prompt is
+   skipped (and the old behaviour kept — reuse `music.mp3` if present, else
+   generate) under `--yes`, in a non-interactive shell, or during `--dry-run`.
+
 ### Turning it on
 
 It is **off by default** (`"audio_mode": "none"`) so existing runs are unchanged.
