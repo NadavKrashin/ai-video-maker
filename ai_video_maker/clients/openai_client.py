@@ -10,10 +10,37 @@ from typing import Any, Callable, Optional, TypeVar
 from ..config import Config
 from ..constants import VALID_DURATIONS
 from ..media.images import normalize_image
+from ..logging_setup import logger
 from ..models import Frame, Storyboard, Transition
-from ..retry import with_retries
+from ..retry import is_moderation_error, with_retries
 
 T = TypeVar("T")
+
+# Reword a prompt that OpenAI's safety filter wrongly flagged. The video pipeline
+# never intends harmful content, so flags are typically benign wording the filter
+# misreads (e.g. "shot", a body description). We ask the text model to keep the
+# scene but make it unambiguously safe-for-work, then retry the image call.
+_REWORD_SYSTEM = (
+    "You rewrite text-to-image prompts that were incorrectly flagged by an "
+    "automated content-safety filter. The prompts are for a wholesome, "
+    "safe-for-work cinematic video and contain no harmful intent; the filter is "
+    "over-triggering on innocent wording. Rewrite the prompt so it keeps the "
+    "SAME scene, subjects, setting, composition, mood and visual style, but "
+    "remove or rephrase anything the filter could misread as sexual, violent, "
+    "gory, or otherwise unsafe. Make it clearly non-explicit and tasteful: "
+    "describe people as fully clothed adults in a wholesome moment, replace "
+    "loaded words (e.g. 'shot' -> 'scene', anatomical or suggestive terms -> "
+    "neutral ones), and avoid anything that reads as nudity, sexual content, or "
+    "graphic violence. Do not add captions or text overlays. Return ONLY the "
+    "rewritten image prompt, with no preamble or quotes."
+)
+
+# Deterministic fallback used when even the reword model call fails: bolt an
+# explicit safe-for-work clause onto the prompt so the next attempt has a chance.
+_SAFE_SUFFIX = (
+    " (Safe-for-work, wholesome, non-explicit scene; fully clothed adults; "
+    "no nudity, no sexual content, no gore.)"
+)
 
 # --- Storyboard prompting -------------------------------------------------- #
 # Lifted out of create_storyboard so the method reads as orchestration, not a
@@ -130,17 +157,19 @@ class OpenAIClient:
         """Edit `src` into the styled look and write a normalised PNG to `dst`."""
         client = self._ensure_client()
 
-        def _call() -> bytes:
+        def _call(prompt: str) -> bytes:
             with src.open("rb") as fh:
                 resp = client.images.edit(
                     model=self.config.openai_image_model,
                     image=fh,
-                    prompt=style_prompt,
+                    prompt=prompt,
                     size=self._IMAGE_API_SIZE,
                 )
             return base64.b64decode(resp.data[0].b64_json)
 
-        raw = self._retry(_call, f"OpenAI style_image({src.name})")
+        raw = self._image_with_moderation_recovery(
+            _call, style_prompt, f"OpenAI style_image({src.name})"
+        )
         self._save_normalized(raw, dst)
 
     # --- Mode B: generate an image from a text prompt ----------------------- #
@@ -148,7 +177,7 @@ class OpenAIClient:
         """Generate an image from `prompt` and write a normalised PNG to `dst`."""
         client = self._ensure_client()
 
-        def _call() -> bytes:
+        def _call(prompt: str) -> bytes:
             resp = client.images.generate(
                 model=self.config.openai_image_model,
                 prompt=prompt,
@@ -156,8 +185,78 @@ class OpenAIClient:
             )
             return base64.b64decode(resp.data[0].b64_json)
 
-        raw = self._retry(_call, "OpenAI generate_image")
+        raw = self._image_with_moderation_recovery(
+            _call, prompt, "OpenAI generate_image"
+        )
         self._save_normalized(raw, dst)
+
+    # --- Moderation recovery ----------------------------------------------- #
+    def _image_with_moderation_recovery(
+        self, call: Callable[[str], bytes], prompt: str, description: str
+    ) -> bytes:
+        """Run `call(prompt)` with the usual backoff, but if OpenAI's safety
+        filter rejects the prompt, reword it to be unambiguously safe-for-work
+        and try again (up to ``config.moderation_reword_attempts`` times).
+
+        Transient errors are still handled by ``with_retries`` inside each
+        attempt; a moderation rejection surfaces immediately (it is classified
+        non-retryable) so we can reword and re-enter rather than burning the
+        backoff budget on an identical prompt.
+        """
+        attempt_prompt = prompt
+        last_exc: Optional[BaseException] = None
+        for reword in range(self.config.moderation_reword_attempts + 1):
+            try:
+                return self._retry(lambda: call(attempt_prompt), description)
+            except Exception as exc:  # noqa: BLE001
+                if not is_moderation_error(exc):
+                    raise
+                last_exc = exc
+                if reword >= self.config.moderation_reword_attempts:
+                    break
+                logger.warning(
+                    "%s was blocked by the safety filter (reword %d/%d): %s — "
+                    "rewording the prompt to be safe-for-work and retrying",
+                    description,
+                    reword + 1,
+                    self.config.moderation_reword_attempts,
+                    exc,
+                )
+                attempt_prompt = self._reword_prompt_for_safety(attempt_prompt)
+        assert last_exc is not None
+        logger.error(
+            "%s still blocked after %d rewording attempts; giving up",
+            description,
+            self.config.moderation_reword_attempts,
+        )
+        raise last_exc
+
+    def _reword_prompt_for_safety(self, prompt: str) -> str:
+        """Ask the text model to rewrite `prompt` so the safety filter accepts it.
+
+        Falls back to appending an explicit safe-for-work clause if the rewrite
+        call itself fails for any reason, so recovery never hard-stops here.
+        """
+        try:
+            client = self._ensure_client()
+            resp = client.chat.completions.create(
+                model=self.config.openai_text_model,
+                messages=[
+                    {"role": "system", "content": _REWORD_SYSTEM},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.4,
+            )
+            reworded = (resp.choices[0].message.content or "").strip()
+            if reworded:
+                return reworded
+        except Exception as exc:  # noqa: BLE001 - never let recovery die here
+            logger.warning(
+                "Prompt reword via text model failed (%s); falling back to a "
+                "safe-for-work suffix",
+                exc,
+            )
+        return prompt + _SAFE_SUFFIX
 
     def _save_normalized(self, raw_png: bytes, dst: Path) -> None:
         """Write raw bytes to a temp file, then normalise to target size."""

@@ -18,6 +18,21 @@ def _http_status(exc: BaseException) -> Optional[int]:
     return code if isinstance(code, int) else None
 
 
+def is_moderation_error(exc: BaseException) -> bool:
+    """True when an error is OpenAI's content-moderation / safety rejection.
+
+    These are 400s that won't succeed if simply retried with the same prompt,
+    but *can* succeed once the prompt is reworded (see OpenAIClient), so callers
+    treat them specially rather than as plain permanent failures.
+    """
+    text = str(exc).lower()
+    return (
+        "moderation_blocked" in text
+        or "safety system" in text
+        or "safety_violations" in text
+    )
+
+
 def is_retryable_error(exc: BaseException) -> bool:
     """
     Decide whether an error is worth retrying.
@@ -25,10 +40,11 @@ def is_retryable_error(exc: BaseException) -> bool:
     Permanent client errors (4xx other than 429 rate-limits) will never succeed
     on retry — e.g. OpenAI's 400 `moderation_blocked`, or an invalid request —
     so fail fast. Rate limits (429), server errors (5xx) and network/unknown
-    errors are retried.
+    errors are retried. A moderation rejection is reported as non-retryable here
+    so the plain backoff loop stops immediately; prompt-rewording recovery is
+    handled one level up in the OpenAI client.
     """
-    text = str(exc).lower()
-    if "moderation_blocked" in text or "safety system" in text:
+    if is_moderation_error(exc):
         return False
     code = _http_status(exc)
     if code is None:

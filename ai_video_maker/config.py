@@ -92,6 +92,11 @@ class Config(BaseModel):
     max_retries: int = 5
     retry_base_delay_seconds: float = 2.0
 
+    # When OpenAI's safety filter wrongly flags an image prompt
+    # (`moderation_blocked`), reword the prompt to be unambiguously safe-for-work
+    # and try again, up to this many times. Set 0 to disable and fail fast.
+    moderation_reword_attempts: int = 3
+
     @classmethod
     def load(cls, path: Path) -> "Config":
         if not path.exists():
