@@ -73,8 +73,10 @@ The `projects/` folder is git-ignored.
 ## Requirements
 
 - Python **3.11+**
-- **ffmpeg** on your `PATH` (used to combine clips; e.g. `brew install ffmpeg`).
-  Only needed for the final-combine step — skip it with `--no-combine`.
+- **ffmpeg** on your `PATH` (used to combine clips). Install with
+  `winget install Gyan.FFmpeg` (Windows), `brew install ffmpeg` (macOS), or
+  `apt install ffmpeg` (Linux), then open a new terminal. Only needed for the
+  final-combine step — skip it with `--no-combine`.
 - An OpenAI API key
 - A **fal.ai** key (image-to-video + audio) — from https://fal.ai/dashboard/keys
 

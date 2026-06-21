@@ -9,12 +9,27 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Optional
 
 from ..logging_setup import logger
 from .images import natural_sort_key
+
+
+def _missing_tool_error(tool: str, purpose: str) -> RuntimeError:
+    """Build a 'not found on PATH' error with an OS-appropriate install hint."""
+    if sys.platform == "win32":
+        how = (
+            "Install it with `winget install Gyan.FFmpeg` (or "
+            "`choco install ffmpeg`), then open a new terminal so it's on PATH"
+        )
+    elif sys.platform == "darwin":
+        how = "Install it with `brew install ffmpeg`"
+    else:
+        how = "Install it with your package manager (e.g. `apt install ffmpeg`)"
+    return RuntimeError(f"{tool} not found on PATH. {how} to {purpose}.")
 
 
 def find_generated_clips(directory: Path) -> list[Path]:
@@ -45,10 +60,7 @@ def combine_clips(clips: list[Path], output: Path) -> None:
         raise ValueError("No clips to combine.")
 
     if shutil.which("ffmpeg") is None:
-        raise RuntimeError(
-            "ffmpeg not found on PATH. Install it (e.g. `brew install ffmpeg`) "
-            "to combine clips."
-        )
+        raise _missing_tool_error("ffmpeg", "combine clips")
 
     output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -90,10 +102,7 @@ def combine_clips(clips: list[Path], output: Path) -> None:
 
 def _require_ffmpeg(tool: str = "ffmpeg") -> None:
     if shutil.which(tool) is None:
-        raise RuntimeError(
-            f"{tool} not found on PATH. Install it (e.g. `brew install ffmpeg`) "
-            "to add audio."
-        )
+        raise _missing_tool_error(tool, "add audio")
 
 
 def ffprobe_duration(path: Path) -> Optional[float]:
