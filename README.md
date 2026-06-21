@@ -188,10 +188,14 @@ Styled images are written as `styled_images/001_styled.png`,
 
 ## Mode B — generate from a raw idea
 
+> **Mode B requires `--project NAME`.** Each new movie gets its own workspace
+> under `projects/NAME/`, so a fresh idea never overwrites `projects/default/`.
+> Pass the **same** `--project` to every step below.
+
 ### Step 1 — create the storyboard (and stop)
 
 ```bash
-python pipeline.py --from-scratch --create-storyboard \
+python pipeline.py --project sea-lion --from-scratch --create-storyboard \
   --idea "A cute sea lion explores a futuristic training base"
 ```
 
@@ -209,13 +213,13 @@ full video.
 
 ```bash
 # Fixed number of frames (e.g. 5 frames -> 4 clips)
-python pipeline.py --from-scratch --create-storyboard --idea "..." --frame-count 5
+python pipeline.py --project sea-lion --from-scratch --create-storyboard --idea "..." --frame-count 5
 
 # Let the model choose the count based on YOUR content (no fixed padding)
-python pipeline.py --from-scratch --create-storyboard --idea "..." --frame-count 0
+python pipeline.py --project sea-lion --from-scratch --create-storyboard --idea "..." --frame-count 0
 
 # Pass long / structured pasted data from a file instead of --idea
-python pipeline.py --from-scratch --create-storyboard --idea-file my_script.txt --frame-count 0
+python pipeline.py --project sea-lion --from-scratch --create-storyboard --idea-file my_script.txt --frame-count 0
 ```
 
 - `--frame-count N` overrides the default; `--frame-count 0` tells the model to
@@ -246,7 +250,7 @@ that one length (at create time and at approve time); omit it to keep the mix.
 ### Step 3 — approve and generate
 
 ```bash
-python pipeline.py --from-scratch --approve-storyboard \
+python pipeline.py --project sea-lion --from-scratch --approve-storyboard \
   --storyboard-file storyboard/storyboard.json
 ```
 

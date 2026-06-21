@@ -88,6 +88,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    # Mode B builds a brand-new movie, so it must get its own workspace rather
+    # than silently overwriting projects/default/. Both steps use --from-scratch,
+    # so this one check covers --create-storyboard and --approve-storyboard.
+    if args.from_scratch and not args.project:
+        parser.error(
+            "Mode B (--from-scratch) requires --project NAME so each movie gets "
+            "its own workspace under projects/. Pass the same --project to "
+            "--create-storyboard and --approve-storyboard."
+        )
+
     # Every movie lives in its own workspace under projects/<name>/. Without
     # --project we use projects/default/ so the repo root stays clean.
     try:
