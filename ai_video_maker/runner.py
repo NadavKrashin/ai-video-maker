@@ -402,41 +402,69 @@ class Pipeline:
         ]
         self._generate_clips_with_prompts(enriched)
 
-    def _confirm_clip_generation(self) -> bool:
-        """Pause after image generation to confirm before generating clips.
+    def _prompt_yes_no(
+        self, lines: list[str], question: str, decline_log: str
+    ) -> bool:
+        """Ask a yes/no question at the terminal; True means proceed.
 
-        Returns True to proceed. Auto-proceeds without prompting for dry-runs,
-        when the user explicitly asked for clips from existing images
-        (--only-video), when --yes is set, or when stdin isn't interactive
-        (CI/automation). Otherwise it asks at the terminal; a "no" stops before
-        any clip credits are spent, and the clips can be generated later with
-        --only-video.
+        Auto-proceeds without prompting for dry-runs, when --yes is set, or when
+        stdin isn't interactive (CI/automation), so scripted runs never block.
+        A "no" (or anything other than y/yes) logs `decline_log` and returns
+        False.
         """
-        if (
-            self.dry_run
-            or self.options.only_video
-            or self.options.yes
-            or not sys.stdin.isatty()
-        ):
+        if self.dry_run or self.options.yes or not sys.stdin.isatty():
             return True
 
         print("\n" + "=" * 70)
-        print("All images are ready. The next step generates the video clips, "
-              "which spends API credits.")
-        print("You can stop here and generate the clips later by re-running "
-              "with --only-video.")
+        for line in lines:
+            print(line)
         print("=" * 70)
         try:
-            answer = input("Generate clips now? [y/N] ").strip().lower()
+            answer = input(question).strip().lower()
         except EOFError:
             return True
         if answer in ("y", "yes"):
             return True
-        logger.info(
-            "Clip generation skipped. Re-run with --only-video to generate the "
-            "clips from the existing images."
-        )
+        logger.info(decline_log)
         return False
+
+    def _confirm_clip_generation(self) -> bool:
+        """Pause after image generation to confirm before generating clips.
+
+        --only-video is an explicit "generate clips now", so it proceeds
+        without prompting; otherwise a "no" stops before any clip credits are
+        spent and the clips can be generated later with --only-video.
+        """
+        if self.options.only_video:
+            return True
+        return self._prompt_yes_no(
+            [
+                "All images are ready. The next step generates the video "
+                "clips, which spends API credits.",
+                "You can stop here and generate the clips later by re-running "
+                "with --only-video.",
+            ],
+            "Generate clips now? [y/N] ",
+            "Clip generation skipped. Re-run with --only-video to generate the "
+            "clips from the existing images.",
+        )
+
+    def _confirm_combine(self) -> bool:
+        """Pause after clip generation to confirm before building the movie.
+
+        A "no" leaves the clips in place; the final video can be built later by
+        re-running with --combine.
+        """
+        return self._prompt_yes_no(
+            [
+                "All clips are ready. The final step combines them into "
+                f"{self.workspace.final_video.name}.",
+                "You can do this later by re-running with --combine.",
+            ],
+            "Combine clips into the final video now? [y/N] ",
+            "Combine skipped. Re-run with --combine to build the final video "
+            "from the existing clips.",
+        )
 
     def _generate_clips_with_prompts(
         self, pairs: list[tuple[Path, Path, str, int, str]]
@@ -556,8 +584,16 @@ class Pipeline:
             return m.group(1) if m else p.stem
         return self.workspace.clips_dir / f"{stem_id(start)}_to_{stem_id(end)}.mp4"
 
-    def _combine_clips(self, force_rebuild: bool = False) -> None:
-        """Concatenate all generated clips into output/final_video.mp4."""
+    def _combine_clips(
+        self, force_rebuild: bool = False, confirm: bool = False
+    ) -> None:
+        """Concatenate all generated clips into output/final_video.mp4.
+
+        When `confirm` is set (the default end-of-run path) the user is asked
+        first — but only once we know there's actually a movie to build, so the
+        prompt never appears when there are no clips or the final video is
+        already up to date.
+        """
         clips = find_generated_clips(self.workspace.clips_dir)
         if not clips:
             logger.info("No clips to combine; skipping final video.")
@@ -576,6 +612,9 @@ class Pipeline:
                 "Final video already exists (use --force to rebuild): %s",
                 final_video,
             )
+            return
+
+        if confirm and not self._confirm_combine():
             return
 
         logger.info("Combining %d clip(s) into %s", len(clips), final_video)
@@ -676,7 +715,7 @@ class Pipeline:
                 self.run_mode_a()
             if not self.options.no_combine and not self.options.only_style \
                     and not self.options.create_storyboard:
-                self._combine_clips()
+                self._combine_clips(confirm=True)
         finally:
             self.failed.flush()
             self.summary.print(self.workspace)

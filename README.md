@@ -154,10 +154,11 @@ Place your images in `input_images/` (supported: `.jpg`, `.jpeg`, `.png`,
 # Preview the plan without spending any API credits
 python pipeline.py --dry-run
 
-# Full run: style images, then pause to confirm before generating clips
+# Full run: style images, confirm before generating clips, then confirm
+# again before combining them into the final movie
 python pipeline.py
 
-# Full run without the confirmation prompt (proceed straight to clips)
+# Full run with no confirmation prompts (clips + combine proceed automatically)
 python pipeline.py --yes
 
 # Only style the images (no video)
@@ -263,7 +264,7 @@ normalized to exactly 1920×1080), then renders the clips using the
 | `--project NAME` | Movie workspace under `projects/NAME/` (own input, frames, clips, output, storyboard, state). Defaults to `projects/default/` when omitted. |
 | `--force` | Redo outputs even if already completed. |
 | `--dry-run` | Print planned work; spend no API credits. |
-| `-y`, `--yes` | Skip the interactive confirmation before clip generation (proceed automatically). |
+| `-y`, `--yes` | Skip the interactive confirmations (before clip generation and before combining); proceed automatically. |
 | `--only-style` | Only style/generate images; skip video. |
 | `--only-video` | Only generate videos from existing images (also resumes clip generation if you declined the confirmation prompt). |
 | `--combine` | Only concatenate existing `clips/` into `output/final_video.mp4`; no generation. |
