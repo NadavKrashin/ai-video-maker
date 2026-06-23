@@ -708,7 +708,7 @@ class Pipeline:
             return None
 
     def _add_music(self, music_file: Optional[Path]) -> None:
-        """Mix `music_file` under output/final_video.mp4 (ducked under the SFX)."""
+        """Mix `music_file` over output/final_video.mp4 (louder than the SFX)."""
         if music_file is None:
             return
         job_id = "music:final"
@@ -717,6 +717,7 @@ class Pipeline:
                 self.workspace.final_video,
                 music_file,
                 self.config.music_volume,
+                self.config.sfx_volume,
             )
             self.state.set(job_id, "done")
             self.summary.music_added = True

@@ -53,8 +53,9 @@ class Config(BaseModel):
     # Two layers:
     #   * SFX/ambient: a video->audio model runs on each silent clip and returns
     #     the SAME clip with synced sound muxed in (replaces the file).
-    #   * Music bed: one track from `music_prompt`, mixed (ducked) under the SFX
-    #     across the whole concatenated final video.
+    #   * Music bed: one track from `music_prompt`, mixed across the whole
+    #     concatenated final video, louder than the per-clip SFX (which is
+    #     ducked under it). See music_volume / sfx_volume.
     # Leave audio_mode "none" to keep clips silent.
     audio_mode: str = "none"                # "none" | "post"
     # Video->audio model (returns video with synchronized audio).
@@ -79,7 +80,13 @@ class Config(BaseModel):
     music_prompt: str = (
         "Soft cinematic instrumental underscore, gentle and warm, no vocals."
     )
-    music_volume: float = 0.25              # 0..1, ducked under the SFX
+    # Relative levels when the music bed is mixed with the per-clip SFX. The
+    # background music is meant to sit ON TOP of (louder than) the clip SFX, so
+    # the SFX is ducked under it. Both are 0..1; what matters is the ratio
+    # (music_volume > sfx_volume => music dominates). sfx_volume only applies
+    # when a clip actually has SFX; with no SFX the music is the only audio.
+    music_volume: float = 0.85              # 0..1, the dominant background bed
+    sfx_volume: float = 0.35                # 0..1, clip SFX ducked under music
     music_extra_arguments: dict[str, Any] = Field(default_factory=dict)
 
     # How many image/clip/SFX API jobs to run at once. These steps are I/O-bound

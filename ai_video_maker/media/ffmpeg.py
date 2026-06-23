@@ -167,16 +167,22 @@ def apply_edge_fades(clip: Path, fade: float) -> None:
     tmp.replace(clip)
 
 
-def mux_music(video: Path, music: Path, volume: float) -> None:
-    """Mix a (looped) music track under `video`'s audio, in place.
+def mux_music(
+    video: Path, music: Path, music_volume: float, sfx_volume: float = 1.0
+) -> None:
+    """Mix a (looped) music track into `video`'s audio, in place.
 
-    If the video already has an audio track (e.g. SFX), the music is ducked to
-    `volume` and mixed under it. If it has none, the music becomes the only
-    audio. The music is looped/trimmed to the video length either way.
+    If the video already has an audio track (e.g. SFX), the music is set to
+    `music_volume` and the existing SFX to `sfx_volume`, then the two are mixed
+    — so with `music_volume > sfx_volume` the background music sits louder, on
+    top of the clip SFX. If the video has no audio, the music becomes the only
+    track (at `music_volume`). The music is looped/trimmed to the video length
+    either way.
     """
     _require_ffmpeg()
     tmp = video.with_suffix(".muxed.mp4")
-    vol = max(0.0, min(1.0, volume))
+    m_vol = max(0.0, min(1.0, music_volume))
+    s_vol = max(0.0, min(1.0, sfx_volume))
 
     if has_audio_stream(video):
         cmd = [
@@ -184,8 +190,9 @@ def mux_music(video: Path, music: Path, volume: float) -> None:
             "-i", str(video),
             "-stream_loop", "-1", "-i", str(music),
             "-filter_complex",
-            f"[1:a]volume={vol}[m];"
-            f"[0:a][m]amix=inputs=2:duration=first:dropout_transition=0[a]",
+            f"[0:a]volume={s_vol}[s];"
+            f"[1:a]volume={m_vol}[m];"
+            f"[s][m]amix=inputs=2:duration=first:dropout_transition=0[a]",
             "-map", "0:v", "-map", "[a]",
             "-c:v", "copy", "-c:a", "aac", "-shortest", str(tmp),
         ]
@@ -194,7 +201,7 @@ def mux_music(video: Path, music: Path, volume: float) -> None:
             "ffmpeg", "-y",
             "-i", str(video),
             "-stream_loop", "-1", "-i", str(music),
-            "-filter:a", f"volume={vol}",
+            "-filter:a", f"volume={m_vol}",
             "-map", "0:v", "-map", "1:a",
             "-c:v", "copy", "-c:a", "aac", "-shortest", str(tmp),
         ]

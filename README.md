@@ -374,8 +374,10 @@ so it works no matter which provider rendered the clips. Two independent layers:
    clip with synchronized sound muxed in**. Because it reads the actual pixels,
    every clip gets its own motion-matched audio even when they share a prompt.
 2. **Music bed** — one instrumental track (default `fal-ai/elevenlabs/music`) is
-   generated from a single prompt and mixed, **ducked**, under the SFX across the
-   whole `output/final_video.mp4`. The track is looped/trimmed to the video length.
+   generated from a single prompt and mixed across the whole
+   `output/final_video.mp4` **louder than the clip SFX** (the SFX is ducked under
+   it). Tune the balance with `music_volume` / `sfx_volume` in `config.json`. The
+   track is looped/trimmed to the video length.
 
    **Choosing the music (interactive).** When audio is on, just before the clips
    are combined you're asked which music file to use — Enter accepts the default
@@ -431,9 +433,10 @@ short call). Requires `ffmpeg`/`ffprobe` on your `PATH` for the music mix.
 | `sfx_negative_prompt` | What the SFX model should avoid (music/speech). |
 | `sfx_extra_arguments` | Extra model-specific args merged into each SFX call. |
 | `sfx_fade_seconds` | Fade each clip's SFX in/out by this many seconds so hard cuts aren't abrupt (the music bed carries the dip). Sync-preserving; `0` disables. Default `0.2`. |
+| `sfx_volume` | `0..1`, how loud the per-clip SFX sits **under** the music when both play (default `0.35`). |
 | `music_model_id` | fal text→music model. Default `fal-ai/elevenlabs/music`. |
 | `music_prompt` | Background-music description (Mode A / fallback). |
-| `music_volume` | `0..1`, how loud the bed sits under the SFX (default `0.25`). |
+| `music_volume` | `0..1`, how loud the background bed plays — louder than `sfx_volume` so the music dominates (default `0.85`). |
 | `music_extra_arguments` | Extra model-specific args for the music call. |
 
 Swap the SFX or music model by changing the id (e.g. `fal-ai/lyria2`,
