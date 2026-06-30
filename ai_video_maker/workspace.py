@@ -32,9 +32,10 @@ class Workspace:
     def for_project(cls, name: str) -> "Workspace":
         """Build the workspace for ``projects/<name>/``, validating the name.
 
-        The name must be a single safe path segment (no slashes, not "." / "..").
+        A name is required — there is no default project. It must be a single
+        safe path segment (non-empty, no slashes, not "." / "..").
         """
-        cleaned = (name or "default").strip().strip("/")
+        cleaned = (name or "").strip().strip("/")
         if not cleaned or cleaned in {".", ".."} or "/" in cleaned or "\\" in cleaned:
             raise InvalidProjectName(f"Invalid project name: {name!r}")
         return cls(PROJECTS_DIR / cleaned)

@@ -28,12 +28,11 @@ python pipeline.py --project sealion          # Mode A, its own workspace
 python pipeline.py --project robots --from-scratch --create-storyboard --idea "..."
 ```
 
-- **No `--project`?** Work goes to **`projects/default/`** (a normal project that
-  happens to be the fallback name). The repo root stays clean — there are no
-  shared top-level `clips/`, `output/`, etc. anymore.
+- **`--project` is required.** There is no default project — every run must name
+  one, and the command errors out if you omit it. The named workspace (and all
+  its subfolders) is created automatically on first use.
 - **Mode A:** put that movie's images in `projects/<name>/input_images/` (the
-  folder is created for you on first run; `projects/default/input_images/` when
-  unnamed).
+  folder is created for you on first run).
 - **Mode B:** the storyboard is written to and read from
   `projects/<name>/storyboard/storyboard.json`; pass the same `--project` to
   every step (`--create-storyboard`, then `--approve-storyboard`).
@@ -42,8 +41,7 @@ python pipeline.py --project robots --from-scratch --create-storyboard --idea ".
 
 > Throughout this README, folder paths like `input_images/`, `clips/`, and
 > `output/final_video.mp4` are **relative to the project workspace** —
-> i.e. `projects/<name>/input_images/`, etc. (or `projects/default/…` when you
-> don't pass `--project`).
+> i.e. `projects/<name>/input_images/`, etc.
 
 The `projects/` folder is git-ignored.
 
@@ -267,7 +265,7 @@ normalized to exactly 1920×1080), then renders the clips using the
 | Flag | Description |
 |------|-------------|
 | `--config config.json` | Path to the config file. |
-| `--project NAME` | Movie workspace under `projects/NAME/` (own input, frames, clips, output, storyboard, state). Defaults to `projects/default/` when omitted. |
+| `--project NAME` | **Required.** Movie workspace under `projects/NAME/` (own input, frames, clips, output, storyboard, state). The run errors out if omitted. |
 | `--force` | Redo outputs even if already completed. |
 | `--dry-run` | Print planned work; spend no API credits. |
 | `-y`, `--yes` | Skip the interactive confirmations (before clip generation and before combining); proceed automatically. |
@@ -341,8 +339,7 @@ errors, and it waits on provider jobs until they complete, fail, or time out.
 
 ## Output & final assembly
 
-Everything below lives inside the project workspace —
-`projects/<name>/` (or `projects/default/` when you don't pass `--project`):
+Everything below lives inside the project workspace, `projects/<name>/`:
 
 | Folder (under `projects/<name>/`) | Contents |
 |--------|----------|

@@ -15,5 +15,5 @@ env/
 
 # Per-movie workspaces hold all generated media & runtime artifacts
 # (input_images/, frames, clips, output, storyboard, logs, state). Each run uses
-# projects/<name>/ (or projects/default/), so the whole tree is ignored.
+# projects/<name>/, so the whole tree is ignored.
 projects/

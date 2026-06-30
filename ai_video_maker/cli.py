@@ -23,11 +23,11 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("--config", default="config.json", help="Path to config JSON.")
-    p.add_argument("--project", default=None,
-                   help="Name of an isolated movie workspace under projects/. "
+    p.add_argument("--project", required=True,
+                   help="REQUIRED. Name of this movie's workspace under projects/. "
                         "Each project keeps its own input_images/, frames, clips, "
                         "output, storyboard and state, so separate movies never "
-                        "collide. Omit to use the shared top-level folders.")
+                        "collide. Created on first use.")
     p.add_argument("--force", action="store_true", help="Redo completed outputs.")
     p.add_argument("--dry-run", action="store_true",
                    help="Print planned work without spending API credits.")
@@ -88,20 +88,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    # Mode B builds a brand-new movie, so it must get its own workspace rather
-    # than silently overwriting projects/default/. Both steps use --from-scratch,
-    # so this one check covers --create-storyboard and --approve-storyboard.
-    if args.from_scratch and not args.project:
-        parser.error(
-            "Mode B (--from-scratch) requires --project NAME so each movie gets "
-            "its own workspace under projects/. Pass the same --project to "
-            "--create-storyboard and --approve-storyboard."
-        )
-
-    # Every movie lives in its own workspace under projects/<name>/. Without
-    # --project we use projects/default/ so the repo root stays clean.
+    # Every movie lives in its own workspace under projects/<name>/. A name is
+    # required (argparse enforces presence); reject malformed names here.
     try:
-        workspace = Workspace.for_project(args.project or "default")
+        workspace = Workspace.for_project(args.project)
     except InvalidProjectName as exc:
         parser.error(str(exc))
 
