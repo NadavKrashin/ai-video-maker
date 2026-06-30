@@ -4,52 +4,37 @@ A local Python pipeline that turns images (or a raw idea) into short, consistent
 1920×1080 video clips using **OpenAI** (image generation/editing + storyboard
 planning) and **fal.ai** (image-to-video).
 
-Clips are silent by default; an opt-in [audio step](#audio-sound) can add
-motion-matched sound effects per clip plus a background-music bed (also via **fal**).
-
-It produces individual clips between consecutive key frames and then
-**concatenates them, in order, into `output/final_video.mp4`** using `ffmpeg`
-(requires `ffmpeg` on your `PATH`). You can disable that step with `--no-combine`
-and assemble the cut yourself, or run `--combine` to stitch existing clips
-without regenerating anything.
+It renders one clip between each pair of consecutive key frames, then
+**concatenates them in order into `output/final_video.mp4`** with `ffmpeg`. Skip
+that with `--no-combine` to cut it yourself, or `--combine` to stitch existing
+clips without regenerating. Clips are silent by default; an opt-in
+[audio step](#audio-sound) adds per-clip sound effects plus a music bed.
 
 ---
 
 ## Projects — one folder per movie (`--project`)
 
-**Every movie lives in its own workspace under `projects/<name>/`.** Each project
-keeps its own `input_images/`, `generated_frames/`, `styled_images/`, `clips/`,
-`output/`, `storyboard/`, and `logs/state.json`, so separate movies never collide
-and each one resumes independently — no need to `--force` or delete files between
-movies.
+**Every movie lives in its own workspace under `projects/<name>/`**, with its own
+`input_images/`, `generated_frames/`, `styled_images/`, `clips/`, `output/`,
+`storyboard/`, and `logs/state.json`. Movies never collide and each resumes
+independently — no `--force` or manual cleanup between them.
+
+`--project` is **required** (there is no default project); the workspace is
+created on first use. `config.json` and `.env` stay shared at the repo root, and
+`projects/` is git-ignored.
 
 ```bash
-python pipeline.py --project sealion          # Mode A, its own workspace
+# Mode A — set up the workspace, add images, then generate
+python pipeline.py --project sealion --init   # create projects/sealion/ and stop
+# ...copy your images into projects/sealion/input_images/...
+python pipeline.py --project sealion
+
+# Mode B — generate from an idea (same --project for every step)
 python pipeline.py --project robots --from-scratch --create-storyboard --idea "..."
 ```
 
-- **`--project` is required.** There is no default project — every run must name
-  one, and the command errors out if you omit it. The named workspace (and all
-  its subfolders) is created automatically on first use.
-- **Mode A:** run `--init` first to create the workspace, then drop that movie's
-  images into the printed `projects/<name>/input_images/` folder:
-
-  ```bash
-  python pipeline.py --project sealion --init   # create the workspace and stop
-  # ...copy your images into projects/sealion/input_images/...
-  python pipeline.py --project sealion          # generate the movie
-  ```
-- **Mode B:** the storyboard is written to and read from
-  `projects/<name>/storyboard/storyboard.json`; pass the same `--project` to
-  every step (`--create-storyboard`, then `--approve-storyboard`).
-- **`config.json` and `.env` stay shared** at the repo root — only the generated
-  artifacts are per-project.
-
-> Throughout this README, folder paths like `input_images/`, `clips/`, and
-> `output/final_video.mp4` are **relative to the project workspace** —
-> i.e. `projects/<name>/input_images/`, etc.
-
-The `projects/` folder is git-ignored.
+> Folder paths in this README (`input_images/`, `clips/`, `output/final_video.mp4`)
+> are **relative to the project workspace**, i.e. `projects/<name>/input_images/`.
 
 ---
 
@@ -176,61 +161,27 @@ interpolates from one styled frame to the next):
 
 ## Mode A — using existing images
 
-Create the project workspace with `--init`, then place your images in its
-`input_images/` folder (supported: `.jpg`, `.jpeg`, `.png`, `.webp`). Ordering
-is by natural filename order (`img2` before `img10`).
+Run `--init`, drop your images into `input_images/` (`.jpg`, `.jpeg`, `.png`,
+`.webp`; ordered by natural filename order, so `img2` before `img10`), then run
+the project. Styled images are written as `styled_images/001_styled.png`, … and
+clips as `clips/001_to_002.mp4`, …
 
 ```bash
-python pipeline.py --project sealion --init   # create projects/sealion/ and stop
+python pipeline.py --project sealion --init   # create the workspace, then add images
+python pipeline.py --project sealion           # style → analyse → confirm → clips → combine
+python pipeline.py --project sealion --dry-run # preview the plan, spend no credits
 ```
 
-```bash
-# Preview the plan without spending any API credits
-python pipeline.py --dry-run
-
-# Full run: style images, confirm before generating clips, then confirm
-# again before combining them into the final movie
-python pipeline.py
-
-# Full run with no confirmation prompts (clips + combine proceed automatically)
-python pipeline.py --yes
-
-# Explicit review/approve gate: style + analyse, stop, then approve to render
-python pipeline.py --create-storyboard    # writes storyboard/, prints the next command
-python pipeline.py --approve-storyboard    # renders clips from the (edited) storyboard
-
-# Only style the images (no video)
-python pipeline.py --only-style
-
-# Only generate videos from already-styled images in styled_images/
-# (also how you resume clip generation if you declined the prompt)
-python pipeline.py --only-video
-
-# Force one clip length for every clip (overrides the per-clip analysis)
-python pipeline.py --duration 10
-
-# Skip the per-frame analysis: one global motion prompt + one duration for all
-python pipeline.py --no-analyze
-
-# Generate clips but skip building output/final_video.mp4
-python pipeline.py --no-combine
-
-# Re-do everything, ignoring previously completed outputs
-python pipeline.py --force
-
-# Combine the existing clips/ into output/final_video.mp4 (no generation)
-python pipeline.py --combine
-```
-
-Styled images are written as `styled_images/001_styled.png`,
-`styled_images/002_styled.png`, … and clips as `clips/001_to_002.mp4`, …
+A normal run pauses to confirm before clips and before combining. For an explicit
+review gate where you can hand-edit the storyboard first, split it in two
+(see [the two-step flow](#mode-a--image-to-video-from-your-images-default) above).
+Every other behaviour is a flag — see [All command-line flags](#all-command-line-flags)
+(e.g. `--only-style`, `--only-video`, `--no-analyze`, `--duration`, `--combine`).
 
 ---
 
 ## Mode B — generate from a raw idea
 
-> **Mode B requires `--project NAME`.** Each new movie gets its own workspace
-> under `projects/NAME/`, so a fresh idea never overwrites `projects/default/`.
 > Pass the **same** `--project` to every step below.
 
 ### Step 1 — create the storyboard (and stop)
@@ -241,13 +192,8 @@ python pipeline.py --project sea-lion --from-scratch --create-storyboard \
 ```
 
 This writes `storyboard/storyboard.json` and `storyboard/storyboard.md`, then
-prints:
-
-> Storyboard created. Review storyboard/storyboard.md or storyboard/storyboard.json,
-> edit if needed, then run with --approve-storyboard.
-
-**Nothing is generated yet.** The app never jumps straight from an idea to a
-full video.
+prints the exact `--approve-storyboard` command to run next. **Nothing is
+generated yet** — the app never jumps straight from an idea to a full video.
 
 **Controlling how many frames/clips you get.** By default the storyboard uses
 `default_frame_count` from `config.json` (8 frames → 7 clips). To change it:
@@ -390,7 +336,7 @@ Everything below lives inside the project workspace, `projects/<name>/`:
 | `generated_frames/` | Mode B generated frames (`001.png`, …) |
 | `clips/` | Rendered clips (`001_to_002.mp4`, …) |
 | `output/` | Combined `final_video.mp4` (all clips concatenated in order) + `music.mp3` (the generated bed, when audio is on) |
-| `storyboard/` | `storyboard.json` + `storyboard.md` (Mode B) |
+| `storyboard/` | `storyboard.json` + `storyboard.md` (both modes) |
 | `logs/` | Run logs + `state.json` |
 | `failed_jobs/` | `failed_jobs.json` |
 
@@ -486,30 +432,11 @@ Swap the SFX or music model by changing the id (e.g. `fal-ai/lyria2`,
 music are state-tracked like every other stage, so interrupted runs resume and
 finished clips are skipped (`--force` redoes them).
 
-### Smoothing clip-to-clip sound
-
-Each clip's SFX is generated independently, so the ambience can change abruptly
-at a cut. `sfx_fade_seconds` softens that by fading every clip's audio in/out at
-its edges; the continuous music bed fills the brief dip, so the result is smooth
-without overlapping clips (your hard cuts and A/V sync are untouched). The fade
-is tracked separately from SFX (`fade:<clip>` in `state.json`), so if you already
-generated SFX on a set of clips you can add fades **without re-paying for SFX** —
-just run `python pipeline.py --audio-only` again (SFX is skipped, fades apply, the
-existing `music.mp3` is reused). Set `sfx_fade_seconds: 0` to disable.
-
----
-
-## Notes on the video client
-
-`VideoClient` in `ai_video_maker/clients/video.py` renders one clip per
-consecutive frame pair via fal. It shares the fal SDK loading, credential check,
-upload, and job submission with the audio client through `FalSession`
-(`clients/fal.py`), and downloads results with the shared `download_file`
-(`clients/download.py`). The official [`fal-client`](https://pypi.org/project/fal-client/)
-SDK handles auth and uploading local images to hosted URLs. The model id, frame
-field names, duration format, and extra arguments are all driven by the `fal_*`
-keys in `config.json`, so swapping models needs no code changes. See the
-[fal docs](https://docs.fal.ai) for model-specific parameters.
+Each clip's SFX is generated independently, so the ambience can jump at a cut.
+`sfx_fade_seconds` fades every clip's audio in/out at its edges (the music bed
+fills the dip; hard cuts and A/V sync are untouched). The fade is tracked
+separately from SFX (`fade:<clip>` in `state.json`), so re-running `--audio-only`
+adds fades to already-sounded clips **without re-paying for SFX**.
 
 ---
 

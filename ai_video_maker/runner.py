@@ -510,15 +510,6 @@ class Pipeline:
                 )
         return [(existing[i], existing[i + 1]) for i in range(len(existing) - 1)]
 
-    def _generate_clips(
-        self, pairs: list[tuple[Path, Path]], motion_prompt: str
-    ) -> None:
-        # Mode A has no per-clip sound prompt; "" falls back to default_sfx_prompt.
-        enriched = [
-            (a, b, motion_prompt, self.duration, "") for a, b in pairs
-        ]
-        self._generate_clips_with_prompts(enriched)
-
     # ----------------------- next-command hints ------------------------- #
     def _next_command(self, *flags: str) -> str:
         """A copy-pasteable re-run command for this project, plus `flags`.
