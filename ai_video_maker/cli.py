@@ -85,12 +85,18 @@ def build_parser() -> argparse.ArgumentParser:
                         "the model choose based on your content.")
     p.add_argument("--from-scratch", action="store_true",
                    help="Use Mode B (generate from an idea).")
+    # Storyboard review/approval — works for both modes.
     p.add_argument("--create-storyboard", action="store_true",
-                   help="Mode B: create the storyboard and stop.")
+                   help="Create the storyboard and stop for review. Mode B "
+                        "(--from-scratch) builds it from your idea; Mode A styles "
+                        "your images, analyses them, and plans the transitions. "
+                        "The exact approve command is printed when it finishes.")
     p.add_argument("--approve-storyboard", action="store_true",
-                   help="Mode B: generate frames/clips from an approved storyboard.")
+                   help="Generate the video from an approved storyboard. Mode B "
+                        "(--from-scratch) regenerates its frames first; Mode A "
+                        "renders clips from the existing styled images.")
     p.add_argument("--storyboard-file", default="storyboard/storyboard.json",
-                   help="Path to the storyboard JSON (Mode B approval).")
+                   help="Path to the storyboard JSON used by --approve-storyboard.")
     return p
 
 

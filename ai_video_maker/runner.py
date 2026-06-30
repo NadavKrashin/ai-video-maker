@@ -111,6 +111,14 @@ class Pipeline:
     # ------------------------------ Mode A ------------------------------- #
     def run_mode_a(self) -> None:
         logger.info("=== Mode A: image-to-video from input_images/ ===")
+
+        # Approve step: the styled frames already exist, so skip styling and
+        # render clips straight from the saved storyboard. (If both flags are
+        # passed, --create-storyboard wins, mirroring Mode B.)
+        if self.options.approve_storyboard and not self.options.create_storyboard:
+            self._render_from_storyboard_file(generate_frames=False)
+            return
+
         images = list_input_images(self.workspace.input_images_dir)
         self.summary.input_count = len(images)
 
@@ -143,48 +151,43 @@ class Pipeline:
             )
             return
 
-        # Plan smooth, per-clip transitions by analysing the styled frames. When
-        # that is unavailable (dry-run, --no-analyze, or the call fails) fall back
-        # to the single global motion prompt and one duration for every clip.
+        # Create step: analyse the styled frames, write the storyboard, and stop
+        # so it can be reviewed/edited before any clip credits are spent.
+        if self.options.create_storyboard:
+            if self.dry_run:
+                logger.info(
+                    "[dry-run] would analyse %d styled frame(s) and write %s + %s",
+                    len(styled),
+                    self.workspace.default_storyboard_json,
+                    self.workspace.storyboard_md,
+                )
+                return
+            storyboard = self._build_mode_a_storyboard(styled)
+            storyboard.save(self.workspace.default_storyboard_json)
+            write_storyboard_markdown(storyboard, self.workspace.storyboard_md)
+            self._announce_storyboard_ready(["--approve-storyboard"])
+            return
+
+        # One-shot: plan transitions, save the storyboard for transparency, then
+        # render in the same run (the clip-confirmation prompt is the review gate).
         storyboard = self._build_mode_a_storyboard(styled)
-        if storyboard is not None:
+        if not self.dry_run:
             storyboard.save(self.workspace.default_storyboard_json)
             write_storyboard_markdown(storyboard, self.workspace.storyboard_md)
             logger.info(
                 "Planned %d transition(s); storyboard written to %s",
                 len(storyboard.transitions), self.workspace.storyboard_md,
             )
-            self._generate_clips_with_prompts(self._pairs_from_storyboard(storyboard))
-        else:
-            self._generate_clips(
-                self._bridge_pairs(styled),
-                motion_prompt=self._motion_prompt(),
-            )
+        self._generate_clips_with_prompts(self._pairs_from_storyboard(storyboard))
 
-    def _build_mode_a_storyboard(self, styled: list[Path]) -> Optional[Storyboard]:
-        """Analyse the styled frames and plan a motion prompt + duration per clip.
+    def _build_mode_a_storyboard(self, styled: list[Path]) -> Storyboard:
+        """Build a storyboard whose frames point at the existing styled images.
 
-        Returns a Storyboard whose frames point at the existing styled images, or
-        None to fall back to the old single-motion-prompt behaviour — during a
-        dry-run (frames aren't on disk yet), when --no-analyze is set, or if the
-        vision call fails (a planning hiccup must not sink the whole run).
+        The per-clip motion prompt + duration come from the vision analysis (see
+        ``_plan_mode_a_transitions``); the storyboard is always fully populated.
         """
-        if self.dry_run or not self.options.analyze_frames:
-            return None
-
+        plans = self._plan_mode_a_transitions(styled)
         style = self.options.style_prompt or self.config.style_prompt
-        logger.info("Analysing %d styled frame(s) to plan smooth transitions...", len(styled))
-        try:
-            plans = self.openai.analyze_frame_transitions(
-                styled, style, default_duration=self.options.duration
-            )
-        except Exception as exc:  # noqa: BLE001 - planning is best-effort
-            logger.warning(
-                "Frame analysis failed (%s); using the default motion prompt "
-                "and one duration for every clip.", exc,
-            )
-            return None
-
         frames = [
             Frame(
                 id=f"{i:03d}",
@@ -218,6 +221,38 @@ class Pipeline:
             frames=frames,
             transitions=transitions,
         )
+
+    def _plan_mode_a_transitions(
+        self, styled: list[Path]
+    ) -> list[tuple[str, int, str]]:
+        """Per-pair (motion, duration, sound) plans for the styled frames.
+
+        Uses the vision analysis to tailor each clip. Falls back to the global
+        motion prompt and one duration for every clip when analysis is off
+        (--no-analyze), during a dry-run (frames aren't on disk yet), or if the
+        call fails — so a planning hiccup never sinks the run.
+        """
+        fallback = (
+            self._motion_prompt(),
+            self.options.duration or self.config.duration,
+            "",
+        )
+        n = len(styled)
+        if self.dry_run or not self.options.analyze_frames:
+            return [fallback] * (n - 1)
+
+        style = self.options.style_prompt or self.config.style_prompt
+        logger.info("Analysing %d styled frame(s) to plan smooth transitions...", n)
+        try:
+            return self.openai.analyze_frame_transitions(
+                styled, style, default_duration=self.options.duration
+            )
+        except Exception as exc:  # noqa: BLE001 - planning is best-effort
+            logger.warning(
+                "Frame analysis failed (%s); using the default motion prompt "
+                "and one duration for every clip.", exc,
+            )
+            return [fallback] * (n - 1)
 
     def _style_images(self, images: list[Path]) -> list[Path]:
         style_prompt = self.options.style_prompt or self.config.style_prompt
@@ -271,7 +306,7 @@ class Pipeline:
             return
 
         if self.options.approve_storyboard:
-            self._run_approved_storyboard()
+            self._render_from_storyboard_file(generate_frames=True)
             return
 
         raise PipelineError(
@@ -323,13 +358,15 @@ class Pipeline:
         storyboard.save(self.workspace.default_storyboard_json)
         write_storyboard_markdown(storyboard, self.workspace.storyboard_md)
 
-        print("\n" + "=" * 70)
-        print("Storyboard created. Review storyboard/storyboard.md or "
-              "storyboard/storyboard.json,")
-        print("edit if needed, then run with --approve-storyboard.")
-        print("=" * 70 + "\n")
+        self._announce_storyboard_ready(["--from-scratch", "--approve-storyboard"])
 
-    def _run_approved_storyboard(self) -> None:
+    def _render_from_storyboard_file(self, generate_frames: bool) -> None:
+        """Render clips from a saved, approved storyboard.
+
+        Mode B regenerates its key frames first (``generate_frames=True``); Mode A
+        already has its frames (the styled images the storyboard points at), so it
+        only renders the clips.
+        """
         sb_path = Path(self.options.storyboard_file)
         if not sb_path.is_absolute():
             sb_path = self.workspace.root / sb_path
@@ -342,7 +379,7 @@ class Pipeline:
         self.summary.input_count = len(storyboard.frames)
         self._storyboard_music_prompt = storyboard.music_prompt or ""
 
-        if not self.options.only_video:
+        if generate_frames and not self.options.only_video:
             self._generate_frames(storyboard)
 
         if self.options.only_style:
@@ -482,6 +519,27 @@ class Pipeline:
         ]
         self._generate_clips_with_prompts(enriched)
 
+    # ----------------------- next-command hints ------------------------- #
+    def _next_command(self, *flags: str) -> str:
+        """A copy-pasteable re-run command for this project, plus `flags`.
+
+        Assumes the default config path; add ``--config`` yourself if you run
+        with a custom one.
+        """
+        return " ".join(
+            ["python pipeline.py", f"--project {self.workspace.root.name}", *flags]
+        )
+
+    def _announce_storyboard_ready(self, approve_flags: list[str]) -> None:
+        """Tell the user the storyboard is written and how to approve it."""
+        print("\n" + "=" * 70)
+        print("Storyboard created. Review and edit if needed:")
+        print(f"  {self.workspace.storyboard_md}")
+        print(f"  {self.workspace.default_storyboard_json}")
+        print("\nThen generate the video with:")
+        print(f"  {self._next_command(*approve_flags)}")
+        print("=" * 70 + "\n")
+
     def _prompt_yes_no(
         self, lines: list[str], question: str, decline_log: str
     ) -> bool:
@@ -525,8 +583,8 @@ class Pipeline:
                 "with --only-video.",
             ],
             "Generate clips now? [y/N] ",
-            "Clip generation skipped. Re-run with --only-video to generate the "
-            "clips from the existing images.",
+            "Clip generation skipped. Generate the clips later with:\n  "
+            + self._next_command("--only-video"),
         )
 
     def _confirm_combine(self) -> bool:
@@ -542,8 +600,8 @@ class Pipeline:
                 "You can do this later by re-running with --combine.",
             ],
             "Combine clips into the final video now? [y/N] ",
-            "Combine skipped. Re-run with --combine to build the final video "
-            "from the existing clips.",
+            "Combine skipped. Build the final video later with:\n  "
+            + self._next_command("--combine"),
         )
 
     def _generate_clips_with_prompts(

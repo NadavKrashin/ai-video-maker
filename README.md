@@ -73,6 +73,19 @@ duration for every clip (the old behaviour). `--duration 5|10` forces one length
 for all clips even with analysis on; `--motion-prompt` overrides the planned
 prompts.
 
+By default Mode A runs in one shot (it pauses to confirm before spending clip
+credits). For an explicit **review/approve** gate — same as Mode B — split it
+into two commands so you can hand-edit the storyboard first:
+
+```bash
+python pipeline.py --project sealion --create-storyboard   # style + analyse, then stop
+#   ...review/edit projects/sealion/storyboard/storyboard.json...
+python pipeline.py --project sealion --approve-storyboard   # render clips from it
+```
+
+Whenever a step stops, the app prints the exact command for the next step, so you
+don't have to come back here for it.
+
 ### Mode B — Generate from scratch (`--from-scratch`)
 1. You provide an idea/prompt.
 2. OpenAI writes a full storyboard (concept, scenes, frames, per-frame image
@@ -181,6 +194,10 @@ python pipeline.py
 
 # Full run with no confirmation prompts (clips + combine proceed automatically)
 python pipeline.py --yes
+
+# Explicit review/approve gate: style + analyse, stop, then approve to render
+python pipeline.py --create-storyboard    # writes storyboard/, prints the next command
+python pipeline.py --approve-storyboard    # renders clips from the (edited) storyboard
 
 # Only style the images (no video)
 python pipeline.py --only-style
@@ -311,9 +328,9 @@ normalized to exactly 1920×1080), then renders the clips using the
 | `--idea-file PATH` | Read the idea/source material from a file (Mode B); overrides `--idea`. |
 | `--frame-count N` | Mode B: number of key frames (overrides config). `0` = let the model decide. |
 | `--from-scratch` | Use Mode B. |
-| `--create-storyboard` | Mode B: create storyboard and stop. |
-| `--approve-storyboard` | Mode B: generate after review. |
-| `--storyboard-file ...` | Storyboard JSON path for approval. |
+| `--create-storyboard` | Create the storyboard and stop for review. Mode B builds it from your idea; Mode A styles + analyses your images. Prints the approve command when done. |
+| `--approve-storyboard` | Generate the video from an approved storyboard. Mode B regenerates frames first; Mode A renders clips from the existing styled images. |
+| `--storyboard-file ...` | Storyboard JSON path used by `--approve-storyboard`. |
 
 ---
 
