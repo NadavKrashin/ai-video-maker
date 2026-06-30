@@ -58,10 +58,20 @@ The `projects/` folder is git-ignored.
 ### Mode A — Image-to-video from your images (default)
 1. Put source images in `input_images/`.
 2. Every image is styled into a consistent 1920×1080 look.
-3. Each **consecutive styled pair** is sent to the video provider (default: fal,
-   model Kling v2.1 Pro): image 1 = start frame, image 2 = end frame → one 5s or
-   10s clip. (Provider/model/end-frame are configurable — see below.)
-4. `n` images → `n − 1` clips, written to `clips/`.
+3. The styled frames are analysed by the vision model, which writes a storyboard
+   (`storyboard/storyboard.json` + `.md`) planning, for each consecutive pair, a
+   tailored **motion prompt** (so the start→end interpolation is smooth) and a
+   **per-clip duration** (5 or 10s, varied to suit each transition).
+4. Each **consecutive styled pair** is sent to the video provider (default: fal,
+   model Kling v2.1 Pro): image 1 = start frame, image 2 = end frame → one clip,
+   using that pair's planned motion prompt and duration. (Provider/model/end-frame
+   are configurable — see below.)
+5. `n` images → `n − 1` clips, written to `clips/`.
+
+Pass `--no-analyze` to skip step 3 and use a single global motion prompt with one
+duration for every clip (the old behaviour). `--duration 5|10` forces one length
+for all clips even with analysis on; `--motion-prompt` overrides the planned
+prompts.
 
 ### Mode B — Generate from scratch (`--from-scratch`)
 1. You provide an idea/prompt.
@@ -179,8 +189,11 @@ python pipeline.py --only-style
 # (also how you resume clip generation if you declined the prompt)
 python pipeline.py --only-video
 
-# Use 10-second clips (Mode A uses one length for every clip)
+# Force one clip length for every clip (overrides the per-clip analysis)
 python pipeline.py --duration 10
+
+# Skip the per-frame analysis: one global motion prompt + one duration for all
+python pipeline.py --no-analyze
 
 # Generate clips but skip building output/final_video.mp4
 python pipeline.py --no-combine
@@ -289,10 +302,11 @@ normalized to exactly 1920×1080), then renders the clips using the
 | `--no-audio` | Force audio off for this run, even if `audio_mode` is `"post"`. |
 | `--audio-only` | Add SFX + music to existing `clips/` and rebuild `output/final_video.mp4` (no generation). |
 | `--music-prompt "..."` | Override the background-music prompt for this run. |
-| `--duration 5` / `--duration 10` | Force every clip to this length. Omit in Mode B to let clips mix 5s/10s. |
+| `--duration 5` / `--duration 10` | Force every clip to this length. Omit to let clips mix 5s/10s (Mode A analysis or Mode B storyboard picks per clip). |
 | `--concurrency N` | Run N image/clip/SFX API jobs in parallel (overrides `max_parallel_requests`). `1` = sequential. |
 | `--motion-prompt "..."` | Override the global/per-transition motion prompt. |
 | `--style-prompt "..."` | Override the global style prompt (Mode A). |
+| `--no-analyze` | Mode A: skip the vision analysis of the styled frames; use one global motion prompt and one duration for every clip (the old behaviour). |
 | `--idea "..."` | The video idea (Mode B). |
 | `--idea-file PATH` | Read the idea/source material from a file (Mode B); overrides `--idea`. |
 | `--frame-count N` | Mode B: number of key frames (overrides config). `0` = let the model decide. |
@@ -424,8 +438,10 @@ short call). Requires `ffmpeg`/`ffprobe` on your `PATH` for the music mix.
 
 ### Where the prompts come from
 
-- **Mode A:** every clip uses `default_sfx_prompt`; the bed uses `music_prompt`
-  (from `config.json`). Audio still differs per clip because MMAudio reads the video.
+- **Mode A:** the frame analysis also writes a per-clip `sound_prompt` into each
+  transition (used for that clip's SFX); clips with no planned sound — and every
+  clip when `--no-analyze` is set — fall back to `default_sfx_prompt`. The music
+  bed uses `music_prompt` (from `config.json`).
 - **Mode B:** the storyboard step asks OpenAI to also write a `sound_to_next` per
   transition and one `music_prompt` for the whole video. These land in
   `storyboard.json` (and are shown in `storyboard.md`) and are **fully editable**

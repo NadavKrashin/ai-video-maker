@@ -9,7 +9,7 @@ from typing import Any, Callable, Optional, TypeVar
 
 from ..config import Config
 from ..constants import VALID_DURATIONS
-from ..media.images import normalize_image
+from ..media.images import encode_image_data_url, normalize_image
 from ..logging_setup import logger
 from ..models import Frame, Storyboard, Transition
 from ..retry import is_moderation_error, with_retries
@@ -85,6 +85,36 @@ _STORYBOARD_SYSTEM = (
     "music, no speech, no narration. Also write one music_prompt for the "
     "whole video: a short description of a single instrumental background "
     "track (mood, genre, instrumentation, no vocals)."
+)
+
+# --- Mode A transition planning (vision) ----------------------------------- #
+# Mode A already has the key frames (the user's styled images). Instead of
+# inventing frames, we show the model the real frames in order and ask it to plan
+# the clip that animates each consecutive pair, so the start/end interpolation is
+# smooth and each clip gets an appropriate length.
+_MODE_A_SYSTEM = (
+    "You are a film pre-production assistant planning how to animate a sequence "
+    "of existing still key frames into a smooth video. You are shown the frames "
+    "in order. Each consecutive pair (frame N -> frame N+1) is handed to an "
+    "image-to-video model that takes the two frames as the START and END of one "
+    "clip and interpolates between them. "
+    "For EACH consecutive pair, write a motion_prompt that makes the transition "
+    "as smooth and natural as possible: describe the camera movement and the "
+    "subject/scene movement that plausibly connects what is visible in the start "
+    "frame to what is visible in the end frame (e.g. 'slow camera push-in as the "
+    "subject turns toward the window, light warming'). Base it on what you "
+    "actually see in the two frames — match their content, composition and the "
+    "difference between them. Keep it concise (one or two sentences), describe "
+    "continuous motion (no hard cuts), and do not mention frame numbers or that "
+    "these are AI-generated images. "
+    "DURATION: pick a duration for each clip — either 5 or 10 seconds. Choose 10 "
+    "when the two frames differ a lot or the change is large and slow and needs "
+    "room to breathe; choose 5 for quick, subtle changes. Vary it across the "
+    "video; do not make them all the same. "
+    "SOUND: also write sound_prompt — a short phrase describing the diegetic "
+    "ambient sound and sound effects for that clip (e.g. 'waves lapping, gulls "
+    "calling, soft wind'). Real on-screen/world sounds only — no music, no "
+    "speech, no narration."
 )
 
 _STORYBOARD_NO_TEXT_FRAMES = (
@@ -321,6 +351,93 @@ class OpenAIClient:
 
         raw = self._retry(_call, "OpenAI create_storyboard")
         return self._assemble_storyboard(json.loads(raw), default_duration)
+
+    # --- Mode A: plan smooth transitions from the styled frames ------------- #
+    def analyze_frame_transitions(
+        self,
+        frames: list[Path],
+        style_prompt: str,
+        default_duration: Optional[int] = None,
+    ) -> list[tuple[str, int, str]]:
+        """Vision-analyze consecutive frames and plan each clip between them.
+
+        Returns one ``(motion_prompt, duration, sound_prompt)`` per consecutive
+        pair — exactly ``len(frames) - 1`` items, in frame order. The result is
+        always fully populated: any frame the model omits or returns malformed
+        falls back to ``config.motion_prompt`` / ``config.duration`` so the
+        caller can rely on the length and types.
+
+        When ``default_duration`` is set (5 or 10) every clip is forced to that
+        length instead of one chosen per pair.
+        """
+        n = len(frames)
+        if n < 2:
+            return []
+        client = self._ensure_client()
+
+        instruction = (
+            f"Here are {n} key frames of a video, in order. Plan the {n - 1} "
+            f"clips that animate each frame into the next. The intended visual "
+            f"style is: {style_prompt}\n\n"
+            "Return ONLY valid JSON with this exact shape:\n"
+            "{\n"
+            '  "transitions": [\n'
+            '    {"motion_prompt": str, "duration": 5 | 10, "sound_prompt": str}, ...\n'
+            "  ]\n"
+            "}\n"
+            f"The transitions array must have exactly {n - 1} items, in frame "
+            "order (the first animates frame 001 into 002). duration must be "
+            "exactly 5 or 10."
+        )
+        if default_duration:
+            instruction += (
+                f" Override: use duration = {default_duration} for every clip."
+            )
+
+        content: list[dict[str, Any]] = [{"type": "text", "text": instruction}]
+        for i, fp in enumerate(frames, start=1):
+            content.append({"type": "text", "text": f"Frame {i:03d}:"})
+            content.append(
+                {
+                    "type": "image_url",
+                    # "low" detail keeps the per-image token cost small; the model
+                    # only needs the gist of each frame to plan the motion.
+                    "image_url": {"url": encode_image_data_url(fp), "detail": "low"},
+                }
+            )
+
+        def _call() -> str:
+            resp = client.chat.completions.create(
+                model=self.config.openai_text_model,
+                messages=[
+                    {"role": "system", "content": _MODE_A_SYSTEM},
+                    {"role": "user", "content": content},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.7,
+            )
+            return resp.choices[0].message.content or "{}"
+
+        raw = self._retry(_call, "OpenAI analyze_frame_transitions")
+        return self._coerce_transition_plans(
+            json.loads(raw), n - 1, default_duration
+        )
+
+    def _coerce_transition_plans(
+        self, data: dict[str, Any], count: int, default_duration: Optional[int]
+    ) -> list[tuple[str, int, str]]:
+        """Normalise the model JSON into exactly `count` transition plans."""
+        items = data.get("transitions") or []
+        plans: list[tuple[str, int, str]] = []
+        for i in range(count):
+            item = items[i] if i < len(items) and isinstance(items[i], dict) else {}
+            motion = str(item.get("motion_prompt") or "").strip() or self.config.motion_prompt
+            duration = default_duration or self._coerce_duration(
+                item.get("duration"), self.config.duration
+            )
+            sound = str(item.get("sound_prompt") or "").strip()
+            plans.append((motion, duration, sound))
+        return plans
 
     def _coerce_duration(self, value: Any, fallback: int) -> int:
         """Return `value` if it is a valid clip duration, else `fallback`."""

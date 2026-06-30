@@ -143,9 +143,80 @@ class Pipeline:
             )
             return
 
-        self._generate_clips(
-            self._bridge_pairs(styled),
-            motion_prompt=self._motion_prompt(),
+        # Plan smooth, per-clip transitions by analysing the styled frames. When
+        # that is unavailable (dry-run, --no-analyze, or the call fails) fall back
+        # to the single global motion prompt and one duration for every clip.
+        storyboard = self._build_mode_a_storyboard(styled)
+        if storyboard is not None:
+            storyboard.save(self.workspace.default_storyboard_json)
+            write_storyboard_markdown(storyboard, self.workspace.storyboard_md)
+            logger.info(
+                "Planned %d transition(s); storyboard written to %s",
+                len(storyboard.transitions), self.workspace.storyboard_md,
+            )
+            self._generate_clips_with_prompts(self._pairs_from_storyboard(storyboard))
+        else:
+            self._generate_clips(
+                self._bridge_pairs(styled),
+                motion_prompt=self._motion_prompt(),
+            )
+
+    def _build_mode_a_storyboard(self, styled: list[Path]) -> Optional[Storyboard]:
+        """Analyse the styled frames and plan a motion prompt + duration per clip.
+
+        Returns a Storyboard whose frames point at the existing styled images, or
+        None to fall back to the old single-motion-prompt behaviour — during a
+        dry-run (frames aren't on disk yet), when --no-analyze is set, or if the
+        vision call fails (a planning hiccup must not sink the whole run).
+        """
+        if self.dry_run or not self.options.analyze_frames:
+            return None
+
+        style = self.options.style_prompt or self.config.style_prompt
+        logger.info("Analysing %d styled frame(s) to plan smooth transitions...", len(styled))
+        try:
+            plans = self.openai.analyze_frame_transitions(
+                styled, style, default_duration=self.options.duration
+            )
+        except Exception as exc:  # noqa: BLE001 - planning is best-effort
+            logger.warning(
+                "Frame analysis failed (%s); using the default motion prompt "
+                "and one duration for every clip.", exc,
+            )
+            return None
+
+        frames = [
+            Frame(
+                id=f"{i:03d}",
+                description="",
+                image_prompt="",
+                output_path=p.relative_to(self.workspace.root).as_posix(),
+            )
+            for i, p in enumerate(styled, start=1)
+        ]
+        transitions: list[Transition] = []
+        for idx, (a, b) in enumerate(zip(frames, frames[1:])):
+            motion, duration, sound = plans[idx]
+            tid = f"{a.id}_to_{b.id}"
+            transitions.append(
+                Transition(
+                    id=tid,
+                    start_frame=a.output_path,
+                    end_frame=b.output_path,
+                    motion_prompt=motion,
+                    duration=duration,
+                    sound_prompt=sound,
+                    output_path=f"clips/{tid}.mp4",
+                )
+            )
+        return Storyboard(
+            project_title=self.workspace.root.name,
+            style=style,
+            duration_per_clip=self.options.duration or self.config.duration,
+            target_width=self.config.target_width,
+            target_height=self.config.target_height,
+            frames=frames,
+            transitions=transitions,
         )
 
     def _style_images(self, images: list[Path]) -> list[Path]:
@@ -278,9 +349,18 @@ class Pipeline:
             logger.info("--only-style set: skipping video generation.")
             return
 
-        # Pair surviving frames in order, bridging over any that failed. Each
-        # pair takes its motion/sound/duration from the transition leaving its
-        # start frame (for a bridged pair, that frame's original outgoing one).
+        self._generate_clips_with_prompts(self._pairs_from_storyboard(storyboard))
+
+    def _pairs_from_storyboard(
+        self, storyboard: Storyboard
+    ) -> list[tuple[Path, Path, str, int, str]]:
+        """Build (start, end, motion, duration, sound) clip pairs from a storyboard.
+
+        Surviving frames are paired in order, bridging over any that are missing
+        on disk. Each pair takes its motion/duration/sound from the transition
+        leaving its start frame (for a bridged pair, that frame's original
+        outgoing one); --motion-prompt / --duration override per run.
+        """
         transitions = storyboard.transitions or self._derive_transitions(storyboard)
         tr_by_start: dict[str, Transition] = {
             (self.workspace.root / tr.start_frame).name: tr for tr in transitions
@@ -298,7 +378,7 @@ class Pipeline:
             )
             sound = tr.sound_prompt if tr else ""
             pairs.append((a, b, motion, duration, sound))
-        self._generate_clips_with_prompts(pairs)
+        return pairs
 
     @staticmethod
     def _derive_transitions(storyboard: Storyboard) -> list[Transition]:

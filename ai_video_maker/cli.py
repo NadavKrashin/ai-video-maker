@@ -68,6 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Override the global motion prompt.")
     p.add_argument("--style-prompt", default=None,
                    help="Override the global style prompt (Mode A).")
+    p.add_argument("--no-analyze", action="store_true",
+                   help="Mode A: skip the vision analysis of the styled frames. "
+                        "Use the single global motion prompt and one duration for "
+                        "every clip (the old behaviour) instead of planning a "
+                        "smooth, per-clip transition for each pair.")
     # Mode B
     p.add_argument("--idea", default=None, help="Video idea/prompt (Mode B).")
     p.add_argument("--idea-file", default=None,

@@ -31,6 +31,8 @@ class RunOptions:
     concurrency: Optional[int] = None
     motion_prompt: Optional[str] = None
     style_prompt: Optional[str] = None
+    # Mode A: analyse the styled frames to plan per-clip motion + duration.
+    analyze_frames: bool = True
     # Mode B
     idea: Optional[str] = None
     idea_file: Optional[str] = None
@@ -58,6 +60,7 @@ class RunOptions:
             concurrency=args.concurrency,
             motion_prompt=args.motion_prompt,
             style_prompt=args.style_prompt,
+            analyze_frames=not args.no_analyze,
             idea=args.idea,
             idea_file=args.idea_file,
             frame_count=args.frame_count,

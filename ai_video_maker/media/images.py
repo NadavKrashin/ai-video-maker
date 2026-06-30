@@ -1,6 +1,7 @@
 """Image utilities (Pillow) — normalise everything to exactly target size."""
 from __future__ import annotations
 
+import base64
 import re
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,20 @@ from PIL import Image
 from ..logging_setup import logger
 
 SUPPORTED_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+
+_DATA_URL_MIME = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+
+
+def encode_image_data_url(path: Path) -> str:
+    """Read `path` and return a base64 ``data:`` URL for the vision API."""
+    mime = _DATA_URL_MIME.get(path.suffix.lower(), "image/png")
+    b64 = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{b64}"
 
 
 def natural_sort_key(path: Path) -> list[Any]:
