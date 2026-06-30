@@ -31,8 +31,14 @@ python pipeline.py --project robots --from-scratch --create-storyboard --idea ".
 - **`--project` is required.** There is no default project — every run must name
   one, and the command errors out if you omit it. The named workspace (and all
   its subfolders) is created automatically on first use.
-- **Mode A:** put that movie's images in `projects/<name>/input_images/` (the
-  folder is created for you on first run).
+- **Mode A:** run `--init` first to create the workspace, then drop that movie's
+  images into the printed `projects/<name>/input_images/` folder:
+
+  ```bash
+  python pipeline.py --project sealion --init   # create the workspace and stop
+  # ...copy your images into projects/sealion/input_images/...
+  python pipeline.py --project sealion          # generate the movie
+  ```
 - **Mode B:** the storyboard is written to and read from
   `projects/<name>/storyboard/storyboard.json`; pass the same `--project` to
   every step (`--create-storyboard`, then `--approve-storyboard`).
@@ -147,8 +153,13 @@ interpolates from one styled frame to the next):
 
 ## Mode A — using existing images
 
-Place your images in `input_images/` (supported: `.jpg`, `.jpeg`, `.png`,
-`.webp`). Ordering is by natural filename order (`img2` before `img10`).
+Create the project workspace with `--init`, then place your images in its
+`input_images/` folder (supported: `.jpg`, `.jpeg`, `.png`, `.webp`). Ordering
+is by natural filename order (`img2` before `img10`).
+
+```bash
+python pipeline.py --project sealion --init   # create projects/sealion/ and stop
+```
 
 ```bash
 # Preview the plan without spending any API credits
@@ -266,6 +277,7 @@ normalized to exactly 1920×1080), then renders the clips using the
 |------|-------------|
 | `--config config.json` | Path to the config file. |
 | `--project NAME` | **Required.** Movie workspace under `projects/NAME/` (own input, frames, clips, output, storyboard, state). The run errors out if omitted. |
+| `--init` | Create the project workspace (`input_images/`, `clips/`, …) and exit without generating anything. Use it to set up a Mode A project before adding images. |
 | `--force` | Redo outputs even if already completed. |
 | `--dry-run` | Print planned work; spend no API credits. |
 | `-y`, `--yes` | Skip the interactive confirmations (before clip generation and before combining); proceed automatically. |

@@ -28,6 +28,11 @@ def build_parser() -> argparse.ArgumentParser:
                         "Each project keeps its own input_images/, frames, clips, "
                         "output, storyboard and state, so separate movies never "
                         "collide. Created on first use.")
+    p.add_argument("--init", action="store_true",
+                   help="Create the project workspace (input_images/, clips/, "
+                        "output/, etc.) and exit without generating anything. Use "
+                        "this to set up a Mode A project, then drop your source "
+                        "images into the printed input_images/ folder.")
     p.add_argument("--force", action="store_true", help="Redo completed outputs.")
     p.add_argument("--dry-run", action="store_true",
                    help="Print planned work without spending API credits.")
@@ -96,6 +101,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         parser.error(str(exc))
 
     workspace.mkdirs()
+
+    # --init just scaffolds the workspace so a Mode A project can be populated
+    # with images before its first real run. mkdirs() above already created the
+    # folders; print where to drop images and stop before any generation.
+    if args.init:
+        print(f"Created project '{args.project}' at {workspace.root}")
+        print(f"Mode A: put your source images in {workspace.input_images_dir}/")
+        print("then run the same command without --init to generate the movie.")
+        return 0
 
     setup_logging(workspace)
     load_dotenv(PROJECT_ROOT / ".env")
