@@ -4,6 +4,10 @@ This is the seam that decouples orchestration from the CLI: the pipeline reads
 its per-run choices from a plain ``RunOptions`` object instead of an
 ``argparse.Namespace``. The CLI builds one with ``RunOptions.from_args(args)``;
 a future API endpoint can build the same object straight from a request body.
+
+Which lifecycle step runs is NOT an option — it's the subcommand, passed to
+``Pipeline.execute(command)`` — so these fields are only the knobs a step can
+be turned with.
 """
 from __future__ import annotations
 
@@ -18,54 +22,47 @@ class RunOptions:
 
     force: bool = False
     dry_run: bool = False
-    yes: bool = False
-    only_style: bool = False
-    only_video: bool = False
-    combine: bool = False
-    no_combine: bool = False
-    add_audio: bool = False
-    no_audio: bool = False
-    audio_only: bool = False
-    music_prompt: Optional[str] = None
-    duration: Optional[int] = None
     concurrency: Optional[int] = None
+    duration: Optional[int] = None
     motion_prompt: Optional[str] = None
     style_prompt: Optional[str] = None
-    # Mode A: analyse the styled frames to plan per-clip motion + duration.
+    music_prompt: Optional[str] = None
+    music_file: Optional[str] = None
+    # Analyse the styled frames to plan per-clip motion + duration.
     analyze_frames: bool = True
-    # Mode B
+    # Storyboard-from-idea (instead of from input images).
     idea: Optional[str] = None
     idea_file: Optional[str] = None
     frame_count: Optional[int] = None
-    from_scratch: bool = False
-    create_storyboard: bool = False
-    approve_storyboard: bool = False
-    storyboard_file: str = "storyboard/storyboard.json"
+    # render: limit to (and force-redo) these clips, e.g. ["003_to_004"].
+    clips: Optional[list[str]] = None
+    # Per-run audio override; neither set -> config.audio_mode decides.
+    add_audio: bool = False
+    no_audio: bool = False
+    # run: stop after the clips, don't build the final video.
+    no_combine: bool = False
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> "RunOptions":
+        # Subcommands only define the flags they use, so read defensively.
+        def get(name: str, default=None):
+            return getattr(args, name, default)
+
         return cls(
-            force=args.force,
-            dry_run=args.dry_run,
-            yes=args.yes,
-            only_style=args.only_style,
-            only_video=args.only_video,
-            combine=args.combine,
-            no_combine=args.no_combine,
-            add_audio=args.add_audio,
-            no_audio=args.no_audio,
-            audio_only=args.audio_only,
-            music_prompt=args.music_prompt,
-            duration=args.duration,
-            concurrency=args.concurrency,
-            motion_prompt=args.motion_prompt,
-            style_prompt=args.style_prompt,
-            analyze_frames=not args.no_analyze,
-            idea=args.idea,
-            idea_file=args.idea_file,
-            frame_count=args.frame_count,
-            from_scratch=args.from_scratch,
-            create_storyboard=args.create_storyboard,
-            approve_storyboard=args.approve_storyboard,
-            storyboard_file=args.storyboard_file,
+            force=bool(get("force")),
+            dry_run=bool(get("dry_run")),
+            concurrency=get("concurrency"),
+            duration=get("duration"),
+            motion_prompt=get("motion_prompt"),
+            style_prompt=get("style_prompt"),
+            music_prompt=get("music_prompt"),
+            music_file=get("music_file"),
+            analyze_frames=not get("no_analyze", False),
+            idea=get("idea"),
+            idea_file=get("idea_file"),
+            frame_count=get("frame_count"),
+            clips=get("clip"),
+            add_audio=bool(get("add_audio")),
+            no_audio=bool(get("no_audio")),
+            no_combine=bool(get("no_combine")),
         )

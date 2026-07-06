@@ -1,94 +1,82 @@
 # AI Video Maker
 
 A local Python pipeline that turns images (or a raw idea) into short, consistent
-1920×1080 video clips using **OpenAI** (image generation/editing + storyboard
-planning) and **fal.ai** (image-to-video).
+1920×1080 videos using **OpenAI** (image generation/editing + storyboard
+planning) and **fal.ai** (image-to-video + audio).
 
 It renders one clip between each pair of consecutive key frames, then
-**concatenates them in order into `output/final_video.mp4`** with `ffmpeg`. Skip
-that with `--no-combine` to cut it yourself, or `--combine` to stitch existing
-clips without regenerating. Clips are silent by default; an opt-in
-[audio step](#audio-sound) adds per-clip sound effects plus a music bed.
+concatenates them in order into `output/final_video.mp4` with `ffmpeg`. Clips
+are silent by default; an opt-in [audio step](#audio-sound) adds per-clip sound
+effects plus a music bed.
 
 ---
 
-## Projects — one folder per movie (`--project`)
+## The lifecycle
 
-**Every movie lives in its own workspace under `projects/<name>/`**, with its own
-`input_images/`, `generated_frames/`, `styled_images/`, `clips/`, `output/`,
-`storyboard/`, and `logs/state.json`. Movies never collide and each resumes
-independently — no `--force` or manual cleanup between them.
-
-`--project` is **required** (there is no default project); the workspace is
-created on first use. `config.json` and `.env` stay shared at the repo root, and
-`projects/` is git-ignored.
+Every movie is a **project** under `projects/<name>/` with its own images,
+storyboard, clips, output and state. The CLI is one command per step:
 
 ```bash
-# Mode A — set up the workspace, add images, then generate
-python pipeline.py --project sealion --init   # create projects/sealion/ and stop
-# ...copy your images into projects/sealion/input_images/...
-python pipeline.py --project sealion
+python pipeline.py init myfilm            # 1. create projects/myfilm/, then add images
+python pipeline.py storyboard myfilm      # 2. style images + plan clips, stop for review
+#    ...review/edit projects/myfilm/storyboard/storyboard.json...
+python pipeline.py render myfilm          # 3. generate the clips from the storyboard
+python pipeline.py combine myfilm         # 4. stitch clips into output/final_video.mp4
 
-# Mode B — generate from an idea (same --project for every step)
-python pipeline.py --project robots --from-scratch --create-storyboard --idea "..."
+python pipeline.py status myfilm          # where am I? what's next?
+python pipeline.py run myfilm             # or: everything in one go (with confirmations)
 ```
 
-> Folder paths in this README (`input_images/`, `clips/`, `output/final_video.mp4`)
-> are **relative to the project workspace**, i.e. `projects/<name>/input_images/`.
+**The storyboard is the source of truth.** `storyboard` writes it, you edit it,
+`render` executes it exactly. Re-running `storyboard` never overwrites your
+edits (it reuses the saved storyboard while your images are unchanged); pass
+`--force` to redo styling + analysis from scratch.
 
----
+Whenever a step finishes, the app prints the exact command for the next step,
+and `status` will always tell you where you stand.
 
-## Two modes
+### Editing mid-generation
 
-### Mode A — Image-to-video from your images (default)
-1. Put source images in `input_images/`.
-2. Every image is styled into a consistent 1920×1080 look.
-3. The styled frames are analysed by the vision model, which writes a storyboard
-   (`storyboard/storyboard.json` + `.md`) planning, for each consecutive pair, a
-   tailored **motion prompt** (so the start→end interpolation is smooth) and a
-   **per-clip duration** (5 or 10s, varied to suit each transition).
-4. Each **consecutive styled pair** is sent to the video provider (default: fal,
-   model Kling v2.1 Pro): image 1 = start frame, image 2 = end frame → one clip,
-   using that pair's planned motion prompt and duration. (Provider/model/end-frame
-   are configurable — see below.)
-5. `n` images → `n − 1` clips, written to `clips/`.
+- **Change a clip's motion/duration/sound:** edit that transition in
+  `storyboard/storyboard.json`, then re-render just that clip:
 
-Pass `--no-analyze` to skip step 3 and use a single global motion prompt with one
-duration for every clip (the old behaviour). `--duration 5|10` forces one length
-for all clips even with analysis on; `--motion-prompt` overrides the planned
-prompts.
+  ```bash
+  python pipeline.py render myfilm --clip 003_to_004
+  ```
 
-By default Mode A runs in one shot (it pauses to confirm before spending clip
-credits). For an explicit **review/approve** gate — same as Mode B — split it
-into two commands so you can hand-edit the storyboard first:
+  Named clips are regenerated even if they exist, and their SFX/fade state is
+  reset so the redone clip gets fresh audio. `--clip` is repeatable.
+- **Redo everything:** `render --force` (clips) or `storyboard --force`
+  (styling + analysis + storyboard).
+- **Preview before spending:** `render` prints a per-clip plan (what will be
+  rendered vs skipped, durations, motion prompts) and asks before spending
+  clip credits. `--dry-run` on any command prints the plan and spends nothing.
+
+### From an idea instead of images
+
+Pass `--idea` (or `--idea-file` for long/structured material) to `storyboard`:
 
 ```bash
-python pipeline.py --project sealion --create-storyboard   # style + analyse, then stop
-#   ...review/edit projects/sealion/storyboard/storyboard.json...
-python pipeline.py --project sealion --approve-storyboard   # render clips from it
+python pipeline.py init robots
+python pipeline.py storyboard robots --idea "A cute sea lion explores a futuristic base"
+#    ...review/edit the storyboard (image prompts, motion, durations)...
+python pipeline.py render robots          # generates the key frames, then the clips
 ```
 
-Whenever a step stops, the app prints the exact command for the next step, so you
-don't have to come back here for it.
-
-### Mode B — Generate from scratch (`--from-scratch`)
-1. You provide an idea/prompt.
-2. OpenAI writes a full storyboard (concept, scenes, frames, per-frame image
-   prompts, per-transition motion prompts).
-3. The plan is saved to `storyboard/storyboard.json` and `storyboard/storyboard.md`,
-   then the app **stops and asks you to review/approve it**.
-4. After you approve, it generates every key frame at 1920×1080.
-5. Then it sends consecutive frame pairs to the video provider → `n − 1` clips.
+- `--frame-count N` fixes the number of key frames; `--frame-count 0` lets the
+  model pick a count that fits the material. Default: `default_frame_count`
+  from `config.json`.
+- You can also **skip AI planning entirely** and author
+  `storyboard/storyboard.json` by hand, then run `render`.
 
 ---
 
 ## Requirements
 
 - Python **3.11+**
-- **ffmpeg** on your `PATH` (used to combine clips). Install with
+- **ffmpeg** on your `PATH` (used to combine clips and mix audio). Install with
   `winget install Gyan.FFmpeg` (Windows), `brew install ffmpeg` (macOS), or
-  `apt install ffmpeg` (Linux), then open a new terminal. Only needed for the
-  final-combine step — skip it with `--no-combine`.
+  `apt install ffmpeg` (Linux), then open a new terminal.
 - An OpenAI API key
 - A **fal.ai** key (image-to-video + audio) — from https://fal.ai/dashboard/keys
 
@@ -159,124 +147,76 @@ interpolates from one styled frame to the next):
 
 ---
 
-## Mode A — using existing images
+## How each step works
 
-Run `--init`, drop your images into `input_images/` (`.jpg`, `.jpeg`, `.png`,
-`.webp`; ordered by natural filename order, so `img2` before `img10`), then run
-the project. Styled images are written as `styled_images/001_styled.png`, … and
-clips as `clips/001_to_002.mp4`, …
+### `storyboard` (from images — the main flow)
 
-```bash
-python pipeline.py --project sealion --init   # create the workspace, then add images
-python pipeline.py --project sealion           # style → analyse → confirm → clips → combine
-python pipeline.py --project sealion --dry-run # preview the plan, spend no credits
-```
+1. Put source images in `input_images/` (`.jpg`, `.jpeg`, `.png`, `.webp`;
+   ordered by natural filename order, so `img2` before `img10`).
+2. Every image is styled into a consistent 1920×1080 look
+   (`styled_images/001_styled.png`, …). Already-styled images are skipped on
+   re-runs.
+3. The styled frames are analysed by the vision model, which plans — for each
+   consecutive pair — a tailored **motion prompt**, a **per-clip duration**
+   (5 or 10s), and a **sound prompt**, and writes
+   `storyboard/storyboard.json` + `storyboard.md`.
 
-A normal run pauses to confirm before clips and before combining. For an explicit
-review gate where you can hand-edit the storyboard first, split it in two
-(see [the two-step flow](#mode-a--image-to-video-from-your-images-default) above).
-Every other behaviour is a flag — see [All command-line flags](#all-command-line-flags)
-(e.g. `--only-style`, `--only-video`, `--no-analyze`, `--duration`, `--combine`).
+`--no-analyze` skips step 3's vision call and uses the single global motion
+prompt with one duration for every clip. `--duration 5|10` forces one length
+for all clips even with analysis on.
 
----
+### `render`
 
-## Mode B — generate from a raw idea
+Reads the storyboard, generates any missing key frames (idea-based projects
+only), then sends each consecutive frame pair to the video provider: start
+frame + end frame + that pair's motion prompt → one clip in `clips/`
+(`001_to_002.mp4`, …). `n` frames → `n − 1` clips.
 
-> Pass the **same** `--project` to every step below.
+Per-run overrides: `--motion-prompt` (all clips), `--duration` (all clips),
+`--clip ID` (only those clips, force-regenerated).
 
-### Step 1 — create the storyboard (and stop)
+### `combine`
 
-```bash
-python pipeline.py --project sea-lion --from-scratch --create-storyboard \
-  --idea "A cute sea lion explores a futuristic training base"
-```
+Concatenates the storyboard's clips, in order, into `output/final_video.mp4`
+(lossless stream-copy when the clips share a codec, otherwise a re-encode
+fallback; clips with mixed audio presence are joined with silent padding).
+Clips in `clips/` that don't belong to the current storyboard are ignored with
+a warning, so stale files never leak into the movie. An existing final video
+is only rebuilt with `--force`.
 
-This writes `storyboard/storyboard.json` and `storyboard/storyboard.md`, then
-prints the exact `--approve-storyboard` command to run next. **Nothing is
-generated yet** — the app never jumps straight from an idea to a full video.
+### `run`
 
-**Controlling how many frames/clips you get.** By default the storyboard uses
-`default_frame_count` from `config.json` (8 frames → 7 clips). To change it:
-
-```bash
-# Fixed number of frames (e.g. 5 frames -> 4 clips)
-python pipeline.py --project sea-lion --from-scratch --create-storyboard --idea "..." --frame-count 5
-
-# Let the model choose the count based on YOUR content (no fixed padding)
-python pipeline.py --project sea-lion --from-scratch --create-storyboard --idea "..." --frame-count 0
-
-# Pass long / structured pasted data from a file instead of --idea
-python pipeline.py --project sea-lion --from-scratch --create-storyboard --idea-file my_script.txt --frame-count 0
-```
-
-- `--frame-count N` overrides the default; `--frame-count 0` tells the model to
-  pick the number of frames that fits the material (each beat/scene maps to one
-  or more frames, no padding to a fixed number).
-- `--idea-file PATH` reads the idea/source material from a text file — best when
-  pasting a lot of text or a structured outline (avoids shell-quoting issues).
-  It takes precedence over `--idea`.
-- You can also **skip AI generation entirely** and author `storyboard/storyboard.json`
-  by hand with any number of frames/transitions, then go straight to Step 3.
-  See the structure in [Step 2](#step-2--review--edit).
-
-### Step 2 — review & edit
-
-Open `storyboard/storyboard.md` for a readable overview, or edit
-`storyboard/storyboard.json` directly — it is designed to be human-editable.
-You can tweak:
-- each frame's `image_prompt` / `negative_prompt`
-- each transition's `motion_prompt` and `duration`
-
-**Mixing clip lengths:** in Mode B each clip can be a different length. When the
-storyboard is created the model picks a `duration` of `5` or `10` per transition
-(longer for bigger/slower motion, shorter for subtle changes), so a single video
-can mix 5s and 10s clips. Override any clip by editing its transition `duration`
-in the JSON. Passing `--duration 5` or `--duration 10` forces **every** clip to
-that one length (at create time and at approve time); omit it to keep the mix.
-
-### Step 3 — approve and generate
-
-```bash
-python pipeline.py --project sea-lion --from-scratch --approve-storyboard \
-  --storyboard-file storyboard/storyboard.json
-```
-
-This generates every key frame into `generated_frames/001.png`, … (each
-normalized to exactly 1920×1080), then renders the clips using the
-**per-transition** motion prompts from the storyboard.
+`storyboard` (reused if saved) → confirmation → `render` → confirmation →
+`combine`, in one command. `-y` skips the confirmations; `--no-combine` stops
+after the clips.
 
 ---
 
-## All command-line flags
+## All commands & flags
 
-| Flag | Description |
-|------|-------------|
-| `--config config.json` | Path to the config file. |
-| `--project NAME` | **Required.** Movie workspace under `projects/NAME/` (own input, frames, clips, output, storyboard, state). The run errors out if omitted. |
-| `--init` | Create the project workspace (`input_images/`, `clips/`, …) and exit without generating anything. Use it to set up a Mode A project before adding images. |
-| `--force` | Redo outputs even if already completed. |
-| `--dry-run` | Print planned work; spend no API credits. |
-| `-y`, `--yes` | Skip the interactive confirmations (before clip generation and before combining); proceed automatically. |
-| `--only-style` | Only style/generate images; skip video. |
-| `--only-video` | Only generate videos from existing images (also resumes clip generation if you declined the confirmation prompt). |
-| `--combine` | Only concatenate existing `clips/` into `output/final_video.mp4`; no generation. |
-| `--no-combine` | Skip building the final combined video at the end of a run. |
-| `--add-audio` | Force audio on for this run (per-clip SFX + music bed), ignoring `audio_mode`. |
-| `--no-audio` | Force audio off for this run, even if `audio_mode` is `"post"`. |
-| `--audio-only` | Add SFX + music to existing `clips/` and rebuild `output/final_video.mp4` (no generation). |
-| `--music-prompt "..."` | Override the background-music prompt for this run. |
-| `--duration 5` / `--duration 10` | Force every clip to this length. Omit to let clips mix 5s/10s (Mode A analysis or Mode B storyboard picks per clip). |
-| `--concurrency N` | Run N image/clip/SFX API jobs in parallel (overrides `max_parallel_requests`). `1` = sequential. |
-| `--motion-prompt "..."` | Override the global/per-transition motion prompt. |
-| `--style-prompt "..."` | Override the global style prompt (Mode A). |
-| `--no-analyze` | Mode A: skip the vision analysis of the styled frames; use one global motion prompt and one duration for every clip (the old behaviour). |
-| `--idea "..."` | The video idea (Mode B). |
-| `--idea-file PATH` | Read the idea/source material from a file (Mode B); overrides `--idea`. |
-| `--frame-count N` | Mode B: number of key frames (overrides config). `0` = let the model decide. |
-| `--from-scratch` | Use Mode B. |
-| `--create-storyboard` | Create the storyboard and stop for review. Mode B builds it from your idea; Mode A styles + analyses your images. Prints the approve command when done. |
-| `--approve-storyboard` | Generate the video from an approved storyboard. Mode B regenerates frames first; Mode A renders clips from the existing styled images. |
-| `--storyboard-file ...` | Storyboard JSON path used by `--approve-storyboard`. |
+Global: `--config config.json` (before the command). Every command takes the
+project name as its first argument.
+
+| Command | Flags |
+|---------|-------|
+| `init` | — |
+| `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
+| `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 5\|10`, `--add-audio`, `--no-audio` |
+| `audio` | `--force`, `--dry-run`, `--concurrency N`, `--music-prompt`, `--music-file PATH` |
+| `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--add-audio`, `--no-audio` |
+| `status` | — |
+| `run` | everything above except `--clip`, plus `--no-combine` |
+
+Shared flag meanings:
+
+- `--force` — redo outputs even if already completed (for `storyboard` this
+  re-styles the images **and** re-analyses; delete `storyboard/storyboard.json`
+  instead to re-analyse only).
+- `--dry-run` — print planned work; spend no API credits.
+- `--concurrency N` — run N image/clip/SFX API jobs in parallel (overrides
+  `max_parallel_requests`). `1` = sequential.
+- `--add-audio` / `--no-audio` — force the audio layer on/off for this run,
+  overriding `config.audio_mode`.
 
 ---
 
@@ -285,12 +225,7 @@ normalized to exactly 1920×1080), then renders the clips using the
 Image styling, frame generation, and clip+SFX rendering are I/O-bound (most of
 the time is spent waiting on the provider), so they run **in parallel** across a
 small thread pool. Control it with `max_parallel_requests` in `config.json`
-(default `4`) or `--concurrency N` per run:
-
-```bash
-python pipeline.py --concurrency 8     # render up to 8 clips at once
-python pipeline.py --concurrency 1     # fully sequential (old behaviour)
-```
+(default `4`) or `--concurrency N` per run.
 
 Each clip's SFX and edge-fade run inside that clip's worker, so audio is
 parallelised too. Job state (`logs/state.json`) and failure tracking are
@@ -298,7 +233,6 @@ thread-safe, so resume/skip and `failed_jobs.json` work exactly as before.
 Higher concurrency is faster but more likely to hit provider **rate limits**;
 transient 429s are retried with backoff, but if you see a lot of them, lower the
 number. Dry-runs always run sequentially so the planned-work log stays ordered.
-The final `ffmpeg` concatenation and the music bed run once, after all clips.
 
 ---
 
@@ -307,108 +241,95 @@ The final `ffmpeg` concatenation and the music bed run once, after all clips.
 - Job status is stored in `logs/state.json`. Completed images and clips are
   **skipped automatically** on the next run — just re-run the same command to
   resume where it stopped.
-- Use `--force` to ignore saved state and redo everything.
+- Use `--force` to ignore saved state and redo everything, or
+  `render --clip ID` to redo specific clips.
 - Anything that failed is written to `failed_jobs/failed_jobs.json` with the
-  error message and context. Fix the cause (e.g. a bad prompt, rate limit) and
-  re-run; only the unfinished/failed jobs will be retried.
+  error message and context (a clean run clears it). Fix the cause and re-run;
+  only the unfinished/failed jobs are retried.
 - Detailed logs for every run are written to `logs/pipeline_<timestamp>.log`.
 - **Missing frames are bridged automatically.** If a frame fails to generate
   (e.g. frame 4), the clip step doesn't leave a hole — it pairs the nearest
   surviving neighbours directly (…`3→5`…) so the final video stays continuous.
-  The bridged clip is named after the frames it actually joins (`003_to_005.mp4`)
-  and inherits the motion/sound/duration of the surviving start frame's
-  transition. It's logged as a warning so you know it happened; fix the frame and
-  re-run to get the original `3→4`/`4→5` clips back. (A bridged `3→5` is a bigger
-  jump, so that one clip interpolates a larger change.)
+  The bridged clip is named after the frames it actually joins
+  (`003_to_005.mp4`). Fix the frame and re-run to get the original `3→4`/`4→5`
+  clips back; the leftover bridged clip is then ignored by `combine` (it warns
+  about strays so you can delete them).
 
 The pipeline also has built-in retry with exponential backoff for transient API
 errors, and it waits on provider jobs until they complete, fail, or time out.
 
 ---
 
-## Output & final assembly
+## Output layout
 
 Everything below lives inside the project workspace, `projects/<name>/`:
 
-| Folder (under `projects/<name>/`) | Contents |
+| Folder | Contents |
 |--------|----------|
-| `styled_images/` | Mode A styled frames (`001_styled.png`, …) |
-| `generated_frames/` | Mode B generated frames (`001.png`, …) |
+| `input_images/` | Your source images (image-based projects) |
+| `styled_images/` | Styled frames (`001_styled.png`, …) |
+| `generated_frames/` | Idea-based generated frames (`001.png`, …) |
 | `clips/` | Rendered clips (`001_to_002.mp4`, …) |
-| `output/` | Combined `final_video.mp4` (all clips concatenated in order) + `music.mp3` (the generated bed, when audio is on) |
-| `storyboard/` | `storyboard.json` + `storyboard.md` (both modes) |
+| `output/` | `final_video.mp4` + `music.mp3` (the generated bed, when audio is on) |
+| `storyboard/` | `storyboard.json` (editable source of truth) + `storyboard.md` (readable view) |
 | `logs/` | Run logs + `state.json` |
 | `failed_jobs/` | `failed_jobs.json` |
-
-By default the clips are concatenated, in filename order, into
-`output/final_video.mp4` with `ffmpeg` (lossless stream-copy when the clips
-share a codec, otherwise a re-encode fallback). Use `--no-combine` to skip this
-and assemble the cut yourself in an editor, or `--combine` to (re)build the final
-video from whatever is already in `clips/`. Re-running won't overwrite an
-existing `final_video.mp4` unless you pass `--force`.
 
 ---
 
 ## Audio (sound)
 
 The video providers above output **silent** clips. Sound is added in a separate,
-opt-in step that runs entirely through **fal** (same `FAL_KEY`, no extra account),
-so it works no matter which provider rendered the clips. Two independent layers:
+opt-in step that runs entirely through **fal** (same `FAL_KEY`, no extra
+account). Two independent layers:
 
-1. **Per-clip SFX / ambient** — each silent clip is sent to a *video→audio* model
-   (default `fal-ai/mmaudio-v2`), which watches the clip and returns the **same
-   clip with synchronized sound muxed in**. Because it reads the actual pixels,
-   every clip gets its own motion-matched audio even when they share a prompt.
-2. **Music bed** — one instrumental track (default `fal-ai/elevenlabs/music`) is
-   generated from a single prompt and mixed across the whole
-   `output/final_video.mp4` **louder than the clip SFX** (the SFX is ducked under
-   it). Tune the balance with `music_volume` / `sfx_volume` in `config.json`. The
-   track is looped/trimmed to the video length.
-
-   **Choosing the music (interactive).** When audio is on, just before the clips
-   are combined you're asked which music file to use — Enter accepts the default
-   `output/music.mp3`, or you can type a path to your own track, or `g` to
-   generate one with ElevenLabs. If the file you pick isn't found, you're offered
-   another file, generation, or skipping the music entirely. This prompt is
-   skipped (and the old behaviour kept — reuse `music.mp3` if present, else
-   generate) under `--yes`, in a non-interactive shell, or during `--dry-run`.
+1. **Per-clip SFX / ambient** — each silent clip is sent to a *video→audio*
+   model (default `fal-ai/mmaudio-v2`), which watches the clip and returns the
+   **same clip with synchronized sound muxed in**. Because it reads the actual
+   pixels, every clip gets its own motion-matched audio.
+2. **Music bed** — one instrumental track (default `fal-ai/elevenlabs/music`)
+   is generated from a single prompt and mixed across the whole final video,
+   **louder than the clip SFX** (the SFX is ducked under it). Tune the balance
+   with `music_volume` / `sfx_volume` in `config.json`.
 
 ### Turning it on
 
-It is **off by default** (`"audio_mode": "none"`) so existing runs are unchanged.
-Enable it either permanently in `config.json` (`"audio_mode": "post"`) or per-run:
+Off by default (`"audio_mode": "none"`). Enable it permanently in `config.json`
+(`"audio_mode": "post"`), per-run with `--add-audio`, or retrofit existing
+clips:
 
 ```bash
-# Generate clips AND add sound in one run
-python pipeline.py --add-audio
+# Render clips AND add sound in one run
+python pipeline.py run myfilm --add-audio
 
-# Mode B with sound (the storyboard also plans per-clip + music prompts)
-python pipeline.py --from-scratch --approve-storyboard --add-audio \
-  --storyboard-file storyboard/storyboard.json
+# Already have silent clips? Add SFX + music and rebuild the final video:
+python pipeline.py audio myfilm
 
-# Already have silent clips? Add SFX + music and rebuild the final video only:
-python pipeline.py --audio-only
+# Use your own music track instead of generating one:
+python pipeline.py audio myfilm --music-file ~/Music/mytrack.mp3
 
-# Override just the music bed for a run:
-python pipeline.py --add-audio --music-prompt "Upbeat playful ukulele, no vocals"
+# Override just the music prompt:
+python pipeline.py audio myfilm --music-prompt "Upbeat playful ukulele, no vocals"
 
 # Force-off for one run even if config has audio_mode: post
-python pipeline.py --no-audio
+python pipeline.py run myfilm --no-audio
 ```
 
-Cost is roughly **$0.20–0.50 per full video** (MMAudio is ~$0.001/s; music is one
-short call). Requires `ffmpeg`/`ffprobe` on your `PATH` for the music mix.
+The music bed comes from `--music-file` if given, else the project's existing
+`output/music.mp3`, else it is generated from the music prompt (storyboard's
+`music_prompt`, or `--music-prompt`, or config).
+
+Cost is roughly **$0.20–0.50 per full video** (MMAudio is ~$0.001/s; music is
+one short call). Requires `ffmpeg`/`ffprobe` on your `PATH`.
 
 ### Where the prompts come from
 
-- **Mode A:** the frame analysis also writes a per-clip `sound_prompt` into each
-  transition (used for that clip's SFX); clips with no planned sound — and every
-  clip when `--no-analyze` is set — fall back to `default_sfx_prompt`. The music
-  bed uses `music_prompt` (from `config.json`).
-- **Mode B:** the storyboard step asks OpenAI to also write a `sound_to_next` per
-  transition and one `music_prompt` for the whole video. These land in
-  `storyboard.json` (and are shown in `storyboard.md`) and are **fully editable**
-  before you approve — same as the motion prompts. Blank ones fall back to config.
+- **Image-based projects:** the frame analysis writes a per-clip `sound_prompt`
+  into each transition; blank ones fall back to `default_sfx_prompt`. The music
+  bed prompt comes from `config.json` (or `--music-prompt`).
+- **Idea-based projects:** the storyboard also plans a `sound_prompt` per
+  transition and one `music_prompt` for the whole video — all editable in
+  `storyboard.json` before rendering.
 
 ### Config keys
 
@@ -417,43 +338,37 @@ short call). Requires `ffmpeg`/`ffprobe` on your `PATH` for the music mix.
 | `audio_mode` | `"none"` (silent, default) or `"post"` (add sound). |
 | `sfx_model_id` | fal video→audio model. Default `fal-ai/mmaudio-v2`. |
 | `sfx_num_steps` | MMAudio sampling steps. |
-| `default_sfx_prompt` | SFX prompt for Mode A and as the Mode B fallback. |
+| `default_sfx_prompt` | Fallback SFX prompt when a transition has none. |
 | `sfx_negative_prompt` | What the SFX model should avoid (music/speech). |
 | `sfx_extra_arguments` | Extra model-specific args merged into each SFX call. |
-| `sfx_fade_seconds` | Fade each clip's SFX in/out by this many seconds so hard cuts aren't abrupt (the music bed carries the dip). Sync-preserving; `0` disables. Default `0.2`. |
-| `sfx_volume` | `0..1`, how loud the per-clip SFX sits **under** the music when both play (default `0.35`). |
+| `sfx_fade_seconds` | Fade each clip's SFX in/out at its edges so hard cuts aren't abrupt (the music bed carries the dip). Sync-preserving; `0` disables. Default `0.2`. |
+| `sfx_volume` | `0..1`, how loud the per-clip SFX sits **under** the music (default `0.35`). |
 | `music_model_id` | fal text→music model. Default `fal-ai/elevenlabs/music`. |
-| `music_prompt` | Background-music description (Mode A / fallback). |
-| `music_volume` | `0..1`, how loud the background bed plays — louder than `sfx_volume` so the music dominates (default `0.85`). |
+| `music_prompt` | Background-music description (fallback). |
+| `music_volume` | `0..1`, how loud the background bed plays (default `0.85`). |
 | `music_extra_arguments` | Extra model-specific args for the music call. |
 
 Swap the SFX or music model by changing the id (e.g. `fal-ai/lyria2`,
 `cassetteai/music-generator`, `fal-ai/thinksound`) — no code changes. SFX and
-music are state-tracked like every other stage, so interrupted runs resume and
-finished clips are skipped (`--force` redoes them).
-
-Each clip's SFX is generated independently, so the ambience can jump at a cut.
-`sfx_fade_seconds` fades every clip's audio in/out at its edges (the music bed
-fills the dip; hard cuts and A/V sync are untouched). The fade is tracked
-separately from SFX (`fade:<clip>` in `state.json`), so re-running `--audio-only`
-adds fades to already-sounded clips **without re-paying for SFX**.
+music are state-tracked like every other stage, so interrupted runs resume,
+finished clips are skipped, and a regenerated clip automatically gets fresh
+audio.
 
 ---
 
 ## Code layout
 
 The pipeline lives in the `ai_video_maker/` package; `pipeline.py` at the repo
-root is a thin shim that calls into it, so every `python pipeline.py …` command
-above works unchanged. After `pip install -e .` you can also run the
-`ai-video-maker` console command.
+root is a thin shim that calls into it. After `pip install -e .` you can also
+run the `ai-video-maker` console command.
 
 ```
 ai_video_maker/
-  cli.py             # argument parsing + main() entry point
+  cli.py             # subcommand parsing + main() entry point (all interactivity)
   config.py          # Config — validated config.json (pydantic)
   workspace.py       # Workspace — all per-movie paths, derived from one base dir
-  options.py         # RunOptions — one run's choices (CLI flags or an API request)
-  runner.py          # Pipeline — orchestration (Mode A / Mode B / combine / audio)
+  options.py         # RunOptions — one run's knobs (CLI flags or an API request)
+  runner.py          # Pipeline — one cmd_* method per lifecycle command
   summary.py         # RunSummary — end-of-run report
   models.py          # Frame / Transition / Storyboard
   storyboard_md.py   # storyboard -> markdown for review
@@ -470,11 +385,13 @@ ai_video_maker/
     download.py      # shared atomic streaming download
     video.py         # VideoClient — image-to-video (fal)
     audio.py         # AudioClient — SFX + music (fal)
-pipeline.py          # backwards-compatible entry-point shim
+pipeline.py          # entry-point shim
 pyproject.toml       # package metadata, deps, `ai-video-maker` console script
 ```
 
 The pipeline is built from three explicit inputs — `Config`, `Workspace`, and
-`RunOptions` — and reads no global state, so the same `Pipeline(config,
-workspace, options)` orchestration can later be driven by an API instead of the
-CLI (each request builds its own `Workspace` + `RunOptions`).
+`RunOptions` — plus an injected `confirm` callback for the interactive gates,
+and reads no global state or stdin. Each CLI subcommand maps 1:1 onto a
+`Pipeline.cmd_*` method, which is exactly the surface a future web API will
+expose (each request builds its own `Workspace` + `RunOptions` and calls one
+command).

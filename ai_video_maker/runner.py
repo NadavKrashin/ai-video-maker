@@ -2,13 +2,19 @@
 
 The pipeline is constructed from three explicit inputs — a validated ``Config``,
 a ``Workspace`` (all per-movie paths), and ``RunOptions`` (this run's choices).
-Nothing here reads global state or argparse, so the same orchestration can be
-driven by the CLI or, later, an API request.
+Nothing here reads global state, argparse, or the terminal, so the same
+orchestration can be driven by the CLI or, later, an API request.
+
+The public surface is one method per lifecycle command (``cmd_storyboard``,
+``cmd_render``, ``cmd_audio``, ``cmd_combine``, ``cmd_status``, ``cmd_run``),
+dispatched via :meth:`Pipeline.execute`. Anything interactive happens through
+the injected ``confirm`` callback — the CLI wires it to a terminal prompt, an
+API caller simply omits it (every gate auto-proceeds) and drives the steps
+individually instead.
 """
 from __future__ import annotations
 
 import re
-import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -33,8 +39,8 @@ from .media.images import (
     SUPPORTED_IMAGE_EXTS,
     list_input_images,
     natural_sort_key,
-    verify_dimensions,
 )
+from .media.images import verify_dimensions
 from .models import Frame, Storyboard, Transition
 from .options import RunOptions
 from .state import FailedJobStore, StateStore
@@ -42,14 +48,26 @@ from .storyboard_md import write_storyboard_markdown
 from .summary import RunSummary
 from .workspace import PROJECT_ROOT, Workspace
 
+# (info_lines, question) -> proceed? Injected by the CLI as a terminal prompt;
+# defaults to always-yes so embedded/API callers never block on stdin.
+ConfirmFn = Callable[[list[str], str], bool]
+
+# One planned clip: (start_frame, end_frame, motion_prompt, duration, sound_prompt)
+ClipPair = tuple[Path, Path, str, int, str]
+
 
 class Pipeline:
     def __init__(
-        self, config: Config, workspace: Workspace, options: RunOptions
+        self,
+        config: Config,
+        workspace: Workspace,
+        options: RunOptions,
+        confirm: Optional[ConfirmFn] = None,
     ) -> None:
         self.config = config
         self.workspace = workspace
         self.options = options
+        self.confirm: ConfirmFn = confirm or (lambda lines, question: True)
         self.dry_run: bool = options.dry_run
         self.force: bool = options.force
         self.duration: int = options.duration or config.duration
@@ -60,14 +78,15 @@ class Pipeline:
         self.video_client = VideoClient(config)
         self.audio_client = AudioClient(config)
         # Audio is on when config.audio_mode == "post", unless overridden by
-        # --add-audio / --no-audio for a single run.
+        # --add-audio / --no-audio for a single run (the `audio` command
+        # forces it on).
         if options.no_audio:
             self.audio_enabled = False
-        elif options.add_audio or options.audio_only:
+        elif options.add_audio:
             self.audio_enabled = True
         else:
             self.audio_enabled = (config.audio_mode or "none").lower() == "post"
-        # Resolved at storyboard-approval time (Mode B); falls back to config.
+        # Resolved when a storyboard is loaded; falls back to config.
         self._storyboard_music_prompt: str = ""
         # Concurrency for the I/O-bound generation steps.
         self.concurrency: int = max(
@@ -77,6 +96,34 @@ class Pipeline:
         # FailedJobStore guard themselves).
         self._lock = threading.Lock()
 
+    # ------------------------------ dispatch ----------------------------- #
+    def execute(self, command: str) -> None:
+        """Run one lifecycle command; flush failure/summary reports after.
+
+        ``status`` is read-only: no summary, and crucially no failure flush
+        (flushing a run with zero failures deletes the previous report).
+        """
+        handlers: dict[str, Callable[[], None]] = {
+            "storyboard": self.cmd_storyboard,
+            "render": self.cmd_render,
+            "audio": self.cmd_audio,
+            "combine": self.cmd_combine,
+            "status": self.cmd_status,
+            "run": self.cmd_run,
+        }
+        handler = handlers.get(command)
+        if handler is None:
+            raise PipelineError(f"Unknown command: {command}")
+        if command == "status":
+            handler()
+            return
+        try:
+            handler()
+        finally:
+            self.failed.flush()
+            self.summary.print(self.workspace)
+
+    # --------------------------- shared plumbing -------------------------- #
     def _map_parallel(
         self,
         items: list[Any],
@@ -108,81 +155,81 @@ class Pipeline:
                 except Exception as exc:  # noqa: BLE001 - workers self-report
                     logger.error("Unexpected worker error: %s", exc)
 
-    # ------------------------------ Mode A ------------------------------- #
-    def run_mode_a(self) -> None:
-        logger.info("=== Mode A: image-to-video from input_images/ ===")
+    def _ask(self, lines: list[str], question: str, decline_log: str) -> bool:
+        """Gate on the injected confirm callback; True means proceed.
 
-        # Approve step: the styled frames already exist, so skip styling and
-        # render clips straight from the saved storyboard. (If both flags are
-        # passed, --create-storyboard wins, mirroring Mode B.)
-        if self.options.approve_storyboard and not self.options.create_storyboard:
-            self._render_from_storyboard_file(generate_frames=False)
+        Dry-runs always proceed (nothing is spent). A decline logs
+        `decline_log` — which should name the command that resumes from here —
+        and returns False.
+        """
+        if self.dry_run:
+            return True
+        if self.confirm(lines, question):
+            return True
+        logger.info(decline_log)
+        return False
+
+    def _next_command(self, command: str, *flags: str) -> str:
+        """A copy-pasteable command for this project's next step."""
+        return " ".join(
+            ["python pipeline.py", command, self.workspace.root.name, *flags]
+        )
+
+    # --------------------------- storyboard step -------------------------- #
+    def cmd_storyboard(self) -> None:
+        """Create (or refresh) the storyboard, then stop for review.
+
+        With --idea/--idea-file the storyboard is written by the text model
+        from scratch (frames get image prompts and are generated at render
+        time). Otherwise the images in input_images/ are styled and the vision
+        model plans one transition per consecutive pair.
+        """
+        if self.options.idea or self.options.idea_file:
+            storyboard = self._create_storyboard_from_idea()
+            if storyboard is not None:
+                self._announce_storyboard_ready()
             return
 
         images = list_input_images(self.workspace.input_images_dir)
         self.summary.input_count = len(images)
-
         if not images:
             raise PipelineError(
                 f"No supported images found in {self.workspace.input_images_dir}. "
-                f"Supported: {sorted(SUPPORTED_IMAGE_EXTS)}"
+                f"Supported: {sorted(SUPPORTED_IMAGE_EXTS)}. Add images, or pass "
+                "--idea to generate a storyboard from scratch."
             )
         logger.info("Found %d input image(s).", len(images))
 
-        styled: list[Path] = []
-        if not self.options.only_video:
-            styled = self._style_images(images)
-        else:
-            # --only-video: use existing styled images.
-            styled = sorted(
-                (p for p in self.workspace.styled_images_dir.iterdir()
-                 if p.is_file() and p.suffix.lower() == ".png"),
-                key=natural_sort_key,
+        styled = self._style_images(images)
+        if self.dry_run:
+            logger.info(
+                "[dry-run] would analyse %d styled frame(s) and write %s + %s",
+                len(styled),
+                self.workspace.default_storyboard_json,
+                self.workspace.storyboard_md,
             )
-            logger.info("Using %d existing styled image(s).", len(styled))
-
-        if self.options.only_style:
-            logger.info("--only-style set: skipping video generation.")
             return
-
         if len(styled) < 2:
             logger.warning(
-                "Need at least 2 styled images to make a clip; have %d.", len(styled)
+                "Need at least 2 styled images to make a clip; have %d.",
+                len(styled),
             )
             return
 
-        # Create step: analyse the styled frames, write the storyboard, and stop
-        # so it can be reviewed/edited before any clip credits are spent.
-        if self.options.create_storyboard:
-            if self.dry_run:
-                logger.info(
-                    "[dry-run] would analyse %d styled frame(s) and write %s + %s",
-                    len(styled),
-                    self.workspace.default_storyboard_json,
-                    self.workspace.storyboard_md,
-                )
-                return
-            storyboard = self._build_mode_a_storyboard(styled)
-            storyboard.save(self.workspace.default_storyboard_json)
-            write_storyboard_markdown(storyboard, self.workspace.storyboard_md)
-            self._announce_storyboard_ready(["--approve-storyboard"])
+        existing = self._load_reusable_storyboard(styled)
+        if existing is not None:
+            logger.info(
+                "Storyboard is up to date. Edit %s to change any clip, or pass "
+                "--force to redo styling + analysis from scratch.",
+                self.workspace.default_storyboard_json,
+            )
+            self._announce_storyboard_ready()
             return
 
-        # One-shot: reuse the saved storyboard when it still matches the styled
-        # frames — the storyboard is the source of truth, and re-analysing would
-        # both cost tokens and silently overwrite any hand edits. Analysis only
-        # runs when there is no storyboard yet, the inputs changed, or --force.
-        storyboard = self._load_reusable_storyboard(styled)
-        if storyboard is None:
-            storyboard = self._build_mode_a_storyboard(styled)
-            if not self.dry_run:
-                storyboard.save(self.workspace.default_storyboard_json)
-                write_storyboard_markdown(storyboard, self.workspace.storyboard_md)
-                logger.info(
-                    "Planned %d transition(s); storyboard written to %s",
-                    len(storyboard.transitions), self.workspace.storyboard_md,
-                )
-        self._generate_clips_with_prompts(self._pairs_from_storyboard(storyboard))
+        storyboard = self._build_mode_a_storyboard(styled)
+        storyboard.save(self.workspace.default_storyboard_json)
+        write_storyboard_markdown(storyboard, self.workspace.storyboard_md)
+        self._announce_storyboard_ready()
 
     def _load_reusable_storyboard(self, styled: list[Path]) -> Optional[Storyboard]:
         """Return the saved storyboard if it still matches `styled`, else None.
@@ -344,23 +391,7 @@ class Pipeline:
             )
         return existing
 
-    # ------------------------------ Mode B ------------------------------- #
-    def run_mode_b(self) -> None:
-        logger.info("=== Mode B: generate from scratch ===")
-
-        if self.options.create_storyboard:
-            self._create_storyboard()
-            return
-
-        if self.options.approve_storyboard:
-            self._render_from_storyboard_file(generate_frames=True)
-            return
-
-        raise PipelineError(
-            "Mode B requires either --create-storyboard (with --idea) or "
-            "--approve-storyboard. See README.md."
-        )
-
+    # ------------------- storyboard from an idea (Mode B) ----------------- #
     def _resolve_idea(self) -> str:
         """Get the idea text from --idea-file (preferred) or --idea."""
         if self.options.idea_file:
@@ -373,15 +404,24 @@ class Pipeline:
             if not text:
                 raise PipelineError(f"--idea-file is empty: {path}")
             return text
-        if self.options.idea:
-            return self.options.idea
-        raise PipelineError(
-            "--create-storyboard requires --idea \"...\" or --idea-file PATH"
-        )
+        assert self.options.idea is not None
+        return self.options.idea
 
-    def _create_storyboard(self) -> None:
+    def _create_storyboard_from_idea(self) -> Optional[Storyboard]:
+        """Write a storyboard from --idea / --idea-file. None on dry-run.
+
+        An existing storyboard is reused (never silently overwritten) unless
+        --force is passed.
+        """
+        sb_path = self.workspace.default_storyboard_json
+        if sb_path.exists() and not self.force:
+            logger.info(
+                "Storyboard already exists at %s; using it. Pass --force to "
+                "regenerate it from the idea.", sb_path,
+            )
+            return Storyboard.load(sb_path)
+
         idea = self._resolve_idea()
-
         # Frame count precedence: --frame-count, else config.default_frame_count.
         # A value <= 0 means "let the model choose based on the content".
         frame_count = (
@@ -397,92 +437,124 @@ class Pipeline:
                         "write %s + %s",
                         self.workspace.default_storyboard_json,
                         self.workspace.storyboard_md)
-            return
+            return None
 
         storyboard = self.openai.create_storyboard(
             idea, frame_count, default_duration=self.options.duration
         )
         storyboard.save(self.workspace.default_storyboard_json)
         write_storyboard_markdown(storyboard, self.workspace.storyboard_md)
+        return storyboard
 
-        self._announce_storyboard_ready(["--from-scratch", "--approve-storyboard"])
+    def _announce_storyboard_ready(self) -> None:
+        """Tell the user the storyboard is written and how to continue."""
+        print("\n" + "=" * 70)
+        print("Storyboard ready. Review and edit if needed:")
+        print(f"  {self.workspace.storyboard_md}")
+        print(f"  {self.workspace.default_storyboard_json}")
+        print("\nThen generate the clips with:")
+        print(f"  {self._next_command('render')}")
+        print("=" * 70 + "\n")
 
-    def _render_from_storyboard_file(self, generate_frames: bool) -> None:
-        """Render clips from a saved, approved storyboard.
+    # ------------------------------ render step --------------------------- #
+    def cmd_render(self) -> None:
+        """Generate clips (and any missing generated frames) from the storyboard.
 
-        Mode B regenerates its key frames first (``generate_frames=True``); Mode A
-        already has its frames (the styled images the storyboard points at), so it
-        only renders the clips.
+        --clip NNN_to_NNN limits the run to the named clip(s) and regenerates
+        them even if they exist (that's the point of naming them); their
+        SFX/fade state is reset so the redone clips get fresh audio.
         """
-        sb_path = Path(self.options.storyboard_file)
-        if not sb_path.is_absolute():
-            sb_path = self.workspace.root / sb_path
-        storyboard = Storyboard.load(sb_path)
-        logger.info(
-            "Approved storyboard %r with %d frame(s).",
-            storyboard.project_title,
-            len(storyboard.frames),
-        )
+        storyboard = self._require_storyboard("render")
         self.summary.input_count = len(storyboard.frames)
         self._storyboard_music_prompt = storyboard.music_prompt or ""
 
-        if generate_frames and not self.options.only_video:
-            self._generate_frames(storyboard)
+        self._generate_frames(storyboard)
 
-        if self.options.only_style:
-            logger.info("--only-style set: skipping video generation.")
-            return
+        pairs = self._pairs_from_storyboard(storyboard)
+        pairs, forced = self._select_clips(pairs)
+        self._render_pairs(pairs, forced)
 
-        self._generate_clips_with_prompts(self._pairs_from_storyboard(storyboard))
+    def _require_storyboard(self, command: str) -> Storyboard:
+        path = self.workspace.default_storyboard_json
+        if not path.exists():
+            raise PipelineError(
+                f"No storyboard yet ({path} not found). Create one first:\n"
+                f"  {self._next_command('storyboard')}"
+            )
+        return Storyboard.load(path)
 
-    def _pairs_from_storyboard(
-        self, storyboard: Storyboard
-    ) -> list[tuple[Path, Path, str, int, str]]:
-        """Build (start, end, motion, duration, sound) clip pairs from a storyboard.
-
-        Surviving frames are paired in order, bridging over any that are missing
-        on disk. Each pair takes its motion/duration/sound from the transition
-        leaving its start frame (for a bridged pair, that frame's original
-        outgoing one); --motion-prompt / --duration override per run.
-        """
-        transitions = storyboard.transitions or self._derive_transitions(storyboard)
-        tr_by_start: dict[str, Transition] = {
-            (self.workspace.root / tr.start_frame).name: tr for tr in transitions
+    def _select_clips(
+        self, pairs: list[ClipPair]
+    ) -> tuple[list[ClipPair], set[str]]:
+        """Apply --clip selection. Returns (pairs to process, forced stems)."""
+        requested = self.options.clips
+        if not requested:
+            return pairs, set()
+        by_stem = {
+            self._clip_name(pair[0], pair[1]).stem: pair for pair in pairs
         }
-        frames_ordered = [self.workspace.root / f.output_path for f in storyboard.frames]
+        wanted = [c.removesuffix(".mp4") for c in requested]
+        unknown = [c for c in wanted if c not in by_stem]
+        if unknown:
+            raise PipelineError(
+                f"Unknown clip(s): {', '.join(unknown)}. "
+                f"Available: {', '.join(by_stem) or '(none)'}"
+            )
+        selected = [by_stem[c] for c in wanted]
+        return selected, set(wanted)
 
-        pairs: list[tuple[Path, Path, str, int, str]] = []
-        for a, b in self._bridge_pairs(frames_ordered):
-            tr = tr_by_start.get(a.name)
-            motion = self.options.motion_prompt or (
-                tr.motion_prompt if tr else storyboard.style
-            )
-            duration = self.options.duration or (
-                tr.duration if tr else storyboard.duration_per_clip
-            )
-            sound = tr.sound_prompt if tr else ""
-            pairs.append((a, b, motion, duration, sound))
-        return pairs
+    def _plan_lines(
+        self, pairs: list[ClipPair], forced: set[str]
+    ) -> tuple[list[str], int]:
+        """Human-readable per-clip plan + how many clips will actually render."""
+        lines = ["Clip plan:"]
+        to_render = 0
+        seconds = 0
+        for start, end, motion, duration, _sound in pairs:
+            dst = self._clip_name(start, end)
+            if dst.exists() and not self.force and dst.stem not in forced:
+                status = "done, skip"
+            else:
+                status = "RENDER"
+                to_render += 1
+                seconds += duration
+            m = motion if len(motion) <= 68 else motion[:65] + "..."
+            lines.append(f"  {dst.stem:<12} {duration:>2}s  {status:<10} {m}")
+        lines.append(
+            f"  -> {to_render} clip(s) to render (~{seconds}s of new video); "
+            "this step spends video-provider credits."
+        )
+        return lines, to_render
 
-    @staticmethod
-    def _derive_transitions(storyboard: Storyboard) -> list[Transition]:
-        derived: list[Transition] = []
-        frames = storyboard.frames
-        for a, b in zip(frames, frames[1:]):
-            tid = f"{a.id}_to_{b.id}"
-            derived.append(
-                Transition(
-                    id=tid,
-                    start_frame=a.output_path,
-                    end_frame=b.output_path,
-                    motion_prompt=storyboard.style,
-                    duration=storyboard.duration_per_clip,
-                    output_path=f"clips/{tid}.mp4",
-                )
-            )
-        return derived
+    def _render_pairs(self, pairs: list[ClipPair], forced: set[str]) -> None:
+        if not pairs:
+            logger.warning("No transition pairs to render.")
+            return
+        plan_lines, to_render = self._plan_lines(pairs, forced)
+        for line in plan_lines:
+            logger.info("%s", line)
+        if to_render == 0 and not self.audio_enabled:
+            logger.info("All clips are already rendered; nothing to do.")
+            return
+        if to_render > 0 and not self._ask(
+            plan_lines,
+            f"Generate {to_render} clip(s) now? [y/N] ",
+            "Clip generation skipped. Continue later with:\n  "
+            + self._next_command("render"),
+        ):
+            return
+        self._generate_clips(pairs, forced)
 
     def _generate_frames(self, storyboard: Storyboard) -> None:
+        """Generate any frame that has an image prompt and is missing on disk.
+
+        Mode A frames (styled images) have no image prompt and are never
+        touched here; Mode B frames are (re)generated when missing or --force.
+        """
+        todo = [f for f in storyboard.frames if f.image_prompt.strip()]
+        if not todo:
+            return
+
         def work(frame: Frame) -> None:
             dst = self.workspace.root / frame.output_path
             job_id = f"frame:{frame.id}"
@@ -528,11 +600,53 @@ class Pipeline:
                     self.state.set(job_id, "failed")
                     self.failed.record(job_id, "frame", str(exc), frame_id=frame.id)
 
-        self._map_parallel(
-            list(storyboard.frames), work, "Generating frames", "frame"
-        )
+        self._map_parallel(todo, work, "Generating frames", "frame")
 
-    # ------------------------- shared video step ------------------------- #
+    def _pairs_from_storyboard(self, storyboard: Storyboard) -> list[ClipPair]:
+        """Build (start, end, motion, duration, sound) clip pairs from a storyboard.
+
+        Surviving frames are paired in order, bridging over any that are missing
+        on disk. Each pair takes its motion/duration/sound from the transition
+        leaving its start frame (for a bridged pair, that frame's original
+        outgoing one); --motion-prompt / --duration override per run.
+        """
+        transitions = storyboard.transitions or self._derive_transitions(storyboard)
+        tr_by_start: dict[str, Transition] = {
+            (self.workspace.root / tr.start_frame).name: tr for tr in transitions
+        }
+        frames_ordered = [self.workspace.root / f.output_path for f in storyboard.frames]
+
+        pairs: list[ClipPair] = []
+        for a, b in self._bridge_pairs(frames_ordered):
+            tr = tr_by_start.get(a.name)
+            motion = self.options.motion_prompt or (
+                tr.motion_prompt if tr else storyboard.style
+            )
+            duration = self.options.duration or (
+                tr.duration if tr else storyboard.duration_per_clip
+            )
+            sound = tr.sound_prompt if tr else ""
+            pairs.append((a, b, motion, duration, sound))
+        return pairs
+
+    @staticmethod
+    def _derive_transitions(storyboard: Storyboard) -> list[Transition]:
+        derived: list[Transition] = []
+        frames = storyboard.frames
+        for a, b in zip(frames, frames[1:]):
+            tid = f"{a.id}_to_{b.id}"
+            derived.append(
+                Transition(
+                    id=tid,
+                    start_frame=a.output_path,
+                    end_frame=b.output_path,
+                    motion_prompt=storyboard.style,
+                    duration=storyboard.duration_per_clip,
+                    output_path=f"clips/{tid}.mp4",
+                )
+            )
+        return derived
+
     def _motion_prompt(self) -> str:
         return self.options.motion_prompt or self.config.motion_prompt
 
@@ -558,105 +672,12 @@ class Pipeline:
                 )
         return [(existing[i], existing[i + 1]) for i in range(len(existing) - 1)]
 
-    # ----------------------- next-command hints ------------------------- #
-    def _next_command(self, *flags: str) -> str:
-        """A copy-pasteable re-run command for this project, plus `flags`.
-
-        Assumes the default config path; add ``--config`` yourself if you run
-        with a custom one.
-        """
-        return " ".join(
-            ["python pipeline.py", f"--project {self.workspace.root.name}", *flags]
-        )
-
-    def _announce_storyboard_ready(self, approve_flags: list[str]) -> None:
-        """Tell the user the storyboard is written and how to approve it."""
-        print("\n" + "=" * 70)
-        print("Storyboard created. Review and edit if needed:")
-        print(f"  {self.workspace.storyboard_md}")
-        print(f"  {self.workspace.default_storyboard_json}")
-        print("\nThen generate the video with:")
-        print(f"  {self._next_command(*approve_flags)}")
-        print("=" * 70 + "\n")
-
-    def _prompt_yes_no(
-        self, lines: list[str], question: str, decline_log: str
-    ) -> bool:
-        """Ask a yes/no question at the terminal; True means proceed.
-
-        Auto-proceeds without prompting for dry-runs, when --yes is set, or when
-        stdin isn't interactive (CI/automation), so scripted runs never block.
-        A "no" (or anything other than y/yes) logs `decline_log` and returns
-        False.
-        """
-        if self.dry_run or self.options.yes or not sys.stdin.isatty():
-            return True
-
-        print("\n" + "=" * 70)
-        for line in lines:
-            print(line)
-        print("=" * 70)
-        try:
-            answer = input(question).strip().lower()
-        except EOFError:
-            return True
-        if answer in ("y", "yes"):
-            return True
-        logger.info(decline_log)
-        return False
-
-    def _confirm_clip_generation(self) -> bool:
-        """Pause after image generation to confirm before generating clips.
-
-        --only-video is an explicit "generate clips now", so it proceeds
-        without prompting; otherwise a "no" stops before any clip credits are
-        spent and the clips can be generated later with --only-video.
-        """
-        if self.options.only_video:
-            return True
-        return self._prompt_yes_no(
-            [
-                "All images are ready. The next step generates the video "
-                "clips, which spends API credits.",
-                "You can stop here and generate the clips later by re-running "
-                "with --only-video.",
-            ],
-            "Generate clips now? [y/N] ",
-            "Clip generation skipped. Generate the clips later with:\n  "
-            + self._next_command("--only-video"),
-        )
-
-    def _confirm_combine(self) -> bool:
-        """Pause after clip generation to confirm before building the movie.
-
-        A "no" leaves the clips in place; the final video can be built later by
-        re-running with --combine.
-        """
-        return self._prompt_yes_no(
-            [
-                "All clips are ready. The final step combines them into "
-                f"{self.workspace.final_video.name}.",
-                "You can do this later by re-running with --combine.",
-            ],
-            "Combine clips into the final video now? [y/N] ",
-            "Combine skipped. Build the final video later with:\n  "
-            + self._next_command("--combine"),
-        )
-
-    def _generate_clips_with_prompts(
-        self, pairs: list[tuple[Path, Path, str, int, str]]
-    ) -> None:
-        if not pairs:
-            logger.warning("No transition pairs to render.")
-            return
-
-        if not self._confirm_clip_generation():
-            return
-
-        def work(pair: tuple[Path, Path, str, int, str]) -> None:
+    def _generate_clips(self, pairs: list[ClipPair], forced: set[str]) -> None:
+        def work(pair: ClipPair) -> None:
             start, end, motion, duration, sound_prompt = pair
             dst = self._clip_name(start, end)
             job_id = f"clip:{dst.name}"
+            redo = self.force or dst.stem in forced
 
             if self.dry_run:
                 # Frames may not exist yet during a dry-run (styling was also
@@ -674,7 +695,7 @@ class Pipeline:
                     )
                 return
 
-            if dst.exists() and not self.force:
+            if dst.exists() and not redo:
                 with self._lock:
                     self.summary.videos_skipped += 1
                 logger.info("Skip clip (done): %s", dst.name)
@@ -715,6 +736,50 @@ class Pipeline:
                 self._add_sfx(dst, sound_prompt, duration)
 
         self._map_parallel(list(pairs), work, "Generating clips", "clip")
+
+    def _clip_name(self, start: Path, end: Path) -> Path:
+        """Map a frame pair to clips/<start>_to_<end>.mp4 using leading ids."""
+        def stem_id(p: Path) -> str:
+            m = re.match(r"(\d+)", p.stem)
+            return m.group(1) if m else p.stem
+        return self.workspace.clips_dir / f"{stem_id(start)}_to_{stem_id(end)}.mp4"
+
+    # ------------------------------ audio step ---------------------------- #
+    def cmd_audio(self) -> None:
+        """Add SFX + music to already-rendered clips, then rebuild the final video.
+
+        Per-clip SFX prompts come from the saved storyboard when there is one;
+        otherwise every clip uses config.default_sfx_prompt.
+        """
+        self.audio_enabled = True
+        clips = self._clips_for_combine()
+        if not clips:
+            logger.warning("No clips in %s to add audio to.", self.workspace.clips_dir)
+            return
+
+        sound_map: dict[str, str] = {}
+        sb_path = self.workspace.default_storyboard_json
+        if sb_path.exists():
+            try:
+                sb = Storyboard.load(sb_path)
+                self._storyboard_music_prompt = sb.music_prompt or ""
+                for tr in sb.transitions:
+                    sound_map[Path(tr.output_path).name] = tr.sound_prompt
+                logger.info("Using per-clip sound prompts from %s", sb_path.name)
+            except StoryboardError:
+                logger.warning("Could not read %s; using default SFX prompt.", sb_path)
+
+        def work(clip: Path) -> None:
+            if self.dry_run:
+                logger.info("[dry-run] would add SFX to %s", clip.name)
+                return
+            duration = int(round(ffprobe_duration(clip) or self.duration))
+            self._add_sfx(clip, sound_map.get(clip.name, ""), duration)
+
+        self._map_parallel(list(clips), work, "Adding clip SFX", "clip")
+
+        # Rebuild the final video so the new audio is included, then add music.
+        self._combine_clips(force_rebuild=True)
 
     def _add_sfx(self, clip: Path, sound_prompt: str, duration: int) -> None:
         """Run the video->audio model on `clip`, replacing it with a sounded one."""
@@ -758,12 +823,10 @@ class Pipeline:
             # it unmarked so a later run retries.
             logger.warning("Edge-fade skipped for %s: %s", clip.name, exc)
 
-    def _clip_name(self, start: Path, end: Path) -> Path:
-        """Map a frame pair to clips/<start>_to_<end>.mp4 using leading ids."""
-        def stem_id(p: Path) -> str:
-            m = re.match(r"(\d+)", p.stem)
-            return m.group(1) if m else p.stem
-        return self.workspace.clips_dir / f"{stem_id(start)}_to_{stem_id(end)}.mp4"
+    # ----------------------------- combine step --------------------------- #
+    def cmd_combine(self) -> None:
+        """Concatenate the storyboard's clips into the final video."""
+        self._combine_clips()
 
     def _clips_for_combine(self) -> list[Path]:
         """The clips that belong in the final video, in order.
@@ -806,10 +869,10 @@ class Pipeline:
     ) -> None:
         """Concatenate the storyboard's clips into output/final_video.mp4.
 
-        When `confirm` is set (the default end-of-run path) the user is asked
-        first — but only once we know there's actually a movie to build, so the
-        prompt never appears when there are no clips or the final video is
-        already up to date.
+        When `confirm` is set (the end-of-`run` path) the user is asked first —
+        but only once we know there's actually a movie to build, so the prompt
+        never appears when there are no clips or the final video is already up
+        to date.
         """
         clips = self._clips_for_combine()
         if not clips:
@@ -831,11 +894,19 @@ class Pipeline:
             )
             return
 
-        if confirm and not self._confirm_combine():
+        if confirm and not self._ask(
+            [
+                "All clips are ready. The final step combines them into "
+                f"{final_video.name}.",
+            ],
+            "Combine clips into the final video now? [y/N] ",
+            "Combine skipped. Build the final video later with:\n  "
+            + self._next_command("combine"),
+        ):
             return
 
-        # Decide the music track BEFORE combining, so the user makes every
-        # choice up front rather than being interrupted after the combine runs.
+        # Decide the music track BEFORE combining, so every choice happens up
+        # front rather than interrupting after the combine runs.
         music_file = self._resolve_music_file() if self.audio_enabled else None
 
         logger.info("Combining %d clip(s) into %s", len(clips), final_video)
@@ -862,49 +933,22 @@ class Pipeline:
     def _resolve_music_file(self) -> Optional[Path]:
         """Decide which music track to lay under the final video.
 
-        Interactive (a real terminal, no --yes): ask which file to use,
-        defaulting to output/music.mp3. If that file is missing, offer to point
-        at another file, generate one with the text->music model, or skip music.
-        Non-interactive (--yes / no TTY / dry-run): keep the original behaviour —
-        reuse music.mp3 when present, otherwise generate from the prompt.
-
-        Returns a path to a ready music file, or None to proceed without music.
+        --music-file wins (and must exist). Otherwise the project's
+        output/music.mp3 is reused when present (unless --force), and failing
+        that a track is generated from the resolved music prompt. Returns None
+        to proceed without music.
         """
+        if self.options.music_file:
+            supplied = Path(self.options.music_file).expanduser()
+            if not supplied.exists():
+                raise PipelineError(f"--music-file not found: {supplied}")
+            logger.info("Using music file: %s", supplied)
+            return supplied
         default = self.workspace.music_file
-
-        if self.dry_run or self.options.yes or not sys.stdin.isatty():
-            if default.exists() and not self.force:
-                return default
-            return self._generate_music_file(default)
-
-        print("\n" + "=" * 70)
-        print("Music for the final video.")
-        print(f"Default track: {default}"
-              f"{'' if default.exists() else '  (not found)'}")
-        print("=" * 70)
-        while True:
-            raw = input(
-                "Music file — Enter to use the default, a path to another "
-                "file, or 'g' to generate: "
-            ).strip()
-            if raw.lower() in ("g", "generate"):
-                return self._generate_music_file(default)
-            candidate = default if not raw else Path(raw).expanduser()
-            if candidate.exists():
-                logger.info("Using music file: %s", candidate)
-                return candidate
-
-            print(f"Not found: {candidate}")
-            choice = input(
-                "Use [a]nother file, [g]enerate one, or [s]kip music? "
-                "[a/g/s]: "
-            ).strip().lower()
-            if choice in ("g", "generate"):
-                return self._generate_music_file(default)
-            if choice in ("s", "skip"):
-                logger.info("Proceeding without a music bed.")
-                return None
-            # 'a' / Enter / anything else: loop back and ask for another path.
+        if default.exists() and not self.force:
+            logger.info("Reusing music file: %s", default)
+            return default
+        return self._generate_music_file(default)
 
     def _generate_music_file(self, dst: Path) -> Optional[Path]:
         """Generate a music track into `dst` from the resolved prompt.
@@ -943,61 +987,125 @@ class Pipeline:
             self.state.set(job_id, "failed")
             self.failed.record(job_id, "music", str(exc))
 
-    # --------------------------- audio retrofit -------------------------- #
-    def _run_audio_only(self) -> None:
-        """Add SFX + music to clips already in clips/, then rebuild the final video.
+    # ------------------------------ status step --------------------------- #
+    def cmd_status(self) -> None:
+        """Print where this project stands and what to run next."""
+        ws = self.workspace
+        line = "=" * 60
+        print(f"\n{line}\nPROJECT STATUS: {ws.root.name}\n{line}")
 
-        Per-clip SFX prompts are taken from --storyboard-file if it exists
-        (Mode B), otherwise every clip uses config.default_sfx_prompt.
-        """
-        clips = self._clips_for_combine()
-        if not clips:
-            logger.warning("No clips in %s to add audio to.", self.workspace.clips_dir)
-            return
+        inputs = list_input_images(ws.input_images_dir)
+        styled = sorted(
+            (p for p in ws.styled_images_dir.iterdir()
+             if p.is_file() and p.suffix.lower() == ".png"),
+            key=natural_sort_key,
+        ) if ws.styled_images_dir.exists() else []
+        generated = sorted(
+            (p for p in ws.generated_frames_dir.iterdir()
+             if p.is_file() and p.suffix.lower() == ".png"),
+            key=natural_sort_key,
+        ) if ws.generated_frames_dir.exists() else []
+        print(f"  Input images     : {len(inputs)}")
+        print(f"  Styled images    : {len(styled)}")
+        if generated:
+            print(f"  Generated frames : {len(generated)}")
 
-        sound_map: dict[str, str] = {}
-        sb_path = Path(self.options.storyboard_file)
-        if not sb_path.is_absolute():
-            sb_path = self.workspace.root / sb_path
+        sb_path = ws.default_storyboard_json
+        storyboard: Optional[Storyboard] = None
         if sb_path.exists():
             try:
-                sb = Storyboard.load(sb_path)
-                self._storyboard_music_prompt = sb.music_prompt or ""
-                for tr in sb.transitions:
-                    sound_map[Path(tr.output_path).name] = tr.sound_prompt
-                logger.info("Using per-clip sound prompts from %s", sb_path.name)
-            except StoryboardError:
-                logger.warning("Could not read %s; using default SFX prompt.", sb_path)
+                storyboard = Storyboard.load(sb_path)
+                mode = "from idea" if any(
+                    f.image_prompt.strip() for f in storyboard.frames
+                ) else "from images"
+                print(
+                    f"  Storyboard       : {len(storyboard.frames)} frame(s), "
+                    f"{len(storyboard.transitions)} transition(s) ({mode})"
+                )
+            except StoryboardError as exc:
+                print(f"  Storyboard       : UNREADABLE ({exc})")
+        else:
+            print("  Storyboard       : none")
 
-        def work(clip: Path) -> None:
-            if self.dry_run:
-                logger.info("[dry-run] would add SFX to %s", clip.name)
+        rendered = missing = 0
+        if storyboard is not None:
+            frames = [ws.root / f.output_path for f in storyboard.frames]
+            expected = [self._clip_name(a, b) for a, b in self._bridge_pairs(frames)]
+            for clip in expected:
+                if clip.exists():
+                    rendered += 1
+                    sfx = "sfx ✓" if self.state.is_done(f"sfx:{clip.name}") else "silent"
+                    print(f"    clip {clip.stem:<12} rendered  ({sfx})")
+                else:
+                    missing += 1
+                    print(f"    clip {clip.stem:<12} MISSING")
+            stray = sorted(
+                set(find_generated_clips(ws.clips_dir)) - set(expected)
+            )
+            if stray:
+                print(f"  Stray clips      : {', '.join(p.name for p in stray)}")
+
+        final = ws.final_video
+        print(f"  Final video      : {'ready — ' + str(final) if final.exists() else 'not built'}")
+        if self.failed.path.exists():
+            print(f"  Failed jobs      : see {self.failed.path}")
+
+        if storyboard is None:
+            hint = self._next_command("storyboard")
+        elif missing:
+            hint = self._next_command("render")
+        elif not final.exists():
+            hint = self._next_command("combine")
+        else:
+            hint = None
+        if hint:
+            print(f"\n  Next step:\n    {hint}")
+        print(line)
+
+    # ------------------------------- one-shot ----------------------------- #
+    def cmd_run(self) -> None:
+        """The whole flow in one command, gated by confirmation prompts.
+
+        Reuses the saved storyboard when it's still valid; otherwise creates
+        one (from images, or from --idea when given), then renders and
+        combines. Splitting the flow across `storyboard`/`render`/`combine`
+        gives the same result with an editable pause between each step.
+        """
+        if self.options.idea or self.options.idea_file:
+            storyboard = self._create_storyboard_from_idea()
+            if storyboard is None:  # dry-run: no plan to continue from
                 return
-            duration = int(round(ffprobe_duration(clip) or self.duration))
-            self._add_sfx(clip, sound_map.get(clip.name, ""), duration)
-
-        self._map_parallel(list(clips), work, "Adding clip SFX", "clip")
-
-        # Rebuild the final video so the new audio is included, then add music.
-        self._combine_clips(force_rebuild=True)
-
-    # ------------------------------- run --------------------------------- #
-    def run(self) -> None:
-        try:
-            if self.options.audio_only:
-                self._run_audio_only()
+        else:
+            images = list_input_images(self.workspace.input_images_dir)
+            self.summary.input_count = len(images)
+            if not images:
+                raise PipelineError(
+                    f"No supported images found in {self.workspace.input_images_dir}. "
+                    f"Supported: {sorted(SUPPORTED_IMAGE_EXTS)}"
+                )
+            logger.info("Found %d input image(s).", len(images))
+            styled = self._style_images(images)
+            if len(styled) < 2:
+                logger.warning(
+                    "Need at least 2 styled images to make a clip; have %d.",
+                    len(styled),
+                )
                 return
-            if self.options.combine:
-                # Standalone: just stitch the existing clips together.
-                self._combine_clips()
-                return
-            if self.options.from_scratch:
-                self.run_mode_b()
-            else:
-                self.run_mode_a()
-            if not self.options.no_combine and not self.options.only_style \
-                    and not self.options.create_storyboard:
-                self._combine_clips(confirm=True)
-        finally:
-            self.failed.flush()
-            self.summary.print(self.workspace)
+            storyboard = self._load_reusable_storyboard(styled)
+            if storyboard is None:
+                storyboard = self._build_mode_a_storyboard(styled)
+                if not self.dry_run:
+                    storyboard.save(self.workspace.default_storyboard_json)
+                    write_storyboard_markdown(storyboard, self.workspace.storyboard_md)
+                    logger.info(
+                        "Planned %d transition(s); storyboard written to %s",
+                        len(storyboard.transitions), self.workspace.storyboard_md,
+                    )
+
+        self.summary.input_count = self.summary.input_count or len(storyboard.frames)
+        self._storyboard_music_prompt = storyboard.music_prompt or ""
+        self._generate_frames(storyboard)
+        pairs = self._pairs_from_storyboard(storyboard)
+        self._render_pairs(pairs, set())
+        if not self.options.no_combine:
+            self._combine_clips(confirm=True)
