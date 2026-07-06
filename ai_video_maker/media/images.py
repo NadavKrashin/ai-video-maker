@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import base64
+import io
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from PIL import Image
 
@@ -20,11 +21,28 @@ _DATA_URL_MIME = {
 }
 
 
-def encode_image_data_url(path: Path) -> str:
-    """Read `path` and return a base64 ``data:`` URL for the vision API."""
-    mime = _DATA_URL_MIME.get(path.suffix.lower(), "image/png")
-    b64 = base64.b64encode(path.read_bytes()).decode("ascii")
-    return f"data:{mime};base64,{b64}"
+def encode_image_data_url(path: Path, max_edge: Optional[int] = None) -> str:
+    """Read `path` and return a base64 ``data:`` URL for the vision API.
+
+    With ``max_edge`` set, the image is downscaled so its longest side is at
+    most that many pixels and re-encoded as JPEG. A full-res 1920x1080 PNG is
+    several MB (+33% as base64); a whole batch of them can blow the API request
+    size limit, and the vision endpoint resizes them anyway at low detail — so
+    always pass ``max_edge`` when the image is only being *looked at*.
+    """
+    if max_edge is None:
+        mime = _DATA_URL_MIME.get(path.suffix.lower(), "image/png")
+        b64 = base64.b64encode(path.read_bytes()).decode("ascii")
+        return f"data:{mime};base64,{b64}"
+
+    with Image.open(path) as im:
+        im = im.convert("RGB")
+        if max(im.size) > max_edge:
+            im.thumbnail((max_edge, max_edge), Image.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=85)
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{b64}"
 
 
 def natural_sort_key(path: Path) -> list[Any]:

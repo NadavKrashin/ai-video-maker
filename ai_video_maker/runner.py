@@ -295,7 +295,18 @@ class Pipeline:
         self._map_parallel(
             list(enumerate(images, start=1)), work, "Styling images", "img"
         )
-        return styled
+        if self.dry_run:
+            return styled  # nothing on disk yet; report the plan as-is
+        # Only hand back frames that exist: a failed styling must not leak a
+        # missing path into transition planning (one bad frame would otherwise
+        # crash the vision call and degrade EVERY clip to the generic prompt).
+        existing = [p for p in styled if p.exists()]
+        if len(existing) < len(styled):
+            logger.warning(
+                "%d image(s) failed to style; planning transitions from the "
+                "%d that succeeded.", len(styled) - len(existing), len(existing),
+            )
+        return existing
 
     # ------------------------------ Mode B ------------------------------- #
     def run_mode_b(self) -> None:

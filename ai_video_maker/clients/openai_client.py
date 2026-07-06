@@ -16,6 +16,10 @@ from ..retry import is_moderation_error, with_retries
 
 T = TypeVar("T")
 
+# Longest edge (px) for frames sent to the vision model. Low-detail vision uses
+# ~512px anyway, so anything bigger is pure upload weight.
+_VISION_MAX_EDGE = 768
+
 # Reword a prompt that OpenAI's safety filter wrongly flagged. The video pipeline
 # never intends harmful content, so flags are typically benign wording the filter
 # misreads (e.g. "shot", a body description). We ask the text model to keep the
@@ -401,8 +405,13 @@ class OpenAIClient:
                 {
                     "type": "image_url",
                     # "low" detail keeps the per-image token cost small; the model
-                    # only needs the gist of each frame to plan the motion.
-                    "image_url": {"url": encode_image_data_url(fp), "detail": "low"},
+                    # only needs the gist of each frame to plan the motion. The
+                    # frames are downscaled before encoding so a long sequence
+                    # stays within the API request-size limit.
+                    "image_url": {
+                        "url": encode_image_data_url(fp, max_edge=_VISION_MAX_EDGE),
+                        "detail": "low",
+                    },
                 }
             )
 
