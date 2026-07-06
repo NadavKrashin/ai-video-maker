@@ -35,46 +35,48 @@ edits (it reuses the saved storyboard while your images are unchanged); pass
 Whenever a step finishes, the app prints the exact command for the next step,
 and `status` will always tell you where you stand.
 
-### Editing mid-generation
+### Editing cookbook
 
 Styled frames and clips are **keyed by your input filenames** (input
 `beach.jpg` → `styled_images/beach.png` → `clips/beach_to_party.mp4`), and
 `storyboard` only re-plans what actually changed — everything untouched
 (including your hand edits to the JSON) is carried over. That makes every edit
-surgical:
+surgical. The recipes below assume a project called `myfilm` with images
+`1.jpg`, `2.jpg`, `3.jpg`, …
 
-- **Change a clip's motion/duration/sound:** edit that transition in
-  `storyboard/storyboard.json`, then re-render just that clip:
+**Naming inputs:** order is natural filename order (`2` before `10`, no
+zero-padding needed). Plain `1.jpg, 2.jpg, 3.jpg` is fine — insert between 2
+and 3 later by naming the new file `2a.jpg`. **Never renumber existing files
+to make room**: to the pipeline a rename is a different image, so a full
+renumber re-styles and re-renders almost everything. If you expect many
+insertions, number in tens (`10.jpg, 20.jpg, 30.jpg`).
 
-  ```bash
-  python pipeline.py render myfilm --clip beach_to_party
-  ```
+| Edit | Commands | Cost |
+|------|----------|------|
+| Regenerate one clip (e.g. after tweaking its `motion_prompt` in `storyboard.json`) | `python pipeline.py render myfilm --clip 2_to_3` | 1 clip |
+| Change one clip's sound (edit its `sound_prompt` first) | `python pipeline.py audio myfilm --clip 2_to_3` | ~1¢ |
+| Add an image between 2 and 3 | copy it in as `input_images/2a.jpg`, then:<br>`python pipeline.py storyboard myfilm`<br>`python pipeline.py render myfilm` | 1 styling + 2 clips |
+| Remove image 2 | `rm projects/myfilm/input_images/2.jpg projects/myfilm/styled_images/2.png`, then:<br>`python pipeline.py storyboard myfilm`<br>`python pipeline.py render myfilm` | 1 clip |
+| Swap image 2 for a different photo | overwrite `input_images/2.jpg` with the new file, then:<br>`python pipeline.py storyboard myfilm` (asks before re-styling)<br>`python pipeline.py render myfilm` | 1 styling + 2 clips |
+| Re-style one image (new roll of the styling dice) | `rm projects/myfilm/styled_images/2.png`, then:<br>`python pipeline.py storyboard myfilm`<br>`python pipeline.py render myfilm` | 1 styling + 2 clips |
+| Rebuild the movie after any of the above | `python pipeline.py combine myfilm --force` | free (local) |
+| Redo all clips (e.g. after big storyboard edits) | `python pipeline.py render myfilm --force -y` | all clips |
+| Redo styling + analysis from scratch | `python pipeline.py storyboard myfilm --force` | all stylings + 1 analysis |
 
-  Named clips are regenerated even if they exist, and their SFX/fade state is
-  reset so the redone clip gets fresh audio. `--clip` is repeatable.
-- **Change just a clip's sound:** edit its `sound_prompt` in the storyboard,
-  then redo only that clip's audio (~a cent):
+Notes:
 
-  ```bash
-  python pipeline.py audio myfilm --clip beach_to_party
-  ```
-- **Add an image (anywhere):** drop it into `input_images/` with a filename
-  that sorts where you want it (order is natural filename order — `img4a.jpg`
-  lands between `img4.jpg` and `img5.jpg`). Run `storyboard` (styles only the
-  new image, plans only its two transitions), then `render` (renders only the
-  two new clips). The old direct clip becomes a stray and is ignored.
-- **Remove an image:** delete it from `input_images/` (and its styled file),
-  run `storyboard` (plans the one joined transition), then `render` (one new
-  clip). Its old clips become strays.
-- **Swap or re-edit an image:** replace the file in `input_images/` under the
-  same name. `storyboard` notices the source is newer than its styled version,
-  asks before re-styling (it costs image credits), re-plans the two adjacent
-  transitions, and deletes the two now-stale clips so `render` redoes them.
-- **Redo everything:** `render --force` (clips) or `storyboard --force`
-  (styling + analysis + storyboard).
-- **Preview before spending:** `render` prints a per-clip plan (what will be
-  rendered vs skipped, durations, motion prompts) and asks before spending
-  clip credits. `--dry-run` on any command prints the plan and spends nothing.
+- `--clip` is repeatable (`--clip 2_to_3 --clip 3_to_4`) and always
+  *regenerates* the named clips, resetting their SFX/fade state so redone
+  clips get fresh audio.
+- After add/remove/swap, `storyboard` re-plans **only the affected
+  transitions** (a small vision call with just those frames), keeps everything
+  else verbatim, and deletes clips whose frames changed so `render` redoes
+  exactly those. Old clips that no longer match the storyboard become
+  "strays" — `combine` ignores them and `status` lists them for deletion.
+- **Preview before spending:** `render` prints a per-clip plan (render vs
+  skip, durations, motion prompts) and asks before spending clip credits;
+  `--dry-run` on any command prints the plan and spends nothing;
+  `status` shows changed frames, missing clips, and the suggested next step.
 
 > **Older projects** (with `styled_images/NNN_styled.png` files) keep their
 > positional naming so nothing breaks — but positional names can't survive
