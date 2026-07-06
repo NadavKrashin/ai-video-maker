@@ -168,17 +168,50 @@ class Pipeline:
             self._announce_storyboard_ready(["--approve-storyboard"])
             return
 
-        # One-shot: plan transitions, save the storyboard for transparency, then
-        # render in the same run (the clip-confirmation prompt is the review gate).
-        storyboard = self._build_mode_a_storyboard(styled)
-        if not self.dry_run:
-            storyboard.save(self.workspace.default_storyboard_json)
-            write_storyboard_markdown(storyboard, self.workspace.storyboard_md)
-            logger.info(
-                "Planned %d transition(s); storyboard written to %s",
-                len(storyboard.transitions), self.workspace.storyboard_md,
-            )
+        # One-shot: reuse the saved storyboard when it still matches the styled
+        # frames — the storyboard is the source of truth, and re-analysing would
+        # both cost tokens and silently overwrite any hand edits. Analysis only
+        # runs when there is no storyboard yet, the inputs changed, or --force.
+        storyboard = self._load_reusable_storyboard(styled)
+        if storyboard is None:
+            storyboard = self._build_mode_a_storyboard(styled)
+            if not self.dry_run:
+                storyboard.save(self.workspace.default_storyboard_json)
+                write_storyboard_markdown(storyboard, self.workspace.storyboard_md)
+                logger.info(
+                    "Planned %d transition(s); storyboard written to %s",
+                    len(storyboard.transitions), self.workspace.storyboard_md,
+                )
         self._generate_clips_with_prompts(self._pairs_from_storyboard(storyboard))
+
+    def _load_reusable_storyboard(self, styled: list[Path]) -> Optional[Storyboard]:
+        """Return the saved storyboard if it still matches `styled`, else None.
+
+        None means "build a fresh one": no saved storyboard, --force, an
+        unreadable file, or the styled frames on disk no longer match the
+        frames the storyboard was written for (images added/removed).
+        """
+        path = self.workspace.default_storyboard_json
+        if self.force or not path.exists():
+            return None
+        try:
+            storyboard = Storyboard.load(path)
+        except StoryboardError as exc:
+            logger.warning("Ignoring unreadable storyboard (%s); re-analysing.", exc)
+            return None
+        current = [p.relative_to(self.workspace.root).as_posix() for p in styled]
+        saved = [f.output_path for f in storyboard.frames]
+        if saved != current:
+            logger.info(
+                "Styled frames changed since the storyboard was written "
+                "(%d saved vs %d on disk); re-analysing.", len(saved), len(current),
+            )
+            return None
+        logger.info(
+            "Using existing storyboard %s — edit it to change any clip, or pass "
+            "--force to re-analyse from scratch.", path,
+        )
+        return storyboard
 
     def _build_mode_a_storyboard(self, styled: list[Path]) -> Storyboard:
         """Build a storyboard whose frames point at the existing styled images.
