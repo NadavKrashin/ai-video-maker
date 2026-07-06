@@ -98,6 +98,10 @@ class Workspace:
     def storyboard_md(self) -> Path:
         return self.storyboard_dir / "storyboard.md"
 
+    @property
+    def storyboard_preview(self) -> Path:
+        return self.storyboard_dir / "preview.html"
+
     # --- helpers ----------------------------------------------------------- #
     @property
     def all_dirs(self) -> list[Path]:

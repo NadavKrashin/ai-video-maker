@@ -44,6 +44,7 @@ from .media.images import verify_dimensions
 from .models import Frame, Storyboard, Transition
 from .options import RunOptions
 from .state import FailedJobStore, StateStore
+from .storyboard_html import write_storyboard_preview
 from .storyboard_md import write_storyboard_markdown
 from .summary import RunSummary
 from .workspace import PROJECT_ROOT, Workspace
@@ -223,12 +224,16 @@ class Pipeline:
                 "--force to redo styling + analysis from scratch.",
                 self.workspace.default_storyboard_json,
             )
+            # Refresh the readable views so hand-edits to the JSON show up.
+            write_storyboard_markdown(existing, self.workspace.storyboard_md)
+            write_storyboard_preview(
+                existing, self.workspace.root, self.workspace.storyboard_preview
+            )
             self._announce_storyboard_ready()
             return
 
         storyboard = self._build_mode_a_storyboard(styled)
-        storyboard.save(self.workspace.default_storyboard_json)
-        write_storyboard_markdown(storyboard, self.workspace.storyboard_md)
+        self._save_storyboard(storyboard)
         self._announce_storyboard_ready()
 
     def _load_reusable_storyboard(self, styled: list[Path]) -> Optional[Storyboard]:
@@ -442,16 +447,23 @@ class Pipeline:
         storyboard = self.openai.create_storyboard(
             idea, frame_count, default_duration=self.options.duration
         )
+        self._save_storyboard(storyboard)
+        return storyboard
+
+    def _save_storyboard(self, storyboard: Storyboard) -> None:
+        """Write the storyboard JSON plus its readable md/html views."""
         storyboard.save(self.workspace.default_storyboard_json)
         write_storyboard_markdown(storyboard, self.workspace.storyboard_md)
-        return storyboard
+        write_storyboard_preview(
+            storyboard, self.workspace.root, self.workspace.storyboard_preview
+        )
 
     def _announce_storyboard_ready(self) -> None:
         """Tell the user the storyboard is written and how to continue."""
         print("\n" + "=" * 70)
-        print("Storyboard ready. Review and edit if needed:")
-        print(f"  {self.workspace.storyboard_md}")
-        print(f"  {self.workspace.default_storyboard_json}")
+        print("Storyboard ready. Review it:")
+        print(f"  open {self.workspace.storyboard_preview}   (visual contact sheet)")
+        print(f"  {self.workspace.default_storyboard_json}   (edit clips here)")
         print("\nThen generate the clips with:")
         print(f"  {self._next_command('render')}")
         print("=" * 70 + "\n")
@@ -1095,8 +1107,7 @@ class Pipeline:
             if storyboard is None:
                 storyboard = self._build_mode_a_storyboard(styled)
                 if not self.dry_run:
-                    storyboard.save(self.workspace.default_storyboard_json)
-                    write_storyboard_markdown(storyboard, self.workspace.storyboard_md)
+                    self._save_storyboard(storyboard)
                     logger.info(
                         "Planned %d transition(s); storyboard written to %s",
                         len(storyboard.transitions), self.workspace.storyboard_md,
