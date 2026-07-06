@@ -14,7 +14,6 @@ individually instead.
 """
 from __future__ import annotations
 
-import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -39,8 +38,9 @@ from .media.images import (
     SUPPORTED_IMAGE_EXTS,
     list_input_images,
     natural_sort_key,
+    slugify_stem,
+    verify_dimensions,
 )
-from .media.images import verify_dimensions
 from .models import Frame, Storyboard, Transition
 from .options import RunOptions
 from .state import FailedJobStore, StateStore
@@ -55,6 +55,22 @@ ConfirmFn = Callable[[list[str], str], bool]
 
 # One planned clip: (start_frame, end_frame, motion_prompt, duration, sound_prompt)
 ClipPair = tuple[Path, Path, str, int, str]
+
+
+def _consecutive_runs(indices: list[int]) -> list[list[int]]:
+    """Group sorted indices into maximal consecutive runs.
+
+    Used to batch adjacent dirty transition pairs into one vision call
+    (pairs i and i+1 share a frame, so analysing them together is both
+    cheaper and more coherent).
+    """
+    runs: list[list[int]] = []
+    for i in indices:
+        if runs and i == runs[-1][-1] + 1:
+            runs[-1].append(i)
+        else:
+            runs.append([i])
+    return runs
 
 
 class Pipeline:
@@ -178,12 +194,13 @@ class Pipeline:
 
     # --------------------------- storyboard step -------------------------- #
     def cmd_storyboard(self) -> None:
-        """Create (or refresh) the storyboard, then stop for review.
+        """Create or update the storyboard, then stop for review.
 
         With --idea/--idea-file the storyboard is written by the text model
-        from scratch (frames get image prompts and are generated at render
-        time). Otherwise the images in input_images/ are styled and the vision
-        model plans one transition per consecutive pair.
+        from scratch. Otherwise the images in input_images/ are styled and the
+        vision model plans one transition per consecutive pair — but only for
+        the pairs that actually changed: transitions whose frames are
+        untouched (including your hand edits) are carried over as-is.
         """
         if self.options.idea or self.options.idea_file:
             storyboard = self._create_storyboard_from_idea()
@@ -191,6 +208,18 @@ class Pipeline:
                 self._announce_storyboard_ready()
             return
 
+        storyboard = self._prepare_mode_a_storyboard()
+        if storyboard is not None and not self.dry_run:
+            self._announce_storyboard_ready()
+
+    def _prepare_mode_a_storyboard(self) -> Optional[Storyboard]:
+        """Style inputs, reconcile the storyboard, save it. None = not enough frames.
+
+        Shared by `storyboard` and `run`: styling (with re-style detection for
+        changed sources), keeping unchanged transitions from the saved
+        storyboard, re-planning only dirty pairs, and invalidating rendered
+        clips whose frames changed.
+        """
         images = list_input_images(self.workspace.input_images_dir)
         self.summary.input_count = len(images)
         if not images:
@@ -201,157 +230,134 @@ class Pipeline:
             )
         logger.info("Found %d input image(s).", len(images))
 
-        styled = self._style_images(images)
-        if self.dry_run:
-            logger.info(
-                "[dry-run] would analyse %d styled frame(s) and write %s + %s",
-                len(styled),
-                self.workspace.default_storyboard_json,
-                self.workspace.storyboard_md,
-            )
-            return
-        if len(styled) < 2:
+        saved = None if self.force else self._load_saved_storyboard_tolerant()
+        recorded_sources = {
+            f.output_path: f.source_path
+            for f in (saved.frames if saved else [])
+            if f.source_path
+        }
+        frame_pairs = self._style_images(images, recorded_sources)
+        if len(frame_pairs) < 2:
             logger.warning(
                 "Need at least 2 styled images to make a clip; have %d.",
-                len(styled),
+                len(frame_pairs),
             )
-            return
+            return None
 
-        existing = self._load_reusable_storyboard(styled)
-        if existing is not None:
+        storyboard, replanned, stale_tids = self._reconcile_storyboard(
+            saved, frame_pairs
+        )
+        if replanned:
+            kept = len(storyboard.transitions) - len(replanned)
+            logger.info(
+                "%s %d transition(s): %s%s",
+                "[dry-run] would re-plan" if self.dry_run else "Re-planned",
+                len(replanned),
+                ", ".join(replanned),
+                f" — kept {kept} existing (your edits preserved)" if kept else "",
+            )
+        else:
             logger.info(
                 "Storyboard is up to date. Edit %s to change any clip, or pass "
                 "--force to redo styling + analysis from scratch.",
                 self.workspace.default_storyboard_json,
             )
-            # Refresh the readable views so hand-edits to the JSON show up.
-            write_storyboard_markdown(existing, self.workspace.storyboard_md)
-            write_storyboard_preview(
-                existing, self.workspace.root, self.workspace.storyboard_preview
-            )
-            self._announce_storyboard_ready()
-            return
-
-        storyboard = self._build_mode_a_storyboard(styled)
-        self._save_storyboard(storyboard)
-        self._announce_storyboard_ready()
-
-    def _load_reusable_storyboard(self, styled: list[Path]) -> Optional[Storyboard]:
-        """Return the saved storyboard if it still matches `styled`, else None.
-
-        None means "build a fresh one": no saved storyboard, --force, an
-        unreadable file, or the styled frames on disk no longer match the
-        frames the storyboard was written for (images added/removed).
-        """
-        path = self.workspace.default_storyboard_json
-        if self.force or not path.exists():
-            return None
-        try:
-            storyboard = Storyboard.load(path)
-        except StoryboardError as exc:
-            logger.warning("Ignoring unreadable storyboard (%s); re-analysing.", exc)
-            return None
-        current = [p.relative_to(self.workspace.root).as_posix() for p in styled]
-        saved = [f.output_path for f in storyboard.frames]
-        if saved != current:
-            logger.info(
-                "Styled frames changed since the storyboard was written "
-                "(%d saved vs %d on disk); re-analysing.", len(saved), len(current),
-            )
-            return None
-        logger.info(
-            "Using existing storyboard %s — edit it to change any clip, or pass "
-            "--force to re-analyse from scratch.", path,
-        )
+        self._invalidate_stale_clips(stale_tids)
+        if not self.dry_run:
+            self._save_storyboard(storyboard)
         return storyboard
 
-    def _build_mode_a_storyboard(self, styled: list[Path]) -> Storyboard:
-        """Build a storyboard whose frames point at the existing styled images.
-
-        The per-clip motion prompt + duration come from the vision analysis (see
-        ``_plan_mode_a_transitions``); the storyboard is always fully populated.
-        """
-        plans = self._plan_mode_a_transitions(styled)
-        style = self.options.style_prompt or self.config.style_prompt
-        frames = [
-            Frame(
-                id=f"{i:03d}",
-                description="",
-                image_prompt="",
-                output_path=p.relative_to(self.workspace.root).as_posix(),
-            )
-            for i, p in enumerate(styled, start=1)
-        ]
-        transitions: list[Transition] = []
-        for idx, (a, b) in enumerate(zip(frames, frames[1:])):
-            motion, duration, sound = plans[idx]
-            tid = f"{a.id}_to_{b.id}"
-            transitions.append(
-                Transition(
-                    id=tid,
-                    start_frame=a.output_path,
-                    end_frame=b.output_path,
-                    motion_prompt=motion,
-                    duration=duration,
-                    sound_prompt=sound,
-                    output_path=f"clips/{tid}.mp4",
-                )
-            )
-        return Storyboard(
-            project_title=self.workspace.root.name,
-            style=style,
-            duration_per_clip=self.options.duration or self.config.duration,
-            target_width=self.config.target_width,
-            target_height=self.config.target_height,
-            frames=frames,
-            transitions=transitions,
-        )
-
-    def _plan_mode_a_transitions(
-        self, styled: list[Path]
-    ) -> list[tuple[str, int, str]]:
-        """Per-pair (motion, duration, sound) plans for the styled frames.
-
-        Uses the vision analysis to tailor each clip. Falls back to the global
-        motion prompt and one duration for every clip when analysis is off
-        (--no-analyze), during a dry-run (frames aren't on disk yet), or if the
-        call fails — so a planning hiccup never sinks the run.
-        """
-        fallback = (
-            self._motion_prompt(),
-            self.options.duration or self.config.duration,
-            "",
-        )
-        n = len(styled)
-        if self.dry_run or not self.options.analyze_frames:
-            return [fallback] * (n - 1)
-
-        style = self.options.style_prompt or self.config.style_prompt
-        logger.info("Analysing %d styled frame(s) to plan smooth transitions...", n)
+    def _load_saved_storyboard_tolerant(self) -> Optional[Storyboard]:
+        path = self.workspace.default_storyboard_json
+        if not path.exists():
+            return None
         try:
-            return self.openai.analyze_frame_transitions(
-                styled, style, default_duration=self.options.duration
-            )
-        except Exception as exc:  # noqa: BLE001 - planning is best-effort
-            logger.warning(
-                "Frame analysis failed (%s); using the default motion prompt "
-                "and one duration for every clip.", exc,
-            )
-            return [fallback] * (n - 1)
+            return Storyboard.load(path)
+        except StoryboardError as exc:
+            logger.warning("Ignoring unreadable storyboard (%s); re-planning.", exc)
+            return None
 
-    def _style_images(self, images: list[Path]) -> list[Path]:
+    def _styled_targets(self, images: list[Path]) -> list[Path]:
+        """Map each input image to its styled output path.
+
+        Two naming schemes:
+        * Filename-keyed (default): styled_images/<slug-of-input-stem>.png.
+          Artifacts follow the input FILE, so adding/removing/reordering
+          inputs never misaligns existing styled work — an inserted image
+          only costs its own styling plus the two clips around it.
+        * Positional (legacy): styled_images/NNN_styled.png — kept for
+          projects that already contain such files so nothing is orphaned.
+          (To migrate an old project, delete styled_images/ and storyboard/;
+          it will re-style everything under the new names.)
+        """
+        legacy = any(self.workspace.styled_images_dir.glob("*_styled.png"))
+        if legacy:
+            return [
+                self.workspace.styled_images_dir / f"{i:03d}_styled.png"
+                for i in range(1, len(images) + 1)
+            ]
+        targets: list[Path] = []
+        first_source: dict[str, str] = {}
+        for img in images:
+            slug = slugify_stem(img.stem)
+            if slug in first_source:
+                raise PipelineError(
+                    f"Input images {first_source[slug]!r} and {img.name!r} both "
+                    f"map to styled name {slug}.png; rename one of them."
+                )
+            first_source[slug] = img.name
+            targets.append(self.workspace.styled_images_dir / f"{slug}.png")
+        return targets
+
+    def _style_images(
+        self, images: list[Path], recorded_sources: dict[str, str]
+    ) -> list[tuple[Path, Path]]:
+        """Style every input; return ordered (source, styled) pairs on disk.
+
+        An EXISTING styled image is redone when its source file is newer than
+        it, or when the saved storyboard records that it was styled from a
+        DIFFERENT source (inputs swapped, or shifted in a legacy positional
+        project). Because redoing spends image credits, the list is shown and
+        gated on confirmation first; declining keeps the old files. --force
+        redoes everything without asking.
+        """
         style_prompt = self.options.style_prompt or self.config.style_prompt
-        styled = [
-            self.workspace.styled_images_dir / f"{i:03d}_styled.png"
-            for i in range(1, len(images) + 1)
-        ]
+        targets = self._styled_targets(images)
+        jobs = list(zip(images, targets))
 
-        def work(job: tuple[int, Path]) -> None:
-            idx, src = job
-            dst = styled[idx - 1]
+        redo: dict[Path, str] = {}  # styled path -> reason
+        if not self.force:
+            for src, dst in jobs:
+                if not dst.exists():
+                    continue
+                if src.stat().st_mtime > dst.stat().st_mtime:
+                    redo[dst] = f"source {src.name} is newer"
+                    continue
+                rel_dst = dst.relative_to(self.workspace.root).as_posix()
+                rel_src = src.relative_to(self.workspace.root).as_posix()
+                recorded = recorded_sources.get(rel_dst)
+                if recorded and recorded != rel_src:
+                    redo[dst] = (
+                        f"was styled from {Path(recorded).name}, source is now "
+                        f"{src.name}"
+                    )
+        if redo and not self.dry_run:
+            lines = [
+                f"{len(redo)} existing styled image(s) no longer match their "
+                "source and would be re-styled (spends image credits):"
+            ] + [f"  {dst.name}: {reason}" for dst, reason in redo.items()]
+            if not self._ask(
+                lines,
+                f"Re-style {len(redo)} image(s) now? [y/N] ",
+                "Keeping the existing styled images unchanged.",
+            ):
+                redo.clear()
+
+        def work(job: tuple[Path, Path]) -> None:
+            src, dst = job
             job_id = f"style:{dst.name}"
 
-            if dst.exists() and not self.force:
+            if dst.exists() and not self.force and dst not in redo:
                 with self._lock:
                     self.summary.styled_skipped += 1
                 logger.info("Skip styled (done): %s", dst.name)
@@ -380,21 +386,171 @@ class Pipeline:
                     self.state.set(job_id, "failed")
                     self.failed.record(job_id, "style", str(exc), source=str(src))
 
-        self._map_parallel(
-            list(enumerate(images, start=1)), work, "Styling images", "img"
-        )
+        self._map_parallel(jobs, work, "Styling images", "img")
         if self.dry_run:
-            return styled  # nothing on disk yet; report the plan as-is
+            return jobs  # nothing on disk yet; report the plan as-is
         # Only hand back frames that exist: a failed styling must not leak a
         # missing path into transition planning (one bad frame would otherwise
         # crash the vision call and degrade EVERY clip to the generic prompt).
-        existing = [p for p in styled if p.exists()]
-        if len(existing) < len(styled):
+        existing = [(src, dst) for src, dst in jobs if dst.exists()]
+        if len(existing) < len(jobs):
             logger.warning(
                 "%d image(s) failed to style; planning transitions from the "
-                "%d that succeeded.", len(styled) - len(existing), len(existing),
+                "%d that succeeded.", len(jobs) - len(existing), len(existing),
             )
         return existing
+
+    def _reconcile_storyboard(
+        self, saved: Optional[Storyboard], frame_pairs: list[tuple[Path, Path]]
+    ) -> tuple[Storyboard, list[str], list[str]]:
+        """Merge the saved storyboard with the frames now on disk.
+
+        Returns ``(storyboard, replanned ids, stale ids)``. A pair is
+        re-planned when it has no saved transition (a frame was inserted or
+        removed next to it) or when one of its styled frames changed after
+        the storyboard was written; every other transition is carried over
+        verbatim, so hand edits survive. ``stale ids`` are the re-planned
+        pairs whose frame CONTENT changed — their already-rendered clips are
+        invalid. (A merely new pairing keeps any existing clip: its frames
+        are unchanged, only the plan around them is new.)
+        """
+        root = self.workspace.root
+        frames = [
+            Frame(
+                id=self._frame_id(dst),
+                description="",
+                image_prompt="",
+                output_path=dst.relative_to(root).as_posix(),
+                source_path=src.relative_to(root).as_posix(),
+            )
+            for src, dst in frame_pairs
+        ]
+        style = self.options.style_prompt or (
+            saved.style if saved and saved.style else self.config.style_prompt
+        )
+        sb_path = self.workspace.default_storyboard_json
+        sb_mtime = sb_path.stat().st_mtime if (saved and sb_path.exists()) else 0.0
+        styled_paths = [dst for _, dst in frame_pairs]
+
+        def frame_changed(p: Path) -> bool:
+            return p.exists() and p.stat().st_mtime > sb_mtime
+
+        saved_tr = {
+            (t.start_frame, t.end_frame): t
+            for t in (saved.transitions if saved else [])
+        }
+        pairs = list(zip(frames, frames[1:]))
+        dirty: list[int] = []
+        stale_tids: list[str] = []
+        for i, (a, b) in enumerate(pairs):
+            changed = saved is not None and (
+                frame_changed(styled_paths[i]) or frame_changed(styled_paths[i + 1])
+            )
+            if saved is None or changed or (a.output_path, b.output_path) not in saved_tr:
+                dirty.append(i)
+            if changed:
+                stale_tids.append(f"{a.id}_to_{b.id}")
+
+        plans = self._plan_pairs(styled_paths, dirty, style)
+
+        transitions: list[Transition] = []
+        replanned: list[str] = []
+        for i, (a, b) in enumerate(pairs):
+            tid = f"{a.id}_to_{b.id}"
+            if i in plans:
+                motion, duration, sound = plans[i]
+                transitions.append(
+                    Transition(
+                        id=tid,
+                        start_frame=a.output_path,
+                        end_frame=b.output_path,
+                        motion_prompt=motion,
+                        duration=duration,
+                        sound_prompt=sound,
+                        output_path=f"clips/{tid}.mp4",
+                    )
+                )
+                replanned.append(tid)
+            else:
+                transitions.append(saved_tr[(a.output_path, b.output_path)])
+
+        storyboard = Storyboard(
+            project_title=saved.project_title if saved else self.workspace.root.name,
+            style=style,
+            duration_per_clip=self.options.duration
+            or (saved.duration_per_clip if saved else self.config.duration),
+            target_width=self.config.target_width,
+            target_height=self.config.target_height,
+            music_prompt=saved.music_prompt if saved else "",
+            frames=frames,
+            transitions=transitions,
+        )
+        return storyboard, replanned, stale_tids
+
+    def _plan_pairs(
+        self, styled: list[Path], dirty: list[int], style: str
+    ) -> dict[int, tuple[str, int, str]]:
+        """Vision-plan the dirty pairs only: {pair index: (motion, dur, sound)}.
+
+        Consecutive dirty pairs are analysed together in one call containing
+        just the frames involved, so an inserted image costs one small vision
+        request instead of re-analysing the whole movie. Falls back to the
+        global motion prompt per pair when analysis is off (--no-analyze),
+        during a dry-run, or if a call fails — a planning hiccup never sinks
+        the run.
+        """
+        if not dirty:
+            return {}
+        fallback = (
+            self._motion_prompt(),
+            self.options.duration or self.config.duration,
+            "",
+        )
+        if self.dry_run or not self.options.analyze_frames:
+            return {i: fallback for i in dirty}
+        plans: dict[int, tuple[str, int, str]] = {}
+        for run in _consecutive_runs(dirty):
+            segment = styled[run[0]: run[-1] + 2]
+            logger.info(
+                "Analysing %d frame(s) to plan %d transition(s)...",
+                len(segment), len(run),
+            )
+            try:
+                seg_plans = self.openai.analyze_frame_transitions(
+                    segment, style, default_duration=self.options.duration
+                )
+                for offset, i in enumerate(run):
+                    plans[i] = seg_plans[offset]
+            except Exception as exc:  # noqa: BLE001 - planning is best-effort
+                logger.warning(
+                    "Frame analysis failed (%s); using the default motion "
+                    "prompt for %d transition(s).", exc, len(run),
+                )
+                for i in run:
+                    plans[i] = fallback
+        return plans
+
+    def _invalidate_stale_clips(self, stale_tids: list[str]) -> None:
+        """Delete rendered clips whose frames changed, so `render` redoes them.
+
+        Also clears their clip/SFX/fade state; without this a re-rendered clip
+        would skip its audio as "done" from the previous file.
+        """
+        for tid in stale_tids:
+            clip = self.workspace.clips_dir / f"{tid}.mp4"
+            if not clip.exists():
+                continue
+            if self.dry_run:
+                logger.info("[dry-run] would invalidate stale clip %s", clip.name)
+                continue
+            clip.unlink()
+            self.state.clear(
+                f"clip:{clip.name}", f"sfx:{clip.name}", f"fade:{clip.name}"
+            )
+            logger.info(
+                "Removed stale clip %s (its frames changed); the next render "
+                "will regenerate it.", clip.name,
+            )
 
     # ------------------- storyboard from an idea (Mode B) ----------------- #
     def _resolve_idea(self) -> str:
@@ -560,8 +716,9 @@ class Pipeline:
     def _generate_frames(self, storyboard: Storyboard) -> None:
         """Generate any frame that has an image prompt and is missing on disk.
 
-        Mode A frames (styled images) have no image prompt and are never
-        touched here; Mode B frames are (re)generated when missing or --force.
+        Image-based frames (styled images) have no image prompt and are never
+        touched here; idea-based frames are (re)generated when missing or
+        --force.
         """
         todo = [f for f in storyboard.frames if f.image_prompt.strip()]
         if not todo:
@@ -749,12 +906,21 @@ class Pipeline:
 
         self._map_parallel(list(pairs), work, "Generating clips", "clip")
 
+    @staticmethod
+    def _frame_id(frame: Path) -> str:
+        """Frame id from a frame filename.
+
+        'img4a.png' -> 'img4a' (filename-keyed); legacy '001_styled.png' ->
+        '001'; idea-based '001.png' -> '001'.
+        """
+        stem = frame.stem
+        return stem[: -len("_styled")] if stem.endswith("_styled") else stem
+
     def _clip_name(self, start: Path, end: Path) -> Path:
-        """Map a frame pair to clips/<start>_to_<end>.mp4 using leading ids."""
-        def stem_id(p: Path) -> str:
-            m = re.match(r"(\d+)", p.stem)
-            return m.group(1) if m else p.stem
-        return self.workspace.clips_dir / f"{stem_id(start)}_to_{stem_id(end)}.mp4"
+        """Map a frame pair to clips/<startid>_to_<endid>.mp4."""
+        return self.workspace.clips_dir / (
+            f"{self._frame_id(start)}_to_{self._frame_id(end)}.mp4"
+        )
 
     # ------------------------------ audio step ---------------------------- #
     def cmd_audio(self) -> None:
@@ -1039,6 +1205,20 @@ class Pipeline:
         else:
             print("  Storyboard       : none")
 
+        if storyboard is not None:
+            sb_mtime = sb_path.stat().st_mtime
+            changed = [
+                Path(f.output_path).name
+                for f in storyboard.frames
+                if (ws.root / f.output_path).exists()
+                and (ws.root / f.output_path).stat().st_mtime > sb_mtime
+            ]
+            if changed:
+                print(
+                    "  Changed frames   : " + ", ".join(changed)
+                    + "  (newer than the storyboard - run storyboard to re-plan)"
+                )
+
         rendered = missing = 0
         if storyboard is not None:
             frames = [ws.root / f.output_path for f in storyboard.frames]
@@ -1078,40 +1258,19 @@ class Pipeline:
     def cmd_run(self) -> None:
         """The whole flow in one command, gated by confirmation prompts.
 
-        Reuses the saved storyboard when it's still valid; otherwise creates
-        one (from images, or from --idea when given), then renders and
-        combines. Splitting the flow across `storyboard`/`render`/`combine`
-        gives the same result with an editable pause between each step.
+        Reuses/reconciles the saved storyboard; otherwise creates one (from
+        images, or from --idea when given), then renders and combines.
+        Splitting the flow across `storyboard`/`render`/`combine` gives the
+        same result with an editable pause between each step.
         """
         if self.options.idea or self.options.idea_file:
             storyboard = self._create_storyboard_from_idea()
             if storyboard is None:  # dry-run: no plan to continue from
                 return
         else:
-            images = list_input_images(self.workspace.input_images_dir)
-            self.summary.input_count = len(images)
-            if not images:
-                raise PipelineError(
-                    f"No supported images found in {self.workspace.input_images_dir}. "
-                    f"Supported: {sorted(SUPPORTED_IMAGE_EXTS)}"
-                )
-            logger.info("Found %d input image(s).", len(images))
-            styled = self._style_images(images)
-            if len(styled) < 2:
-                logger.warning(
-                    "Need at least 2 styled images to make a clip; have %d.",
-                    len(styled),
-                )
-                return
-            storyboard = self._load_reusable_storyboard(styled)
+            storyboard = self._prepare_mode_a_storyboard()
             if storyboard is None:
-                storyboard = self._build_mode_a_storyboard(styled)
-                if not self.dry_run:
-                    self._save_storyboard(storyboard)
-                    logger.info(
-                        "Planned %d transition(s); storyboard written to %s",
-                        len(storyboard.transitions), self.workspace.storyboard_md,
-                    )
+                return
 
         self.summary.input_count = self.summary.input_count or len(storyboard.frames)
         self._storyboard_music_prompt = storyboard.music_prompt or ""

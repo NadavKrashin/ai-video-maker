@@ -37,14 +37,15 @@ def find_generated_clips(directory: Path) -> list[Path]:
 
     Only clips matching the pipeline's naming scheme are returned, so the
     combined ``final_video.mp4`` (or any other stray file) is never folded
-    back into itself on a re-run.
+    back into itself on a re-run. Frame ids may be numeric (legacy positional
+    naming) or filename slugs, so anything of the form ``X_to_Y.mp4`` counts.
     """
     clips = [
         p
         for p in directory.iterdir()
         if p.is_file()
         and p.suffix.lower() == ".mp4"
-        and re.match(r"\d+_to_\d+$", p.stem)
+        and re.match(r".+_to_.+$", p.stem)
     ]
     return sorted(clips, key=natural_sort_key)
 

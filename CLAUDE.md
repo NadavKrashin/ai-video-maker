@@ -19,8 +19,19 @@ speed > scalability.
 
 Core design rules:
 - **The storyboard (`projects/<name>/storyboard/storyboard.json`) is the source
-  of truth.** Users hand-edit it between steps; never regenerate or overwrite
-  it implicitly (only on explicit request / `--force`).
+  of truth.** Users hand-edit it between steps. `storyboard` RECONCILES rather
+  than regenerates: it keeps every transition whose frames are unchanged and
+  re-plans only dirty pairs (frame inserted/removed/re-styled) via a targeted
+  vision call (`_reconcile_storyboard` / `_plan_pairs` in runner.py). Never
+  regress to overwriting the whole storyboard implicitly.
+- **Styled frames are keyed by input filename** (`beach.jpg` →
+  `styled_images/beach.png` → `clips/beach_to_party.mp4`), so input edits stay
+  surgical. Projects that still contain `NNN_styled.png` files run in legacy
+  positional mode — auto-detected in `_styled_targets`; don't break it.
+- A styled image is re-styled when its source is newer or when
+  `Frame.source_path` shows it came from a different file — gated on a
+  confirmation because it spends credits. When a frame changes, its adjacent
+  clips are deleted (stale) so `render` redoes them.
 - **No `input()` or other stdin use inside `ai_video_maker/`** — all
   interactivity lives in `cli.py` via the injected `confirm` callback.
 - Resume is existence-based for files (styled images, clips) and

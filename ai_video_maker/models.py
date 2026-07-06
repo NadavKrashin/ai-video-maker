@@ -15,6 +15,10 @@ class Frame(BaseModel):
     image_prompt: str
     negative_prompt: str = ""
     output_path: str
+    # Image-based projects: the input image this frame was styled from
+    # (workspace-relative). Lets the pipeline detect that a styled file no
+    # longer matches its source (inputs swapped/reordered) and re-style it.
+    source_path: str = ""
 
 
 class Transition(BaseModel):

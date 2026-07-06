@@ -11,6 +11,7 @@ from ai_video_maker.media.images import (
     list_input_images,
     natural_sort_key,
     normalize_image,
+    slugify_stem,
     verify_dimensions,
 )
 
@@ -71,6 +72,16 @@ class TestEncodeDataUrl:
             assert im.size == (200, 100)
 
 
+class TestSlugifyStem:
+    def test_keeps_safe_characters(self):
+        assert slugify_stem("img4a") == "img4a"
+        assert slugify_stem("IMG_2043-final") == "IMG_2043-final"
+
+    def test_replaces_unsafe_characters(self):
+        assert slugify_stem("My Photo (1)") == "My_Photo_1"
+        assert slugify_stem("קובץ") == "frame"  # nothing safe left -> fallback
+
+
 class TestFindGeneratedClips:
     def test_matches_only_pipeline_naming(self, tmp_path):
         for name in (
@@ -80,4 +91,11 @@ class TestFindGeneratedClips:
             (tmp_path / name).write_bytes(b"x")
         assert [p.name for p in find_generated_clips(tmp_path)] == [
             "001_to_002.mp4", "002_to_003.mp4", "010_to_011.mp4",
+        ]
+
+    def test_accepts_filename_keyed_clips(self, tmp_path):
+        for name in ("img4_to_img4a.mp4", "img4a_to_img5.mp4", "final_video.mp4"):
+            (tmp_path / name).write_bytes(b"x")
+        assert [p.name for p in find_generated_clips(tmp_path)] == [
+            "img4_to_img4a.mp4", "img4a_to_img5.mp4",
         ]

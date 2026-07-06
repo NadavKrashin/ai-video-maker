@@ -51,6 +51,17 @@ def natural_sort_key(path: Path) -> list[Any]:
     return [int(p) if p.isdigit() else p.lower() for p in parts]
 
 
+def slugify_stem(stem: str) -> str:
+    """A filesystem/id-safe slug of an input filename stem.
+
+    Used to key styled frames (and therefore clip names) by their SOURCE
+    filename rather than by position, so inserting/removing/reordering input
+    images never misaligns existing styled work.
+    """
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_")
+    return slug or "frame"
+
+
 def list_input_images(directory: Path) -> list[Path]:
     files = [
         p

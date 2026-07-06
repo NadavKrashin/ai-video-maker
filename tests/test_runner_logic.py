@@ -1,6 +1,8 @@
 """Pipeline pure-logic tests: bridging, pair building, selection, combine list."""
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -175,47 +177,183 @@ class TestClipsForCombine:
         assert [c.name for c in pipeline._clips_for_combine()] == ["001_to_003.mp4"]
 
 
-class TestReusableStoryboard:
-    def _styled(self, workspace, n=3):
-        _write_frames(workspace, range(1, n + 1))
-        return [
-            workspace.styled_images_dir / f"{i:03d}_styled.png"
-            for i in range(1, n + 1)
-        ]
+def _make_frame_pairs(workspace, names, age=100.0):
+    """Create input+styled files for `names` (slug scheme), aged `age` seconds."""
+    now = time.time()
+    pairs = []
+    for n in names:
+        src = _touch(workspace.input_images_dir / f"{n}.jpg")
+        dst = _touch(workspace.styled_images_dir / f"{n}.png")
+        os.utime(src, (now - age, now - age))
+        os.utime(dst, (now - age, now - age))
+        pairs.append((src, dst))
+    return pairs
 
-    def test_reuses_matching_storyboard(self, pipeline, workspace):
-        styled = self._styled(workspace)
-        _storyboard(workspace, 3).save(workspace.default_storyboard_json)
-        assert pipeline._load_reusable_storyboard(styled) is not None
 
-    def test_none_when_absent(self, pipeline, workspace):
-        assert pipeline._load_reusable_storyboard(self._styled(workspace)) is None
+def _save_slug_storyboard(workspace, names) -> Storyboard:
+    frames = [
+        Frame(id=n, description="", image_prompt="",
+              output_path=f"styled_images/{n}.png",
+              source_path=f"input_images/{n}.jpg")
+        for n in names
+    ]
+    transitions = [
+        Transition(id=f"{a}_to_{b}",
+                   start_frame=f"styled_images/{a}.png",
+                   end_frame=f"styled_images/{b}.png",
+                   motion_prompt=f"motion {a}", duration=5,
+                   sound_prompt=f"sound {a}",
+                   output_path=f"clips/{a}_to_{b}.mp4")
+        for a, b in zip(names, names[1:])
+    ]
+    sb = Storyboard(project_title="t", style="style", music_prompt="the tune",
+                    frames=frames, transitions=transitions)
+    sb.save(workspace.default_storyboard_json)
+    return sb
 
-    def test_none_when_frames_changed(self, pipeline, workspace):
-        styled = self._styled(workspace, 4)  # storyboard was made for 3
-        _storyboard(workspace, 3).save(workspace.default_storyboard_json)
-        assert pipeline._load_reusable_storyboard(styled) is None
 
-    def test_none_under_force(self, make_pipeline, workspace):
-        p = make_pipeline(force=True)
-        styled = self._styled(workspace)
-        _storyboard(workspace, 3).save(workspace.default_storyboard_json)
-        assert p._load_reusable_storyboard(styled) is None
+class TestReconcileStoryboard:
+    """The surgical-edit merge: keep untouched transitions, re-plan the rest."""
 
-    def test_none_when_unreadable(self, pipeline, workspace):
-        styled = self._styled(workspace)
-        workspace.default_storyboard_json.parent.mkdir(parents=True, exist_ok=True)
-        workspace.default_storyboard_json.write_text("{not json", encoding="utf-8")
-        assert pipeline._load_reusable_storyboard(styled) is None
+    def _pipeline(self, make_pipeline):
+        # analysis off -> deterministic fallback plans (config.motion_prompt)
+        return make_pipeline(analyze_frames=False)
+
+    def test_unchanged_project_keeps_everything(self, make_pipeline, workspace):
+        p = self._pipeline(make_pipeline)
+        pairs = _make_frame_pairs(workspace, ["a", "b", "c"])
+        saved = _save_slug_storyboard(workspace, ["a", "b", "c"])
+        sb, replanned, stale = p._reconcile_storyboard(saved, pairs)
+        assert replanned == [] and stale == []
+        assert [t.motion_prompt for t in sb.transitions] == ["motion a", "motion b"]
+        assert sb.music_prompt == "the tune"  # user-level fields carried over
+
+    def test_inserted_frame_replans_only_its_two_pairs(self, make_pipeline, workspace):
+        p = self._pipeline(make_pipeline)
+        _save_slug_storyboard(workspace, ["a", "b", "c"])
+        saved = Storyboard.load(workspace.default_storyboard_json)
+        pairs = _make_frame_pairs(workspace, ["a", "x", "b", "c"])
+        sb, replanned, stale = p._reconcile_storyboard(saved, pairs)
+        assert replanned == ["a_to_x", "x_to_b"]
+        assert stale == []  # frames a/b/c themselves are unchanged
+        kept = {t.id: t.motion_prompt for t in sb.transitions}
+        assert kept["b_to_c"] == "motion b"  # hand-editable transition survived
+
+    def test_removed_frame_replans_the_joined_pair(self, make_pipeline, workspace):
+        p = self._pipeline(make_pipeline)
+        saved = _save_slug_storyboard(workspace, ["a", "b", "c"])
+        pairs = _make_frame_pairs(workspace, ["a", "c"])
+        sb, replanned, stale = p._reconcile_storyboard(saved, pairs)
+        assert replanned == ["a_to_c"] and stale == []
+        assert len(sb.transitions) == 1
+
+    def test_restyled_frame_marks_adjacent_pairs_stale(self, make_pipeline, workspace):
+        p = self._pipeline(make_pipeline)
+        pairs = _make_frame_pairs(workspace, ["a", "b", "c"])
+        saved = _save_slug_storyboard(workspace, ["a", "b", "c"])
+        # b was re-styled AFTER the storyboard was written
+        future = time.time() + 50
+        os.utime(workspace.styled_images_dir / "b.png", (future, future))
+        sb, replanned, stale = p._reconcile_storyboard(saved, pairs)
+        assert replanned == ["a_to_b", "b_to_c"]
+        assert stale == ["a_to_b", "b_to_c"]
+
+    def test_no_saved_storyboard_plans_all(self, make_pipeline, workspace):
+        p = self._pipeline(make_pipeline)
+        pairs = _make_frame_pairs(workspace, ["a", "b", "c"])
+        sb, replanned, stale = p._reconcile_storyboard(None, pairs)
+        assert replanned == ["a_to_b", "b_to_c"] and stale == []
+        assert all(t.motion_prompt == p.config.motion_prompt for t in sb.transitions)
+
+    def test_invalidate_stale_clips_deletes_and_clears_state(
+        self, make_pipeline, workspace
+    ):
+        p = self._pipeline(make_pipeline)
+        clip = _touch(workspace.clips_dir / "a_to_b.mp4")
+        p.state.set("sfx:a_to_b.mp4", "done")
+        p.state.set("fade:a_to_b.mp4", "done")
+        p._invalidate_stale_clips(["a_to_b", "b_to_c"])  # b_to_c has no file
+        assert not clip.exists()
+        assert not p.state.is_done("sfx:a_to_b.mp4")
+        assert not p.state.is_done("fade:a_to_b.mp4")
+
+
+class TestStyledTargets:
+    def test_slug_naming_by_default(self, pipeline, workspace):
+        imgs = [_touch(workspace.input_images_dir / n)
+                for n in ("My Photo (1).jpg", "img4a.png")]
+        targets = pipeline._styled_targets(imgs)
+        assert [t.name for t in targets] == ["My_Photo_1.png", "img4a.png"]
+
+    def test_legacy_positional_when_old_files_exist(self, pipeline, workspace):
+        _touch(workspace.styled_images_dir / "001_styled.png")
+        imgs = [_touch(workspace.input_images_dir / n) for n in ("a.jpg", "b.jpg")]
+        targets = pipeline._styled_targets(imgs)
+        assert [t.name for t in targets] == ["001_styled.png", "002_styled.png"]
+
+    def test_slug_collision_raises(self, pipeline, workspace):
+        imgs = [_touch(workspace.input_images_dir / "a.jpg"),
+                _touch(workspace.input_images_dir / "a.png")]
+        with pytest.raises(PipelineError, match="rename"):
+            pipeline._styled_targets(imgs)
+
+
+class TestRestyleDetection:
+    """_style_images must redo styled files whose sources changed underneath."""
+
+    def test_newer_source_triggers_restyle(self, make_pipeline, workspace):
+        p = make_pipeline(dry_run=True)
+        pairs = _make_frame_pairs(workspace, ["a", "b"])
+        src = pairs[0][0]
+        future = time.time() + 50
+        os.utime(src, (future, future))  # source replaced after styling
+        p._style_images([s for s, _ in pairs], recorded_sources={})
+        assert p.summary.styled_created == 1  # only the outdated one
+        assert p.summary.styled_skipped == 1
+
+    def test_source_mismatch_triggers_restyle(self, make_pipeline, workspace):
+        p = make_pipeline(dry_run=True)
+        pairs = _make_frame_pairs(workspace, ["a", "b"])
+        recorded = {"styled_images/a.png": "input_images/other.jpg"}
+        p._style_images([s for s, _ in pairs], recorded_sources=recorded)
+        assert p.summary.styled_created == 1
+        assert p.summary.styled_skipped == 1
+
+    def test_declining_the_gate_keeps_existing_files(
+        self, config, workspace
+    ):
+        from ai_video_maker.options import RunOptions
+        from ai_video_maker.runner import Pipeline
+        p = Pipeline(config, workspace, RunOptions(),
+                     confirm=lambda lines, question: False)
+        pairs = _make_frame_pairs(workspace, ["a", "b"])
+        future = time.time() + 50
+        os.utime(pairs[0][0], (future, future))
+        result = p._style_images([s for s, _ in pairs], recorded_sources={})
+        assert p.summary.styled_skipped == 2  # nothing restyled, nothing spent
+        assert len(result) == 2
+
+
+class TestConsecutiveRuns:
+    def test_grouping(self):
+        from ai_video_maker.runner import _consecutive_runs
+        assert _consecutive_runs([]) == []
+        assert _consecutive_runs([2]) == [[2]]
+        assert _consecutive_runs([0, 1, 2, 5, 7, 8]) == [[0, 1, 2], [5], [7, 8]]
 
 
 class TestClipName:
-    def test_uses_leading_ids(self, pipeline, workspace):
+    def test_legacy_styled_suffix_stripped(self, pipeline, workspace):
         a = workspace.styled_images_dir / "001_styled.png"
         b = workspace.styled_images_dir / "002_styled.png"
         assert pipeline._clip_name(a, b).name == "001_to_002.mp4"
 
-    def test_non_numeric_stem_falls_back(self, pipeline, workspace):
+    def test_slug_names_used_in_full(self, pipeline, workspace):
+        a = workspace.styled_images_dir / "img4.png"
+        b = workspace.styled_images_dir / "img4a.png"
+        assert pipeline._clip_name(a, b).name == "img4_to_img4a.mp4"
+
+    def test_non_numeric_stem_used_as_is(self, pipeline, workspace):
         a = workspace.styled_images_dir / "alpha.png"
         b = workspace.styled_images_dir / "002.png"
         assert pipeline._clip_name(a, b).name == "alpha_to_002.mp4"

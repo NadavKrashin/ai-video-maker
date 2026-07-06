@@ -37,20 +37,45 @@ and `status` will always tell you where you stand.
 
 ### Editing mid-generation
 
+Styled frames and clips are **keyed by your input filenames** (input
+`beach.jpg` → `styled_images/beach.png` → `clips/beach_to_party.mp4`), and
+`storyboard` only re-plans what actually changed — everything untouched
+(including your hand edits to the JSON) is carried over. That makes every edit
+surgical:
+
 - **Change a clip's motion/duration/sound:** edit that transition in
   `storyboard/storyboard.json`, then re-render just that clip:
 
   ```bash
-  python pipeline.py render myfilm --clip 003_to_004
+  python pipeline.py render myfilm --clip beach_to_party
   ```
 
   Named clips are regenerated even if they exist, and their SFX/fade state is
   reset so the redone clip gets fresh audio. `--clip` is repeatable.
+- **Add an image (anywhere):** drop it into `input_images/` with a filename
+  that sorts where you want it (order is natural filename order — `img4a.jpg`
+  lands between `img4.jpg` and `img5.jpg`). Run `storyboard` (styles only the
+  new image, plans only its two transitions), then `render` (renders only the
+  two new clips). The old direct clip becomes a stray and is ignored.
+- **Remove an image:** delete it from `input_images/` (and its styled file),
+  run `storyboard` (plans the one joined transition), then `render` (one new
+  clip). Its old clips become strays.
+- **Swap or re-edit an image:** replace the file in `input_images/` under the
+  same name. `storyboard` notices the source is newer than its styled version,
+  asks before re-styling (it costs image credits), re-plans the two adjacent
+  transitions, and deletes the two now-stale clips so `render` redoes them.
 - **Redo everything:** `render --force` (clips) or `storyboard --force`
   (styling + analysis + storyboard).
 - **Preview before spending:** `render` prints a per-clip plan (what will be
   rendered vs skipped, durations, motion prompts) and asks before spending
   clip credits. `--dry-run` on any command prints the plan and spends nothing.
+
+> **Older projects** (with `styled_images/NNN_styled.png` files) keep their
+> positional naming so nothing breaks — but positional names can't survive
+> middle insertions/removals safely; the pipeline detects shifted sources and
+> asks before re-styling. To migrate a project to filename-keyed naming,
+> delete its `styled_images/` and `storyboard/` and re-run `storyboard`
+> (re-styles everything once).
 
 ### From an idea instead of images
 
