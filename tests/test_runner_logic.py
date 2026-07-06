@@ -334,6 +334,31 @@ class TestRestyleDetection:
         assert len(result) == 2
 
 
+class TestSelectAudioClips:
+    def _clips(self, workspace):
+        return [_touch(workspace.clips_dir / n)
+                for n in ("a_to_b.mp4", "b_to_c.mp4")]
+
+    def test_no_selection_passthrough(self, pipeline, workspace):
+        clips = self._clips(workspace)
+        assert pipeline._select_audio_clips(clips) == clips
+
+    def test_selection_clears_audio_state_for_redo(self, make_pipeline, workspace):
+        p = make_pipeline(clips=["a_to_b"])
+        clips = self._clips(workspace)
+        p.state.set("sfx:a_to_b.mp4", "done")
+        p.state.set("sfx:b_to_c.mp4", "done")
+        selected = p._select_audio_clips(clips)
+        assert [c.name for c in selected] == ["a_to_b.mp4"]
+        assert not p.state.is_done("sfx:a_to_b.mp4")   # will be redone
+        assert p.state.is_done("sfx:b_to_c.mp4")       # untouched
+
+    def test_unknown_clip_raises(self, make_pipeline, workspace):
+        p = make_pipeline(clips=["nope_to_nada"])
+        with pytest.raises(PipelineError, match="nope_to_nada"):
+            p._select_audio_clips(self._clips(workspace))
+
+
 class TestConsecutiveRuns:
     def test_grouping(self):
         from ai_video_maker.runner import _consecutive_runs

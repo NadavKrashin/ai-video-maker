@@ -131,6 +131,10 @@ def build_parser() -> argparse.ArgumentParser:
                  "Add per-clip SFX + a music bed to the rendered clips, then "
                  "rebuild output/final_video.mp4.")
     _add_common_flags(sp)
+    sp.add_argument("--clip", action="append", metavar="ID",
+                    help="Redo audio for only this clip (e.g. 003_to_004), even "
+                         "if it already has SFX — use after editing its "
+                         "sound_prompt in the storyboard. Repeatable.")
     sp.add_argument("--music-prompt", default=None,
                     help="Override the background-music prompt for this run.")
     sp.add_argument("--music-file", default=None,

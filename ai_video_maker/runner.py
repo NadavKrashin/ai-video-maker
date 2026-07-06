@@ -927,13 +927,17 @@ class Pipeline:
         """Add SFX + music to already-rendered clips, then rebuild the final video.
 
         Per-clip SFX prompts come from the saved storyboard when there is one;
-        otherwise every clip uses config.default_sfx_prompt.
+        otherwise every clip uses config.default_sfx_prompt. --clip limits the
+        run to the named clip(s) and REDOES their audio even if marked done —
+        that's how an edited sound_prompt is applied to one clip without
+        touching the rest.
         """
         self.audio_enabled = True
         clips = self._clips_for_combine()
         if not clips:
             logger.warning("No clips in %s to add audio to.", self.workspace.clips_dir)
             return
+        clips = self._select_audio_clips(clips)
 
         sound_map: dict[str, str] = {}
         sb_path = self.workspace.default_storyboard_json
@@ -958,6 +962,30 @@ class Pipeline:
 
         # Rebuild the final video so the new audio is included, then add music.
         self._combine_clips(force_rebuild=True)
+
+    def _select_audio_clips(self, clips: list[Path]) -> list[Path]:
+        """Apply --clip selection for the audio step.
+
+        Named clips get their sfx/fade state cleared so the audio is redone,
+        not skipped as "done" from an earlier run.
+        """
+        requested = self.options.clips
+        if not requested:
+            return clips
+        by_stem = {c.stem: c for c in clips}
+        wanted = [c.removesuffix(".mp4") for c in requested]
+        unknown = [c for c in wanted if c not in by_stem]
+        if unknown:
+            raise PipelineError(
+                f"Unknown clip(s): {', '.join(unknown)}. "
+                f"Available: {', '.join(by_stem) or '(none)'}"
+            )
+        selected = [by_stem[c] for c in wanted]
+        if not self.dry_run:
+            for clip in selected:
+                self.state.clear(f"sfx:{clip.name}", f"fade:{clip.name}")
+        logger.info("Redoing audio for %d selected clip(s).", len(selected))
+        return selected
 
     def _add_sfx(self, clip: Path, sound_prompt: str, duration: int) -> None:
         """Run the video->audio model on `clip`, replacing it with a sounded one."""

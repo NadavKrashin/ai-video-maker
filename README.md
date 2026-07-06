@@ -52,6 +52,12 @@ surgical:
 
   Named clips are regenerated even if they exist, and their SFX/fade state is
   reset so the redone clip gets fresh audio. `--clip` is repeatable.
+- **Change just a clip's sound:** edit its `sound_prompt` in the storyboard,
+  then redo only that clip's audio (~a cent):
+
+  ```bash
+  python pipeline.py audio myfilm --clip beach_to_party
+  ```
 - **Add an image (anywhere):** drop it into `input_images/` with a filename
   that sorts where you want it (order is natural filename order — `img4a.jpg`
   lands between `img4.jpg` and `img5.jpg`). Run `storyboard` (styles only the
@@ -233,7 +239,7 @@ project name as its first argument.
 | `init` | — |
 | `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
 | `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 5\|10`, `--add-audio`, `--no-audio` |
-| `audio` | `--force`, `--dry-run`, `--concurrency N`, `--music-prompt`, `--music-file PATH` |
+| `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-prompt`, `--music-file PATH` |
 | `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--add-audio`, `--no-audio` |
 | `status` | — |
 | `run` | everything above except `--clip`, plus `--no-combine` |
