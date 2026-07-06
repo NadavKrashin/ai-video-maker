@@ -18,6 +18,9 @@ dependencies = [
     "fal-client>=0.4.0",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
 [project.scripts]
 ai-video-maker = "ai_video_maker.cli:main"
 

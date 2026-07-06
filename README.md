@@ -271,7 +271,7 @@ Everything below lives inside the project workspace, `projects/<name>/`:
 | `generated_frames/` | Idea-based generated frames (`001.png`, …) |
 | `clips/` | Rendered clips (`001_to_002.mp4`, …) |
 | `output/` | `final_video.mp4` + `music.mp3` (the generated bed, when audio is on) |
-| `storyboard/` | `storyboard.json` (editable source of truth) + `storyboard.md` (readable view) |
+| `storyboard/` | `storyboard.json` (editable source of truth), `storyboard.md` (readable view), `preview.html` (visual contact sheet — open it in a browser) |
 | `logs/` | Run logs + `state.json` |
 | `failed_jobs/` | `failed_jobs.json` |
 
@@ -353,6 +353,19 @@ Swap the SFX or music model by changing the id (e.g. `fal-ai/lyria2`,
 music are state-tracked like every other stage, so interrupted runs resume,
 finished clips are skipped, and a regenerated clip automatically gets fresh
 audio.
+
+---
+
+## Tests
+
+The pure pipeline logic (frame bridging, clip planning/selection, resume
+state, storyboard round-trips, image utilities) is covered by unit tests — no
+network or API keys needed:
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
 
 ---
 
