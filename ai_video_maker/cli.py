@@ -247,7 +247,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         logger.info("DRY-RUN: no API credits will be spent.")
 
     try:
-        config = Config.load(config_path)
+        # A projects/<name>/config.json layers per-movie overrides (style
+        # prompt, video model, audio settings, ...) over the shared config.
+        config = Config.load(config_path, override_path=workspace.root / "config.json")
         pipeline = Pipeline(
             config,
             workspace,

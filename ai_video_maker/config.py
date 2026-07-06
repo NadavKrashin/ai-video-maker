@@ -105,13 +105,37 @@ class Config(BaseModel):
     moderation_reword_attempts: int = 3
 
     @classmethod
-    def load(cls, path: Path) -> "Config":
+    def load(cls, path: Path, override_path: Path | None = None) -> "Config":
+        """Load and validate the config, optionally layering project overrides.
+
+        `override_path` (projects/<name>/config.json) is merged key-over-key on
+        top of the shared config when it exists, so one movie can pin its own
+        style prompt, video model, audio settings, etc. without forking the
+        global file.
+        """
+        data = cls._read_json(path, required=True)
+        if override_path is not None:
+            overrides = cls._read_json(override_path, required=False)
+            data.update(overrides)
+        try:
+            return cls(**data)
+        except ValidationError as exc:
+            source = f"{path}" + (
+                f" (+ overrides from {override_path})"
+                if override_path is not None and override_path.exists() else ""
+            )
+            raise ConfigError(f"Invalid config ({source}):\n{exc}") from exc
+
+    @staticmethod
+    def _read_json(path: Path, *, required: bool) -> dict[str, Any]:
         if not path.exists():
-            raise ConfigError(f"Config file not found: {path}")
+            if required:
+                raise ConfigError(f"Config file not found: {path}")
+            return {}
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            return cls(**data)
         except json.JSONDecodeError as exc:
             raise ConfigError(f"{path} is not valid JSON: {exc}") from exc
-        except ValidationError as exc:
-            raise ConfigError(f"Invalid config.json:\n{exc}") from exc
+        if not isinstance(data, dict):
+            raise ConfigError(f"{path} must contain a JSON object.")
+        return data

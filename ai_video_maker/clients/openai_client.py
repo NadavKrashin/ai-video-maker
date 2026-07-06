@@ -130,6 +130,77 @@ _STORYBOARD_NO_TEXT_FRAMES = (
     "scene — it must never be the sole content of a frame."
 )
 
+# --- Strict output schemas -------------------------------------------------- #
+# Enforced via OpenAI structured outputs (json_schema, strict), so the model
+# can't omit fields or return the wrong types. The prose shape description in
+# _STORYBOARD_JSON_SHAPE stays for the semantic guidance (id format, when to
+# pick 5 vs 10, ...); the schema is the hard guarantee. Coercion in
+# _assemble_storyboard / _coerce_transition_plans remains as a final net.
+_DURATION_ENUM = sorted(VALID_DURATIONS)
+
+_STORYBOARD_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "project_title": {"type": "string"},
+        "style": {"type": "string"},
+        "concept": {"type": "string"},
+        "scenes": {"type": "array", "items": {"type": "string"}},
+        "music_prompt": {"type": "string"},
+        "frames": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "description": {"type": "string"},
+                    "image_prompt": {"type": "string"},
+                    "negative_prompt": {"type": "string"},
+                    "duration_to_next": {"type": "integer", "enum": _DURATION_ENUM},
+                    "sound_to_next": {"type": "string"},
+                },
+                "required": [
+                    "id", "description", "image_prompt", "negative_prompt",
+                    "duration_to_next", "sound_to_next",
+                ],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": [
+        "project_title", "style", "concept", "scenes", "music_prompt", "frames",
+    ],
+    "additionalProperties": False,
+}
+
+_TRANSITIONS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "transitions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "motion_prompt": {"type": "string"},
+                    "duration": {"type": "integer", "enum": _DURATION_ENUM},
+                    "sound_prompt": {"type": "string"},
+                },
+                "required": ["motion_prompt", "duration", "sound_prompt"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["transitions"],
+    "additionalProperties": False,
+}
+
+
+def _json_schema_format(name: str, schema: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "json_schema",
+        "json_schema": {"name": name, "strict": True, "schema": schema},
+    }
+
+
 _STORYBOARD_JSON_SHAPE = (
     "Return ONLY valid JSON with this exact shape:\n"
     "{\n"
@@ -348,7 +419,7 @@ class OpenAIClient:
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
-                response_format={"type": "json_object"},
+                response_format=_json_schema_format("storyboard", _STORYBOARD_SCHEMA),
                 temperature=0.8,
             )
             return resp.choices[0].message.content or "{}"
@@ -422,7 +493,9 @@ class OpenAIClient:
                     {"role": "system", "content": _MODE_A_SYSTEM},
                     {"role": "user", "content": content},
                 ],
-                response_format={"type": "json_object"},
+                response_format=_json_schema_format(
+                    "transition_plans", _TRANSITIONS_SCHEMA
+                ),
                 temperature=0.7,
             )
             return resp.choices[0].message.content or "{}"

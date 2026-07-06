@@ -119,6 +119,12 @@ Edit `config.json` to change the style prompts, motion prompt, default duration,
 the fal model id, retry settings, etc. It is validated on startup (pydantic), so
 typos are caught early.
 
+**Per-project overrides:** drop a `config.json` inside a project
+(`projects/<name>/config.json`) with just the keys you want to change for that
+movie — e.g. its own `style_prompt` or a different `fal_model_id`. It is merged
+key-over-key on top of the shared config, so different movies can use different
+looks/models without touching the global file.
+
 ### Model & start/end frames (important)
 
 The pipeline is built around **consecutive frame pairs** (start → end). The video
