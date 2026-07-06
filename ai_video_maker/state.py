@@ -43,6 +43,21 @@ class StateStore:
             }
             self._flush()
 
+    def clear(self, *job_ids: str) -> None:
+        """Forget the given jobs (no-op for ids that aren't recorded).
+
+        Used when an output is regenerated: downstream per-output jobs (e.g. a
+        clip's SFX and fade) must run again for the new file, so their "done"
+        entries have to go.
+        """
+        with self._lock:
+            removed = False
+            for job_id in job_ids:
+                if self._data["jobs"].pop(job_id, None) is not None:
+                    removed = True
+            if removed:
+                self._flush()
+
     def _flush(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(

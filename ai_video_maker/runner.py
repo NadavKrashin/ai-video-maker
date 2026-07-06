@@ -688,6 +688,10 @@ class Pipeline:
                         start, end, motion, duration, dst
                     )
                     with self._lock:
+                        # A fresh clip file invalidates its per-clip audio work:
+                        # without this, a regenerated clip would skip SFX/fade
+                        # ("done" from the previous file) and come out silent.
+                        self.state.clear(f"sfx:{dst.name}", f"fade:{dst.name}")
                         self.state.set(job_id, "done", output=str(dst))
                         self.summary.videos_created += 1
                     logger.info("Clip ready: %s", dst.name)
@@ -757,17 +761,53 @@ class Pipeline:
             return m.group(1) if m else p.stem
         return self.workspace.clips_dir / f"{stem_id(start)}_to_{stem_id(end)}.mp4"
 
+    def _clips_for_combine(self) -> list[Path]:
+        """The clips that belong in the final video, in order.
+
+        Derived from the saved storyboard when there is one: existing frames are
+        bridge-paired and mapped to their clip files, so stale clips — e.g. a
+        bridged 003_to_005.mp4 left over from before frame 004 was fixed, or
+        clips from images that were since removed — are never folded into the
+        movie. Falls back to the directory listing when no storyboard exists
+        (hand-managed clips are still combinable).
+        """
+        found = find_generated_clips(self.workspace.clips_dir)
+        sb_path = self.workspace.default_storyboard_json
+        if not sb_path.exists():
+            return found
+        try:
+            storyboard = Storyboard.load(sb_path)
+        except StoryboardError as exc:
+            logger.warning(
+                "Could not read %s (%s); combining every clip in clips/.",
+                sb_path.name, exc,
+            )
+            return found
+
+        frames = [self.workspace.root / f.output_path for f in storyboard.frames]
+        expected = [self._clip_name(a, b) for a, b in self._bridge_pairs(frames)]
+        clips = [c for c in expected if c.exists()]
+        stray = sorted(set(found) - set(expected))
+        if stray:
+            logger.warning(
+                "Ignoring %d clip(s) in %s that don't match the current "
+                "storyboard: %s (delete them if they're stale).",
+                len(stray), self.workspace.clips_dir.name,
+                ", ".join(p.name for p in stray),
+            )
+        return clips
+
     def _combine_clips(
         self, force_rebuild: bool = False, confirm: bool = False
     ) -> None:
-        """Concatenate all generated clips into output/final_video.mp4.
+        """Concatenate the storyboard's clips into output/final_video.mp4.
 
         When `confirm` is set (the default end-of-run path) the user is asked
         first — but only once we know there's actually a movie to build, so the
         prompt never appears when there are no clips or the final video is
         already up to date.
         """
-        clips = find_generated_clips(self.workspace.clips_dir)
+        clips = self._clips_for_combine()
         if not clips:
             logger.info("No clips to combine; skipping final video.")
             return
@@ -906,7 +946,7 @@ class Pipeline:
         Per-clip SFX prompts are taken from --storyboard-file if it exists
         (Mode B), otherwise every clip uses config.default_sfx_prompt.
         """
-        clips = find_generated_clips(self.workspace.clips_dir)
+        clips = self._clips_for_combine()
         if not clips:
             logger.warning("No clips in %s to add audio to.", self.workspace.clips_dir)
             return
