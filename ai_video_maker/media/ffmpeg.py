@@ -55,6 +55,11 @@ def combine_clips(clips: list[Path], output: Path) -> None:
     Uses the concat demuxer with stream copy first (fast, lossless). If that
     fails — e.g. clips with mismatched codecs/parameters — it falls back to
     re-encoding so the join still succeeds.
+
+    When only *some* clips carry audio (e.g. one SFX job failed), the concat
+    demuxer can't be used at all — it requires every file to have the same
+    streams — so the clips are joined with the concat filter instead, padding
+    the silent ones with a generated silent track.
     """
     if not clips:
         raise ValueError("No clips to combine.")
@@ -63,6 +68,16 @@ def combine_clips(clips: list[Path], output: Path) -> None:
         raise _missing_tool_error("ffmpeg", "combine clips")
 
     output.parent.mkdir(parents=True, exist_ok=True)
+
+    audio_flags = [has_audio_stream(c) for c in clips]
+    if any(audio_flags) and not all(audio_flags):
+        logger.warning(
+            "%d of %d clip(s) have no audio; concatenating with silent "
+            "padding so the join stays in sync.",
+            audio_flags.count(False), len(clips),
+        )
+        _combine_clips_mixed_audio(clips, audio_flags, output)
+        return
 
     # ffmpeg's concat demuxer reads a list file of `file '<path>'` lines.
     with tempfile.NamedTemporaryFile(
@@ -98,6 +113,50 @@ def combine_clips(clips: list[Path], output: Path) -> None:
                 )
     finally:
         list_path.unlink(missing_ok=True)
+
+
+def _combine_clips_mixed_audio(
+    clips: list[Path], audio_flags: list[bool], output: Path
+) -> None:
+    """Concat filter join for clips where only some have an audio stream.
+
+    Every clip contributes its video; clips without audio get a matching-length
+    silent stereo track (anullsrc) so the filter sees a uniform [v][a] pair per
+    clip. Always re-encodes (the concat filter can't stream-copy).
+    """
+    cmd: list[str] = ["ffmpeg", "-y"]
+    for clip in clips:
+        cmd += ["-i", str(clip)]
+
+    silent_input_index: dict[int, int] = {}
+    next_index = len(clips)
+    for i, has_audio in enumerate(audio_flags):
+        if not has_audio:
+            duration = ffprobe_duration(clips[i]) or 5.0
+            cmd += [
+                "-f", "lavfi", "-t", f"{duration:.3f}",
+                "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+            ]
+            silent_input_index[i] = next_index
+            next_index += 1
+
+    pairs = []
+    for i, has_audio in enumerate(audio_flags):
+        a_index = i if has_audio else silent_input_index[i]
+        pairs.append(f"[{i}:v][{a_index}:a]")
+    filter_graph = "".join(pairs) + f"concat=n={len(clips)}:v=1:a=1[v][a]"
+
+    cmd += [
+        "-filter_complex", filter_graph,
+        "-map", "[v]", "-map", "[a]",
+        "-c:v", "libx264", "-crf", "18", "-preset", "medium",
+        "-pix_fmt", "yuv420p", "-c:a", "aac", str(output),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg mixed-audio concat failed:\n{result.stderr.strip()[-2000:]}"
+        )
 
 
 def _require_ffmpeg(tool: str = "ffmpeg") -> None:
@@ -180,6 +239,9 @@ def mux_music(
     either way.
     """
     _require_ffmpeg()
+    # ffprobe decides which mix graph to use below; without it we'd silently
+    # take the "no existing audio" branch and drop every clip's SFX.
+    _require_ffmpeg("ffprobe")
     tmp = video.with_suffix(".muxed.mp4")
     m_vol = max(0.0, min(1.0, music_volume))
     s_vol = max(0.0, min(1.0, sfx_volume))

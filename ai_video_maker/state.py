@@ -88,6 +88,11 @@ class FailedJobStore:
 
     def flush(self) -> None:
         if not self.failures:
+            # A clean run removes the previous run's report — otherwise a stale
+            # failed_jobs.json sits there looking like it describes this run.
+            if self.path.exists():
+                self.path.unlink()
+                logger.info("No failures this run; removed stale %s", self.path)
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(

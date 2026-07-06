@@ -314,6 +314,9 @@ class Pipeline:
             try:
                 self.openai.style_image(src, style_prompt, dst)
                 if not verify_dimensions(dst, self.config.target_width, self.config.target_height):
+                    # Remove the bad file: leaving it would make the next run
+                    # skip this image as "done" (resume is existence-based).
+                    dst.unlink(missing_ok=True)
                     raise RuntimeError(f"{dst.name} is not {self.config.target_width}x{self.config.target_height}")
                 with self._lock:
                     self.state.set(job_id, "done", output=str(dst))
@@ -513,6 +516,7 @@ class Pipeline:
             try:
                 self.openai.generate_image(full_prompt, dst)
                 if not verify_dimensions(dst, self.config.target_width, self.config.target_height):
+                    dst.unlink(missing_ok=True)  # or the next run skips it as done
                     raise RuntimeError(f"{dst.name} is not {self.config.target_width}x{self.config.target_height}")
                 with self._lock:
                     self.state.set(job_id, "done", output=str(dst))
