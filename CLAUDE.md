@@ -1,8 +1,10 @@
 # CLAUDE.md — project instructions for AI sessions
 
-You may edit this file yourself whenever you learn something future sessions
-should know (a new convention, a gotcha, a decision the user made). Keep it
-short and current; remove rules that no longer apply.
+**Maintaining this file is part of your job.** Before ending a task, check:
+did the user state a new preference or standing decision? Did you hit a gotcha
+that cost you time and isn't written here? Did a rule below become stale? If
+yes, update this file (no need to ask permission — but mention the update in
+your response). Keep it short and current; remove rules that no longer apply.
 
 ## What this project is
 
