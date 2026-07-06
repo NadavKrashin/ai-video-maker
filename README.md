@@ -131,11 +131,11 @@ The pipeline is built around **consecutive frame pairs** (start → end). The vi
 model and the exact request shape come from the `fal_*` config fields, so you can
 swap models without touching code.
 
-**Default — Kling v2.1 Pro on fal** (supports start + end frame, so each clip
-interpolates from one styled frame to the next):
+**Default — Kling v2.5 Turbo Pro on fal** (supports start + end frame, so each
+clip interpolates from one styled frame to the next):
 
 ```json
-"fal_model_id": "fal-ai/kling-video/v2.1/pro/image-to-video",
+"fal_model_id": "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
 "fal_start_frame_field": "image_url",
 "fal_end_frame_field": "tail_image_url",
 "fal_duration_as_string": true

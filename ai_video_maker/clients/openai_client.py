@@ -350,7 +350,6 @@ class OpenAIClient:
                     {"role": "system", "content": _REWORD_SYSTEM},
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.4,
             )
             reworded = (resp.choices[0].message.content or "").strip()
             if reworded:
@@ -419,8 +418,9 @@ class OpenAIClient:
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
+                # No explicit temperature: the gpt-5 model line only accepts
+                # the default, and the default is fine for this planning work.
                 response_format=_json_schema_format("storyboard", _STORYBOARD_SCHEMA),
-                temperature=0.8,
             )
             return resp.choices[0].message.content or "{}"
 
@@ -496,7 +496,6 @@ class OpenAIClient:
                 response_format=_json_schema_format(
                     "transition_plans", _TRANSITIONS_SCHEMA
                 ),
-                temperature=0.7,
             )
             return resp.choices[0].message.content or "{}"
 

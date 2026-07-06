@@ -33,13 +33,14 @@ class Config(BaseModel):
 
     # OpenAI models (safe to edit).
     openai_image_model: str = "gpt-image-2"
-    openai_text_model: str = "gpt-4o"
+    openai_text_model: str = "gpt-5.1"
 
     # --- fal.ai image-to-video. Auth via FAL_KEY. ---
-    # Default: Kling v2.1 Pro (image_url + tail_image_url, start->end interpolation).
+    # Default: Kling v2.5 Turbo Pro (image_url + tail_image_url, start->end
+    # interpolation — same request shape as v2.1, better and cheaper).
     # For Kling 3.0 use model "fal-ai/kling-video/v3/pro/image-to-video" with
     # start field "start_image_url" and end field "end_image_url".
-    fal_model_id: str = "fal-ai/kling-video/v2.1/pro/image-to-video"
+    fal_model_id: str = "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
     fal_start_frame_field: str = "image_url"
     # End-frame support is model-dependent. Leave empty to send only the start
     # frame + motion prompt. Kling v2.1/v2.5 use "tail_image_url".
