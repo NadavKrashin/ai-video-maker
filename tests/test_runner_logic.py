@@ -359,6 +359,72 @@ class TestSelectAudioClips:
             p._select_audio_clips(self._clips(workspace))
 
 
+class TestPresentationSegments:
+    """Optional real-photo segments wrapped around the clip list at combine."""
+
+    def _project(self, workspace):
+        _make_frame_pairs(workspace, ["a", "b", "c"])
+        _save_slug_storyboard(workspace, ["a", "b", "c"])
+        return [_touch(workspace.clips_dir / n)
+                for n in ("a_to_b.mp4", "b_to_c.mp4")]
+
+    def _stub_renderers(self, monkeypatch):
+        import ai_video_maker.runner as runner_mod
+        monkeypatch.setattr(
+            runner_mod, "render_photo_still",
+            lambda photo, dst, *a, **k: _touch(dst),
+        )
+        monkeypatch.setattr(
+            runner_mod, "render_opening_reveal",
+            lambda photo, clip, dst, *a, **k: _touch(dst),
+        )
+
+    def test_off_by_default_passthrough(self, pipeline, workspace):
+        clips = self._project(workspace)
+        segments, added = pipeline._presentation_segments(clips)
+        assert segments == clips and added is False
+
+    def test_credits_appends_one_still_per_photo(
+        self, make_pipeline, workspace, monkeypatch
+    ):
+        self._stub_renderers(monkeypatch)
+        p = make_pipeline(credits_photos=True)
+        clips = self._project(workspace)
+        segments, added = p._presentation_segments(clips)
+        assert added is True
+        assert segments[: len(clips)] == clips
+        assert [s.name for s in segments[len(clips):]] == [
+            "credits_000.mp4", "credits_001.mp4", "credits_002.mp4",
+        ]
+
+    def test_reveal_replaces_first_clip(self, make_pipeline, workspace, monkeypatch):
+        self._stub_renderers(monkeypatch)
+        p = make_pipeline(opening_reveal=True)
+        clips = self._project(workspace)
+        segments, added = p._presentation_segments(clips)
+        assert added is True
+        assert segments[0].name == "opening_reveal.mp4"
+        assert segments[1:] == clips[1:]
+
+    def test_no_recorded_sources_skips_cleanly(
+        self, make_pipeline, workspace, monkeypatch
+    ):
+        self._stub_renderers(monkeypatch)
+        p = make_pipeline(credits_photos=True, opening_reveal=True)
+        # storyboard whose frames carry no source_path (legacy / Mode B)
+        _write_frames(workspace, range(1, 4))
+        _storyboard(workspace, 3).save(workspace.default_storyboard_json)
+        clips = [_touch(workspace.clips_dir / "001_to_002.mp4")]
+        segments, added = p._presentation_segments(clips)
+        assert segments == clips and added is False
+
+    def test_cli_override_beats_config(self, make_pipeline):
+        p = make_pipeline(credits_photos=False, opening_reveal=False)
+        p.config.credits_photos = True
+        p.config.opening_reveal = True
+        assert p._presentation_flags() == (False, False)
+
+
 class TestConsecutiveRuns:
     def test_grouping(self):
         from ai_video_maker.runner import _consecutive_runs

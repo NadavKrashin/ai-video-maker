@@ -33,6 +33,8 @@ from .media.ffmpeg import (
     ffprobe_duration,
     find_generated_clips,
     mux_music,
+    render_opening_reveal,
+    render_photo_still,
 )
 from .media.images import (
     SUPPORTED_IMAGE_EXTS,
@@ -1092,6 +1094,13 @@ class Pipeline:
                 "[dry-run] would combine %d clip(s) into %s",
                 len(clips), final_video,
             )
+            reveal, credits = self._presentation_flags()
+            if reveal:
+                logger.info("[dry-run] would open on the real first photo "
+                            "(crossfade into the first clip)")
+            if credits:
+                logger.info("[dry-run] would append the original photos as "
+                            "an end-credits montage")
             return
 
         if final_video.exists() and not self.force and not force_rebuild:
@@ -1116,9 +1125,11 @@ class Pipeline:
         # front rather than interrupting after the combine runs.
         music_file = self._resolve_music_file() if self.audio_enabled else None
 
-        logger.info("Combining %d clip(s) into %s", len(clips), final_video)
+        segments, has_photo_segments = self._presentation_segments(clips)
+
+        logger.info("Combining %d segment(s) into %s", len(segments), final_video)
         try:
-            combine_clips(clips, final_video)
+            combine_clips(segments, final_video, force_filter=has_photo_segments)
             self.summary.final_video = final_video
             logger.info("Final video ready: %s", final_video)
         except Exception as exc:  # noqa: BLE001
@@ -1129,6 +1140,105 @@ class Pipeline:
         # Lay the chosen music bed under the whole video (ducked under the SFX).
         if self.audio_enabled:
             self._add_music(music_file)
+
+    def _presentation_flags(self) -> tuple[bool, bool]:
+        """Resolve (opening_reveal, credits_photos): CLI override, else config."""
+        reveal = (
+            self.options.opening_reveal
+            if self.options.opening_reveal is not None
+            else self.config.opening_reveal
+        )
+        credits = (
+            self.options.credits_photos
+            if self.options.credits_photos is not None
+            else self.config.credits_photos
+        )
+        return reveal, credits
+
+    def _original_photo_sources(self) -> list[tuple[str, Path]]:
+        """(frame id, original photo path) per storyboard frame, in order.
+
+        Only frames whose recorded source_path still exists count — idea-based
+        (Mode B) frames and pre-source_path legacy storyboards yield nothing,
+        which callers treat as 'feature not applicable'.
+        """
+        sb_path = self.workspace.default_storyboard_json
+        if not sb_path.exists():
+            return []
+        try:
+            storyboard = Storyboard.load(sb_path)
+        except StoryboardError:
+            return []
+        sources: list[tuple[str, Path]] = []
+        for frame in storyboard.frames:
+            if not frame.source_path:
+                continue
+            photo = self.workspace.root / frame.source_path
+            if photo.exists():
+                fid = self._frame_id(self.workspace.root / frame.output_path)
+                sources.append((fid, photo))
+        return sources
+
+    def _presentation_segments(self, clips: list[Path]) -> tuple[list[Path], bool]:
+        """Wrap the clip list with the optional real-photo segments.
+
+        opening_reveal replaces the first clip with photo→crossfade→clip;
+        credits_photos appends one still per original photo. Segments are
+        cheap local ffmpeg renders, so they're rebuilt on every combine (no
+        state tracking to invalidate). Returns the segment list plus whether
+        photo segments were added — the concat must then re-encode instead of
+        stream-copying, because the stills' encoding differs from the
+        provider clips'.
+        """
+        reveal, credits = self._presentation_flags()
+        if not (reveal or credits) or not clips:
+            return clips, False
+        sources = self._original_photo_sources()
+        if not sources:
+            logger.warning(
+                "opening_reveal/credits_photos are on, but this project's "
+                "storyboard records no original photos (source_path) — "
+                "skipping them. (Re-run `storyboard` on an image-based "
+                "project to record the sources.)"
+            )
+            return clips, False
+
+        seg_dir = self.workspace.output_dir / "segments"
+        seg_dir.mkdir(parents=True, exist_ok=True)
+        width, height = self.config.target_width, self.config.target_height
+        segments = list(clips)
+
+        if reveal:
+            first_id = segments[0].stem.split("_to_")[0]
+            photo = dict(sources).get(first_id)
+            if photo is None:
+                logger.warning(
+                    "opening_reveal: no original photo recorded for frame %r; "
+                    "skipping the reveal.", first_id,
+                )
+            else:
+                dst = seg_dir / "opening_reveal.mp4"
+                render_opening_reveal(
+                    photo, segments[0], dst, width, height,
+                    hold=self.config.opening_reveal_hold_seconds,
+                )
+                segments[0] = dst
+                logger.info("Opening reveal: %s comes alive into %s.",
+                            photo.name, clips[0].name)
+
+        if credits:
+            stills: list[Path] = []
+            for i, (_fid, photo) in enumerate(sources):
+                dst = seg_dir / f"credits_{i:03d}.mp4"
+                render_photo_still(
+                    photo, dst, width, height,
+                    seconds=self.config.credits_seconds_per_photo,
+                )
+                stills.append(dst)
+            segments += stills
+            logger.info("End credits: %d original photo(s) appended.", len(stills))
+
+        return segments, True
 
     def _resolve_music_prompt(self) -> str:
         return (

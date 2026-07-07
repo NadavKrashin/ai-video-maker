@@ -41,6 +41,10 @@ class RunOptions:
     no_audio: bool = False
     # run: stop after the clips, don't build the final video.
     no_combine: bool = False
+    # combine: real-photo presentation extras. None -> use the config value;
+    # True/False -> per-run override (--opening-reveal / --no-opening-reveal).
+    opening_reveal: Optional[bool] = None
+    credits_photos: Optional[bool] = None
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> "RunOptions":
@@ -65,4 +69,6 @@ class RunOptions:
             add_audio=bool(get("add_audio")),
             no_audio=bool(get("no_audio")),
             no_combine=bool(get("no_combine")),
+            opening_reveal=get("opening_reveal"),
+            credits_photos=get("credits_photos"),
         )

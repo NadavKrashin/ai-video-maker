@@ -93,6 +93,18 @@ class Config(BaseModel):
     music_loop: bool = False
     music_extra_arguments: dict[str, Any] = Field(default_factory=dict)
 
+    # --- Presentation extras (pure ffmpeg, free, both OFF by default) ------- #
+    # opening_reveal: the movie opens on the real (unstyled) first photo, holds
+    # a beat, then crossfades into the first clip — "the photo comes alive".
+    opening_reveal: bool = False
+    opening_reveal_hold_seconds: float = 1.6
+    # credits_photos: after the last clip, the original photos play as a short
+    # end-credits montage (each fitted on a blurred background, fading in/out),
+    # so viewers see the real moments behind the animation. Uses the photos
+    # recorded in the storyboard (source_path), in movie order.
+    credits_photos: bool = False
+    credits_seconds_per_photo: float = 2.5
+
     # How many image/clip/SFX API jobs to run at once. These steps are I/O-bound
     # (waiting on the provider), so a small thread pool runs them in parallel.
     # Raise for speed; lower to 1 if you hit rate limits (transient 429s are

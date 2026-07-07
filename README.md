@@ -223,6 +223,23 @@ Clips in `clips/` that don't belong to the current storyboard are ignored with
 a warning, so stale files never leak into the movie. An existing final video
 is only rebuilt with `--force`.
 
+**Real-photo extras (optional, off by default).** Two ways to show viewers the
+original photos behind the animation — both pure local ffmpeg, no API cost:
+
+- `--opening-reveal` (config: `opening_reveal`): the movie opens on the real,
+  unstyled first photo, holds ~1.6s (`opening_reveal_hold_seconds`), then
+  crossfades into the first clip — "the photo comes alive".
+- `--credits-photos` (config: `credits_photos`): after the last clip, the
+  original photos play as an end-credits montage, ~2.5s each
+  (`credits_seconds_per_photo`), in movie order, under the same music bed.
+
+Portrait photos are fitted whole onto a blurred background — nothing gets
+cropped. The photos come from the storyboard's recorded sources
+(`source_path`), so the montage stays in sync with edits automatically. Use
+`--no-opening-reveal` / `--no-credits-photos` to override config for one run.
+Segments are rebuilt on every combine (they're cheap); the concat re-encodes
+when they're present.
+
 ### `run`
 
 `storyboard` (reused if saved) → confirmation → `render` → confirmation →
@@ -242,7 +259,7 @@ project name as its first argument.
 | `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
 | `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 5\|10`, `--add-audio`, `--no-audio` |
 | `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-prompt`, `--music-file PATH` |
-| `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--add-audio`, `--no-audio` |
+| `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--add-audio`, `--no-audio`, `--[no-]opening-reveal`, `--[no-]credits-photos` |
 | `status` | — |
 | `run` | everything above except `--clip`, plus `--no-combine` |
 

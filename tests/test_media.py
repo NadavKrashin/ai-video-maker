@@ -5,7 +5,13 @@ from pathlib import Path
 
 from PIL import Image
 
-from ai_video_maker.media.ffmpeg import _mux_music_cmd, find_generated_clips
+from ai_video_maker.media.ffmpeg import (
+    _mux_music_cmd,
+    _opening_reveal_cmd,
+    _photo_fit_filter,
+    _photo_still_cmd,
+    find_generated_clips,
+)
 from ai_video_maker.media.images import (
     encode_image_data_url,
     list_input_images,
@@ -114,6 +120,44 @@ class TestMuxMusicCmd:
         cmd = self._cmd(mixed=False, loop=False)
         graph = cmd[cmd.index("-filter_complex") + 1]
         assert "amix" not in graph and "volume=0.85" in graph
+
+
+class TestPhotoSegments:
+    def test_fit_filter_pads_with_blur_never_crops_subject(self):
+        graph = _photo_fit_filter(1920, 1080)
+        assert "gblur" in graph                                # blurred fill
+        assert "force_original_aspect_ratio=decrease" in graph  # subject fitted
+        assert "overlay=(W-w)/2:(H-h)/2" in graph              # centred
+        assert "setsar=1" in graph  # concat refuses mismatched SAR otherwise
+
+    def test_still_cmd_loops_photo_for_duration_with_fades(self):
+        cmd = _photo_still_cmd(
+            Path("p.jpg"), Path("out.mp4"), 1920, 1080, seconds=2.5, fade=0.5
+        )
+        assert cmd[cmd.index("-loop") + 1] == "1"
+        assert cmd[cmd.index("-t") + 1] == "2.500"
+        graph = cmd[cmd.index("-filter_complex") + 1]
+        assert "fade=t=in" in graph and "fade=t=out:st=2.000" in graph
+
+    def test_reveal_cmd_crossfades_at_hold_offset(self):
+        cmd = _opening_reveal_cmd(
+            Path("p.jpg"), Path("c.mp4"), Path("out.mp4"), 1920, 1080,
+            hold=1.6, fade=0.8, clip_has_audio=True,
+        )
+        graph = cmd[cmd.index("-filter_complex") + 1]
+        assert "xfade=transition=fade:duration=0.800:offset=1.600" in graph
+        # still must last hold+fade so the crossfade has frames to blend with
+        assert cmd[cmd.index("-t") + 1] == "2.400"
+        # clip audio delayed by the hold so sound starts as the photo wakes
+        assert "adelay=1600" in graph and "[a]" in graph
+
+    def test_reveal_cmd_silent_clip_maps_no_audio(self):
+        cmd = _opening_reveal_cmd(
+            Path("p.jpg"), Path("c.mp4"), Path("out.mp4"), 1920, 1080,
+            hold=1.0, fade=0.8, clip_has_audio=False,
+        )
+        joined = " ".join(cmd)
+        assert "adelay" not in joined and "-c:a" not in joined
 
 
 class TestFindGeneratedClips:
