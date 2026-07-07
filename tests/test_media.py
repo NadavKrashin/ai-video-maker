@@ -6,6 +6,8 @@ from pathlib import Path
 from PIL import Image
 
 from ai_video_maker.media.ffmpeg import (
+    _end_fade_cmd,
+    _letter_overlay_cmd,
     _letter_scroll_cmd,
     _mux_music_cmd,
     _opening_reveal_cmd,
@@ -162,6 +164,31 @@ class TestPhotoSegments:
         graph = cmd[cmd.index("-filter_complex") + 1]
         assert "crop=1920:1080:0:'min(t*154.286,ih-1080)'" in graph
         assert "setsar=1" in graph
+
+    def test_letter_overlay_dims_bg_and_scrolls_up(self):
+        cmd = _letter_overlay_cmd(
+            Path("bg.mp4"), Path("letter.png"), Path("out.mp4"),
+            pixels_per_second=120.0,
+        )
+        graph = cmd[cmd.index("-filter_complex") + 1]
+        assert "drawbox" in graph and "black@0.55" in graph  # readability scrim
+        assert "overlay=x=(W-w)/2:y='H-t*120.000'" in graph  # enters from below
+        assert "0:a?" in cmd  # background audio kept if present
+
+    def test_end_fade_cmd_fades_video_and_audio(self):
+        cmd = _end_fade_cmd(
+            Path("v.mp4"), Path("t.mp4"), start=58.5, seconds=1.5, has_audio=True
+        )
+        joined = " ".join(cmd)
+        assert "fade=t=out:st=58.500:d=1.500" in joined
+        assert "afade=t=out:st=58.500:d=1.500" in joined
+
+    def test_end_fade_cmd_silent_video_skips_afade(self):
+        cmd = _end_fade_cmd(
+            Path("v.mp4"), Path("t.mp4"), start=10.0, seconds=1.5, has_audio=False
+        )
+        joined = " ".join(cmd)
+        assert "afade" not in joined and "-c:a" not in joined
 
     def test_reveal_cmd_silent_clip_maps_no_audio(self):
         cmd = _opening_reveal_cmd(

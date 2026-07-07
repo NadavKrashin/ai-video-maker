@@ -424,6 +424,85 @@ def render_letter_scroll(
         )
 
 
+def _letter_overlay_cmd(
+    background: Path, letter_png: Path, dst: Path, pixels_per_second: float
+) -> list[str]:
+    """Build the ffmpeg command scrolling the letter OVER a video (pure).
+
+    The background (the photo montage) is dimmed with a translucent black
+    scrim so the white letter text stays readable above any photo, then the
+    transparent letter image slides from below the frame to above it. The
+    output lasts exactly as long as the background.
+    """
+    graph = (
+        "[0:v]drawbox=x=0:y=0:w=iw:h=ih:color=black@0.55:t=fill[dim];"
+        f"[dim][1:v]overlay=x=(W-w)/2:y='H-t*{pixels_per_second:.3f}',"
+        "format=yuv420p[v]"
+    )
+    return [
+        "ffmpeg", "-y",
+        "-i", str(background), "-i", str(letter_png),
+        "-filter_complex", graph,
+        "-map", "[v]", "-map", "0:a?",
+        "-c:v", "libx264", "-crf", "18", "-preset", "medium",
+        "-c:a", "aac", str(dst),
+    ]
+
+
+def render_letter_overlay(
+    background: Path, letter_png: Path, dst: Path, pixels_per_second: float
+) -> None:
+    """Render the letter scrolling over `background` into `dst`."""
+    _require_ffmpeg()
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    cmd = _letter_overlay_cmd(background, letter_png, dst, pixels_per_second)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg letter overlay failed:\n{result.stderr.strip()[-1500:]}"
+        )
+
+
+def _end_fade_cmd(
+    video: Path, dst: Path, start: float, seconds: float, has_audio: bool
+) -> list[str]:
+    """Build the ffmpeg command fading the video's ending to black (pure)."""
+    cmd = [
+        "ffmpeg", "-y", "-i", str(video),
+        "-vf", f"fade=t=out:st={start:.3f}:d={seconds:.3f}",
+    ]
+    if has_audio:
+        cmd += ["-af", f"afade=t=out:st={start:.3f}:d={seconds:.3f}"]
+    cmd += ["-c:v", "libx264", "-crf", "18", "-preset", "medium"]
+    if has_audio:
+        cmd += ["-c:a", "aac"]
+    return cmd + [str(dst)]
+
+
+def apply_end_fade(video: Path, seconds: float) -> None:
+    """Fade the last `seconds` of `video` to black (and its audio to silence),
+    in place. Run AFTER the music mux so the music bed fades too."""
+    _require_ffmpeg()
+    _require_ffmpeg("ffprobe")
+    duration = ffprobe_duration(video)
+    if not duration or duration <= 2 * seconds:
+        logger.warning(
+            "End fade skipped: %s is too short (%.1fs).", video.name, duration or 0
+        )
+        return
+    tmp = video.with_suffix(".fade.mp4")
+    cmd = _end_fade_cmd(
+        video, tmp, duration - seconds, seconds, has_audio_stream(video)
+    )
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"ffmpeg end fade failed:\n{result.stderr.strip()[-1500:]}"
+        )
+    tmp.replace(video)
+
+
 def _opening_reveal_cmd(
     photo: Path,
     clip: Path,

@@ -80,12 +80,17 @@ def render_letter_image(
     screen_height: int,
     font_path: str,
     font_size: int,
+    pad: bool = True,
+    transparent: bool = False,
 ) -> Image.Image:
     """Rasterise the letter as one tall image ready to be scrolled.
 
-    A full blank screen is left above and below the text, so the scroll
-    starts empty, rolls the whole letter through, and ends empty. Empty lines
-    in the source text become paragraph gaps; lines are centred.
+    With ``pad`` a full blank screen is left above and below the text, so a
+    crop-scroll starts empty, rolls the whole letter through, and ends empty.
+    ``transparent`` renders text on an alpha-transparent canvas instead of the
+    dark background — used when the letter is overlaid on the photo montage
+    (the overlay animation provides the entry/exit, so pair it with
+    ``pad=False``). Empty lines become paragraph gaps; lines are centred.
     """
     font = ImageFont.truetype(font_path, font_size)
     margin = int(width * 0.14)
@@ -102,10 +107,14 @@ def render_letter_image(
             display_lines.append((get_display(line), line_height))
 
     text_height = sum(advance for _, advance in display_lines)
-    total_height = screen_height + text_height + screen_height
-    img = Image.new("RGB", (width, total_height), _BG)
+    pad_height = screen_height if pad else 0
+    total_height = pad_height + text_height + pad_height
+    if transparent:
+        img = Image.new("RGBA", (width, total_height), (0, 0, 0, 0))
+    else:
+        img = Image.new("RGB", (width, total_height), _BG)
     draw = ImageDraw.Draw(img)
-    y = screen_height
+    y = pad_height
     for line, advance in display_lines:
         if line:
             draw.text((width / 2, y), line, font=font, fill=_FG, anchor="ma")

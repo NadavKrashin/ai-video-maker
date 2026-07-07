@@ -29,10 +29,12 @@ from .errors import PipelineError, StoryboardError
 from .logging_setup import logger
 from .media.ffmpeg import (
     apply_edge_fades,
+    apply_end_fade,
     combine_clips,
     ffprobe_duration,
     find_generated_clips,
     mux_music,
+    render_letter_overlay,
     render_letter_scroll,
     render_opening_reveal,
     render_photo_still,
@@ -59,6 +61,25 @@ ConfirmFn = Callable[[list[str], str], bool]
 
 # One planned clip: (start_frame, end_frame, motion_prompt, duration, sound_prompt)
 ClipPair = tuple[Path, Path, str, int, str]
+
+
+def _fit_credits_and_letter(
+    n_photos: int,
+    seconds_per_photo: float,
+    letter_travel_px: float,
+    base_pps: float,
+) -> tuple[float, float]:
+    """Fit the photo montage and the letter scroll into one shared window.
+
+    Returns (per_photo_seconds, letter_pixels_per_second). The window is the
+    LONGER of the two at their configured paces — photos never flash by
+    faster than configured and the letter never scrolls faster than
+    configured; whichever side is shorter is stretched so both end together.
+    """
+    credits_len = n_photos * seconds_per_photo
+    letter_len = letter_travel_px / base_pps
+    section = max(credits_len, letter_len)
+    return section / n_photos, letter_travel_px / section
 
 
 def _consecutive_runs(indices: list[int]) -> list[list[int]]:
@@ -1146,6 +1167,16 @@ class Pipeline:
         if self.audio_enabled:
             self._add_music(music_file)
 
+        # Last touch: fade the closing moments to black, audio included.
+        if self.config.end_fade_seconds > 0:
+            try:
+                apply_end_fade(final_video, self.config.end_fade_seconds)
+                logger.info(
+                    "Faded the last %.1fs to black.", self.config.end_fade_seconds
+                )
+            except Exception as exc:  # noqa: BLE001 - cosmetic, never fatal
+                logger.warning("End fade skipped: %s", exc)
+
     def _presentation_flags(self) -> tuple[bool, bool, bool]:
         """(opening_reveal, credits_photos, closing_letter): CLI wins over config."""
         reveal = (
@@ -1212,6 +1243,11 @@ class Pipeline:
                 "project to record the sources.)"
             )
             reveal = credits = False
+        letter_text = self._letter_text() if letter else None
+        if letter and letter_text is None:
+            letter = False
+        if not (reveal or credits or letter):
+            return clips, False
 
         seg_dir = self.workspace.output_dir / "segments"
         seg_dir.mkdir(parents=True, exist_ok=True)
@@ -1229,52 +1265,163 @@ class Pipeline:
                 )
             else:
                 dst = seg_dir / "opening_reveal.mp4"
-                render_opening_reveal(
-                    photo, segments[0], dst, width, height,
-                    hold=self.config.opening_reveal_hold_seconds,
-                )
+                if self._segment_fresh(dst, [photo, segments[0]]):
+                    logger.info("Reusing opening reveal (unchanged).")
+                else:
+                    render_opening_reveal(
+                        photo, segments[0], dst, width, height,
+                        hold=self.config.opening_reveal_hold_seconds,
+                    )
+                    logger.info("Opening reveal: %s comes alive into %s.",
+                                photo.name, clips[0].name)
                 segments[0] = dst
                 added = True
-                logger.info("Opening reveal: %s comes alive into %s.",
-                            photo.name, clips[0].name)
 
-        if credits:
-            stills: list[Path] = []
-            for i, (_fid, photo) in enumerate(sources):
-                dst = seg_dir / f"credits_{i:03d}.mp4"
-                render_photo_still(
-                    photo, dst, width, height,
-                    seconds=self.config.credits_seconds_per_photo,
-                )
-                stills.append(dst)
+        if credits and letter:
+            # The letter scrolls OVER the photo montage (dimmed for
+            # readability), both paced to end together.
+            section = self._render_credits_letter_overlay(
+                seg_dir, sources, letter_text, width, height
+            )
+            if section is not None:
+                segments.append(section)
+                added = True
+        elif credits:
+            stills = self._render_credit_stills(
+                seg_dir, sources, self.config.credits_seconds_per_photo,
+                width, height,
+            )
             segments += stills
             added = True
             logger.info("End credits: %d original photo(s) appended.", len(stills))
-
-        if letter:
-            letter_segment = self._render_letter_segment(seg_dir, width, height)
-            if letter_segment is not None:
-                segments.append(letter_segment)
+        elif letter:
+            section = self._render_letter_standalone(
+                seg_dir, letter_text, width, height
+            )
+            if section is not None:
+                segments.append(section)
                 added = True
 
         return segments, added
 
-    def _render_letter_segment(
-        self, seg_dir: Path, width: int, height: int
-    ) -> Optional[Path]:
-        """Render letter.txt as the scrolling closing segment; None to skip."""
-        letter_path = self.workspace.letter_file
-        if not letter_path.exists():
+    # Segment reuse: a rendered segment is kept as long as it's newer than
+    # everything it was built from (its media inputs + the config files that
+    # hold sizes/paces/fonts). Delete output/segments/ to force a full redo.
+    def _segment_deps(self, *media: Path) -> list[Path]:
+        return [
+            *media,
+            PROJECT_ROOT / "config.json",
+            self.workspace.root / "config.json",
+        ]
+
+    def _segment_fresh(self, dst: Path, media_deps: list[Path]) -> bool:
+        if not dst.exists():
+            return False
+        mtime = dst.stat().st_mtime
+        return all(
+            not dep.exists() or dep.stat().st_mtime <= mtime
+            for dep in self._segment_deps(*media_deps)
+        )
+
+    def _letter_text(self) -> Optional[str]:
+        """The letter's text, or None (with a warning) when there isn't one."""
+        path = self.workspace.letter_file
+        if not path.exists():
             logger.warning(
                 "closing_letter is on, but %s does not exist — write your "
                 "letter there (plain text, Hebrew is fine) and re-run combine.",
-                letter_path,
+                path,
             )
             return None
-        text = letter_path.read_text(encoding="utf-8").strip()
+        text = path.read_text(encoding="utf-8").strip()
         if not text:
-            logger.warning("closing_letter: %s is empty; skipping.", letter_path)
+            logger.warning("closing_letter: %s is empty; skipping.", path)
             return None
+        return text
+
+    def _render_credit_stills(
+        self,
+        seg_dir: Path,
+        sources: list[tuple[str, Path]],
+        per_photo: float,
+        width: int,
+        height: int,
+    ) -> list[Path]:
+        """One still segment per original photo, reusing fresh ones.
+
+        The duration is part of the filename, so a pace change (e.g. the
+        letter overlay stretching the montage) naturally misses the cache
+        instead of reusing stills of the wrong length.
+        """
+        stills: list[Path] = []
+        rendered = 0
+        for i, (_fid, photo) in enumerate(sources):
+            dst = seg_dir / f"credits_{i:03d}_{per_photo:.2f}s.mp4"
+            if not self._segment_fresh(dst, [photo]):
+                render_photo_still(photo, dst, width, height, seconds=per_photo)
+                rendered += 1
+            stills.append(dst)
+        if rendered < len(stills):
+            logger.info(
+                "Credit stills: reused %d, rendered %d.",
+                len(stills) - rendered, rendered,
+            )
+        return stills
+
+    def _render_credits_letter_overlay(
+        self,
+        seg_dir: Path,
+        sources: list[tuple[str, Path]],
+        text: str,
+        width: int,
+        height: int,
+    ) -> Optional[Path]:
+        """The combined ending: letter scrolling over the real-photo montage."""
+        dst = seg_dir / "credits_letter.mp4"
+        media_deps = [self.workspace.letter_file, *(p for _, p in sources)]
+        if self._segment_fresh(dst, media_deps):
+            logger.info("Reusing credits+letter section (unchanged).")
+            return dst
+        try:
+            font = find_letter_font(self.config.letter_font_path)
+            image = render_letter_image(
+                text, width, height, font, self.config.letter_font_size,
+                pad=False, transparent=True,
+            )
+            png = seg_dir / "letter.png"
+            image.save(png)
+            travel = image.height + height  # enters from below, exits above
+            per_photo, pps = _fit_credits_and_letter(
+                len(sources),
+                self.config.credits_seconds_per_photo,
+                travel,
+                height / self.config.letter_seconds_per_screen,
+            )
+            stills = self._render_credit_stills(
+                seg_dir, sources, per_photo, width, height
+            )
+            background = seg_dir / "credits_bg.mp4"
+            combine_clips(stills, background, force_filter=True)
+            render_letter_overlay(background, png, dst, pps)
+        except Exception as exc:  # noqa: BLE001 - extras must not kill combine
+            logger.error("Credits+letter section failed (%s); combining "
+                         "without it.", exc)
+            self.failed.record("letter", "letter", str(exc))
+            return None
+        logger.info(
+            "Credits + letter: %d photo(s) under a ~%.0fs scrolling letter "
+            "(font: %s).", len(sources), travel / pps, Path(font).name,
+        )
+        return dst
+
+    def _render_letter_standalone(
+        self, seg_dir: Path, text: str, width: int, height: int
+    ) -> Optional[Path]:
+        """The letter alone, scrolling over a dark background."""
+        dst = seg_dir / "letter.mp4"
+        if self._segment_fresh(dst, [self.workspace.letter_file]):
+            logger.info("Reusing closing letter (unchanged).")
+            return dst
         try:
             font = find_letter_font(self.config.letter_font_path)
             image = render_letter_image(
@@ -1282,7 +1429,6 @@ class Pipeline:
             )
             png = seg_dir / "letter.png"
             image.save(png)
-            dst = seg_dir / "letter.mp4"
             render_letter_scroll(
                 png, dst, width, height, image.height,
                 pixels_per_second=height / self.config.letter_seconds_per_screen,
@@ -1294,7 +1440,8 @@ class Pipeline:
         logger.info(
             "Closing letter: %d chars scrolled over ~%.0fs (font: %s).",
             len(text),
-            (image.height - height) / (height / self.config.letter_seconds_per_screen),
+            (image.height - height)
+            / (height / self.config.letter_seconds_per_screen),
             Path(font).name,
         )
         return dst

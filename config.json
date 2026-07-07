@@ -35,6 +35,7 @@
   "letter_font_path": "",
   "letter_font_size": 64,
   "letter_seconds_per_screen": 7.0,
+  "end_fade_seconds": 1.5,
   "sfx_volume": 0.35,
   "music_extra_arguments": {},
   "max_parallel_requests": 4,

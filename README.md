@@ -234,18 +234,29 @@ original photos behind the animation — both pure local ffmpeg, no API cost:
   (`credits_seconds_per_photo`), in movie order, under the same music bed.
 - `--letter` (config: `closing_letter`): write a letter in
   `projects/<name>/letter.txt` (plain text; Hebrew and RTL are fully
-  supported) and it rolls credits-style over a dark background at the very
-  end. Empty lines become paragraph gaps; long lines wrap. Font is
-  auto-detected (override with `letter_font_path`), size via
-  `letter_font_size` (default 64), pace via `letter_seconds_per_screen`
-  (default 7.0 — higher is slower).
+  supported) and it rolls credits-style at the very end. **When
+  `--credits-photos` is also on, the letter scrolls OVER the photo montage**
+  (photos dimmed under a dark scrim so the text stays readable), with both
+  paced to end together — photos never flash faster than configured and the
+  letter never scrolls faster than configured. With the letter alone it
+  scrolls over a plain dark background. Empty lines become paragraph gaps;
+  long lines wrap. Font is auto-detected (override with `letter_font_path`),
+  size via `letter_font_size` (default 64), pace via
+  `letter_seconds_per_screen` (default 7.0 — higher is slower).
+- **End fade** (config: `end_fade_seconds`, default 1.5): the video's last
+  moments fade to black and the audio — music bed and SFX — fades out with
+  them. Set `0` to disable.
 
 Portrait photos are fitted whole onto a blurred background — nothing gets
 cropped. The photos come from the storyboard's recorded sources
 (`source_path`), so the montage stays in sync with edits automatically. Use
-`--no-opening-reveal` / `--no-credits-photos` to override config for one run.
-Segments are rebuilt on every combine (they're cheap); the concat re-encodes
-when they're present.
+`--no-opening-reveal` / `--no-credits-photos` / `--no-letter` to override
+config for one run.
+
+Rendered segments live in `output/segments/` and are **reused** on the next
+combine as long as their inputs (the photo, the first clip, `letter.txt`,
+the config files) haven't changed since; edit any input and only the affected
+segment is re-rendered. Delete `output/segments/` to force a full redo.
 
 ### `run`
 

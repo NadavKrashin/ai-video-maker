@@ -111,6 +111,9 @@ class Config(BaseModel):
     letter_font_path: str = ""       # empty = auto-detect a Hebrew-capable font
     letter_font_size: int = 64
     letter_seconds_per_screen: float = 7.0  # scroll pace per screen height
+    # Fade the final video's last moments to black (audio fades with it).
+    # Applied after music muxing so the bed fades too. 0 disables.
+    end_fade_seconds: float = 1.5
 
     # How many image/clip/SFX API jobs to run at once. These steps are I/O-bound
     # (waiting on the provider), so a small thread pool runs them in parallel.

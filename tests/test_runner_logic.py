@@ -369,15 +369,34 @@ class TestPresentationSegments:
                 for n in ("a_to_b.mp4", "b_to_c.mp4")]
 
     def _stub_renderers(self, monkeypatch):
+        """Replace every ffmpeg/PIL renderer with a touch(); count the calls."""
         import ai_video_maker.runner as runner_mod
+        calls: list[str] = []
+
+        class FakeImage:
+            height = 2000
+            def save(self, path):
+                _touch(Path(path))
+
+        def stub(name, dst_index):
+            def fake(*args, **kwargs):
+                calls.append(name)
+                _touch(Path(args[dst_index]))
+            return fake
+
+        monkeypatch.setattr(runner_mod, "render_photo_still", stub("still", 1))
+        monkeypatch.setattr(runner_mod, "render_opening_reveal", stub("reveal", 2))
+        monkeypatch.setattr(runner_mod, "render_letter_scroll", stub("scroll", 1))
+        monkeypatch.setattr(runner_mod, "render_letter_overlay", stub("overlay", 2))
+        monkeypatch.setattr(runner_mod, "combine_clips", stub("concat", 1))
         monkeypatch.setattr(
-            runner_mod, "render_photo_still",
-            lambda photo, dst, *a, **k: _touch(dst),
+            runner_mod, "find_letter_font", lambda explicit="": "/fake/font.ttc"
         )
         monkeypatch.setattr(
-            runner_mod, "render_opening_reveal",
-            lambda photo, clip, dst, *a, **k: _touch(dst),
+            runner_mod, "render_letter_image",
+            lambda *a, **k: calls.append("image") or FakeImage(),
         )
+        return calls
 
     def test_off_by_default_passthrough(self, pipeline, workspace):
         clips = self._project(workspace)
@@ -394,7 +413,8 @@ class TestPresentationSegments:
         assert added is True
         assert segments[: len(clips)] == clips
         assert [s.name for s in segments[len(clips):]] == [
-            "credits_000.mp4", "credits_001.mp4", "credits_002.mp4",
+            "credits_000_2.50s.mp4", "credits_001_2.50s.mp4",
+            "credits_002_2.50s.mp4",
         ]
 
     def test_reveal_replaces_first_clip(self, make_pipeline, workspace, monkeypatch):
@@ -427,20 +447,30 @@ class TestPresentationSegments:
         p.config.closing_letter = True
         assert p._presentation_flags() == (False, False, False)
 
-    def test_letter_appended_last(self, make_pipeline, workspace, monkeypatch):
-        self._stub_renderers(monkeypatch)
-        import ai_video_maker.runner as runner_mod
-        monkeypatch.setattr(
-            runner_mod, "render_letter_scroll",
-            lambda image, dst, *a, **k: _touch(dst),
-        )
+    def test_letter_over_credits_merges_into_one_section(
+        self, make_pipeline, workspace, monkeypatch
+    ):
+        calls = self._stub_renderers(monkeypatch)
         p = make_pipeline(credits_photos=True, closing_letter=True)
         clips = self._project(workspace)
         workspace.letter_file.write_text("מתן היקר, אוהבים אותך", encoding="utf-8")
         segments, added = p._presentation_segments(clips)
         assert added is True
-        assert segments[-1].name == "letter.mp4"
-        assert "credits_002.mp4" in [s.name for s in segments]
+        # ONE combined section: the letter scrolls over the montage — no
+        # separate stills and no standalone letter segment in the movie.
+        assert [s.name for s in segments] == [
+            "a_to_b.mp4", "b_to_c.mp4", "credits_letter.mp4",
+        ]
+        assert "overlay" in calls and "scroll" not in calls
+
+    def test_letter_alone_scrolls_on_dark(self, make_pipeline, workspace, monkeypatch):
+        calls = self._stub_renderers(monkeypatch)
+        p = make_pipeline(closing_letter=True)
+        clips = self._project(workspace)
+        workspace.letter_file.write_text("שלום", encoding="utf-8")
+        segments, added = p._presentation_segments(clips)
+        assert added is True and segments[-1].name == "letter.mp4"
+        assert "scroll" in calls and "overlay" not in calls
 
     def test_letter_without_file_skips(self, make_pipeline, workspace, monkeypatch):
         self._stub_renderers(monkeypatch)
@@ -449,6 +479,41 @@ class TestPresentationSegments:
         segments, added = p._presentation_segments(clips)
         assert segments == clips and added is False
 
+    def test_second_combine_reuses_fresh_segments(
+        self, make_pipeline, workspace, monkeypatch
+    ):
+        calls = self._stub_renderers(monkeypatch)
+        p = make_pipeline(
+            opening_reveal=True, credits_photos=True, closing_letter=True
+        )
+        clips = self._project(workspace)
+        workspace.letter_file.write_text("שלום", encoding="utf-8")
+        first, added = p._presentation_segments(clips)
+        assert added is True
+        rendered_first = len(calls)
+        assert rendered_first > 0
+        calls.clear()
+        second, added = p._presentation_segments(clips)
+        assert second == first and added is True
+        assert calls == []  # everything reused, nothing re-rendered
+
+    def test_changed_letter_rebuilds_only_letter_section(
+        self, make_pipeline, workspace, monkeypatch
+    ):
+        calls = self._stub_renderers(monkeypatch)
+        p = make_pipeline(
+            opening_reveal=True, credits_photos=True, closing_letter=True
+        )
+        clips = self._project(workspace)
+        workspace.letter_file.write_text("שלום", encoding="utf-8")
+        p._presentation_segments(clips)
+        calls.clear()
+        future = time.time() + 50
+        os.utime(workspace.letter_file, (future, future))  # letter edited
+        p._presentation_segments(clips)
+        assert "reveal" not in calls              # untouched -> reused
+        assert "overlay" in calls                 # letter section redone
+
 
 class TestConsecutiveRuns:
     def test_grouping(self):
@@ -456,6 +521,22 @@ class TestConsecutiveRuns:
         assert _consecutive_runs([]) == []
         assert _consecutive_runs([2]) == [[2]]
         assert _consecutive_runs([0, 1, 2, 5, 7, 8]) == [[0, 1, 2], [5], [7, 8]]
+
+
+class TestFitCreditsAndLetter:
+    def test_long_letter_stretches_photos(self):
+        from ai_video_maker.runner import _fit_credits_and_letter
+        # 3 photos * 2.5s = 7.5s, but the letter needs 20s -> photos stretch
+        per_photo, pps = _fit_credits_and_letter(3, 2.5, 3000, 150)
+        assert per_photo == pytest.approx(20 / 3)
+        assert pps == pytest.approx(150)  # letter keeps its configured pace
+
+    def test_long_montage_slows_letter(self):
+        from ai_video_maker.runner import _fit_credits_and_letter
+        # 10 photos * 2.5s = 25s window, letter would take 10s -> slow it down
+        per_photo, pps = _fit_credits_and_letter(10, 2.5, 1500, 150)
+        assert per_photo == pytest.approx(2.5)  # photos keep their pace
+        assert pps == pytest.approx(1500 / 25)
 
 
 class TestClipName:
