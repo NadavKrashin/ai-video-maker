@@ -3,7 +3,7 @@
   "target_height": 1080,
   "style_prompt": "Convert this image into a polished 3D animated family-film look, with soft cinematic lighting, expressive character design, clean rounded shapes, rich colors, and high-quality animation-studio rendering. Preserve the original composition, camera angle, subject placement, proportions, and scene content. Output in 16:9.",
   "scratch_style_prompt": "Create polished 3D animated family-film visuals, with soft cinematic lighting, expressive character design, clean rounded shapes, rich colors, and high-quality animation-studio rendering. Keep the visual identity consistent across all frames.",
-  "motion_prompt": "Natural, continuous in-scene motion connecting the start frame to the end frame: the characters and environment move and evolve believably, with camera movement only as needed to follow the action. Preserve character identity, environment, colors, and composition. No sudden cuts, no new characters, no text, no distortion, no camera shake. The final frame should closely match the provided end image.",
+  "motion_prompt": "Natural, continuous in-scene motion connecting the start frame to the end frame: the characters and environment move and evolve believably, with camera movement only as needed to follow the action. Preserve each person's identity, environment, colors, and composition. If the people in the two frames are different individuals, the first person exits the frame or passes behind something while the other enters or is revealed — never transform or morph one person into another. No sudden cuts, no text, no distortion, no camera shake. The final frame should closely match the provided end image.",
   "duration": 5,
   "default_frame_count": 8,
   "avoid_text_only_frames": true,

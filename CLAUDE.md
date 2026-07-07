@@ -40,6 +40,11 @@ Core design rules:
 - Transition motion prompts must describe in-world subject action, not camera
   moves (see `_MODE_A_SYSTEM` in `clients/openai_client.py`); the user
   explicitly rejects "zoom/pan/pull-back" slideshow-style prompts.
+- When a pair's two frames show DIFFERENT people, the motion prompt must stage
+  an exit-and-entrance (or reveal) — never continuous identity: Kling morphs
+  one person into the other otherwise, which the user finds creepy. Same
+  person at a different age/in different clothes may animate continuously.
+  Enforced in `_MODE_A_SYSTEM` and the fallback `motion_prompt` in config.json.
 
 ## Working rules (the user's standing instructions)
 
