@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from ai_video_maker.media.ffmpeg import find_generated_clips
+from ai_video_maker.media.ffmpeg import _mux_music_cmd, find_generated_clips
 from ai_video_maker.media.images import (
     encode_image_data_url,
     list_input_images,
@@ -80,6 +80,40 @@ class TestSlugifyStem:
     def test_replaces_unsafe_characters(self):
         assert slugify_stem("My Photo (1)") == "My_Photo_1"
         assert slugify_stem("קובץ") == "frame"  # nothing safe left -> fallback
+
+
+class TestMuxMusicCmd:
+    def _cmd(self, *, mixed: bool, loop: bool) -> list[str]:
+        return _mux_music_cmd(
+            Path("v.mp4"), Path("m.mp3"), Path("out.mp4"),
+            music_volume=0.85, sfx_volume=0.35,
+            mix_with_existing=mixed, loop=loop,
+        )
+
+    def test_loop_uses_stream_loop(self):
+        cmd = self._cmd(mixed=True, loop=True)
+        assert "-stream_loop" in cmd
+        assert "apad" not in " ".join(cmd)
+
+    def test_play_once_pads_instead_of_looping(self):
+        for mixed in (True, False):
+            cmd = self._cmd(mixed=mixed, loop=False)
+            assert "-stream_loop" not in cmd
+            assert "apad" in " ".join(cmd)
+            # -shortest + padded (infinite) audio = output always ends exactly
+            # at the video's length, never truncated to a short music track.
+            assert "-shortest" in cmd
+
+    def test_mixed_graph_keeps_both_tracks(self):
+        cmd = self._cmd(mixed=True, loop=False)
+        graph = cmd[cmd.index("-filter_complex") + 1]
+        assert "amix=inputs=2" in graph
+        assert "volume=0.35" in graph and "volume=0.85" in graph
+
+    def test_music_only_graph_has_no_mix(self):
+        cmd = self._cmd(mixed=False, loop=False)
+        graph = cmd[cmd.index("-filter_complex") + 1]
+        assert "amix" not in graph and "volume=0.85" in graph
 
 
 class TestFindGeneratedClips:

@@ -88,6 +88,9 @@ class Config(BaseModel):
     # when a clip actually has SFX; with no SFX the music is the only audio.
     music_volume: float = 0.85              # 0..1, the dominant background bed
     sfx_volume: float = 0.35                # 0..1, clip SFX ducked under music
+    # False (default): the track plays once and the rest of the video continues
+    # with SFX only. True: the track loops for the whole video length.
+    music_loop: bool = False
     music_extra_arguments: dict[str, Any] = Field(default_factory=dict)
 
     # How many image/clip/SFX API jobs to run at once. These steps are I/O-bound

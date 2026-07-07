@@ -227,47 +227,72 @@ def apply_edge_fades(clip: Path, fade: float) -> None:
     tmp.replace(clip)
 
 
+def _mux_music_cmd(
+    video: Path,
+    music: Path,
+    dst: Path,
+    music_volume: float,
+    sfx_volume: float,
+    mix_with_existing: bool,
+    loop: bool,
+) -> list[str]:
+    """Build the ffmpeg command for mux_music (pure; unit-testable).
+
+    Looping uses -stream_loop -1 + -shortest (music repeats, trimmed to the
+    video). Play-once instead pads the track with trailing silence (apad):
+    -shortest still ends the output exactly at the video's length whether the
+    music is shorter or longer than the video, and amix keeps two live inputs
+    throughout so the SFX level doesn't jump when the music ends.
+    """
+    music_input = (["-stream_loop", "-1"] if loop else []) + ["-i", str(music)]
+    pad = "" if loop else ",apad"
+    if mix_with_existing:
+        filter_graph = (
+            f"[0:a]volume={sfx_volume}[s];"
+            f"[1:a]volume={music_volume}{pad}[m];"
+            f"[s][m]amix=inputs=2:duration=first:dropout_transition=0[a]"
+        )
+    else:
+        filter_graph = f"[1:a]volume={music_volume}{pad}[a]"
+    return [
+        "ffmpeg", "-y",
+        "-i", str(video),
+        *music_input,
+        "-filter_complex", filter_graph,
+        "-map", "0:v", "-map", "[a]",
+        "-c:v", "copy", "-c:a", "aac", "-shortest", str(dst),
+    ]
+
+
 def mux_music(
-    video: Path, music: Path, music_volume: float, sfx_volume: float = 1.0
+    video: Path,
+    music: Path,
+    music_volume: float,
+    sfx_volume: float = 1.0,
+    loop: bool = False,
 ) -> None:
-    """Mix a (looped) music track into `video`'s audio, in place.
+    """Mix a music track into `video`'s audio, in place.
 
     If the video already has an audio track (e.g. SFX), the music is set to
     `music_volume` and the existing SFX to `sfx_volume`, then the two are mixed
     — so with `music_volume > sfx_volume` the background music sits louder, on
     top of the clip SFX. If the video has no audio, the music becomes the only
-    track (at `music_volume`). The music is looped/trimmed to the video length
-    either way.
+    track (at `music_volume`). With ``loop`` the track repeats for the whole
+    video; otherwise it plays once and the remainder continues with SFX only
+    (music longer than the video is trimmed either way).
     """
     _require_ffmpeg()
     # ffprobe decides which mix graph to use below; without it we'd silently
     # take the "no existing audio" branch and drop every clip's SFX.
     _require_ffmpeg("ffprobe")
     tmp = video.with_suffix(".muxed.mp4")
-    m_vol = max(0.0, min(1.0, music_volume))
-    s_vol = max(0.0, min(1.0, sfx_volume))
-
-    if has_audio_stream(video):
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(video),
-            "-stream_loop", "-1", "-i", str(music),
-            "-filter_complex",
-            f"[0:a]volume={s_vol}[s];"
-            f"[1:a]volume={m_vol}[m];"
-            f"[s][m]amix=inputs=2:duration=first:dropout_transition=0[a]",
-            "-map", "0:v", "-map", "[a]",
-            "-c:v", "copy", "-c:a", "aac", "-shortest", str(tmp),
-        ]
-    else:
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(video),
-            "-stream_loop", "-1", "-i", str(music),
-            "-filter:a", f"volume={m_vol}",
-            "-map", "0:v", "-map", "1:a",
-            "-c:v", "copy", "-c:a", "aac", "-shortest", str(tmp),
-        ]
+    cmd = _mux_music_cmd(
+        video, music, tmp,
+        music_volume=max(0.0, min(1.0, music_volume)),
+        sfx_volume=max(0.0, min(1.0, sfx_volume)),
+        mix_with_existing=has_audio_stream(video),
+        loop=loop,
+    )
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:

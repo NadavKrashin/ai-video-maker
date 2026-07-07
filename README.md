@@ -395,6 +395,7 @@ one short call). Requires `ffmpeg`/`ffprobe` on your `PATH`.
 | `music_model_id` | fal text→music model. Default `fal-ai/elevenlabs/music`. |
 | `music_prompt` | Background-music description (fallback). |
 | `music_volume` | `0..1`, how loud the background bed plays (default `0.85`). |
+| `music_loop` | `false` (default): the track plays once; if the video is longer, the rest continues with SFX only. `true`: the track repeats for the whole video. A track longer than the video is trimmed either way. |
 | `music_extra_arguments` | Extra model-specific args for the music call. |
 
 Swap the SFX or music model by changing the id (e.g. `fal-ai/lyria2`,

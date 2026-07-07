@@ -1186,6 +1186,7 @@ class Pipeline:
                 music_file,
                 self.config.music_volume,
                 self.config.sfx_volume,
+                loop=self.config.music_loop,
             )
             self.state.set(job_id, "done")
             self.summary.music_added = True
