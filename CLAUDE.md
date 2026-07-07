@@ -45,6 +45,10 @@ Core design rules:
   one person into the other otherwise, which the user finds creepy. Same
   person at a different age/in different clothes may animate continuously.
   Enforced in `_MODE_A_SYSTEM` and the fallback `motion_prompt` in config.json.
+- Styling must preserve LIKENESS: cartoon rendering, real facial geometry.
+  The user rejected "Disney-princess-ified" faces (enlarged eyes, slimmed,
+  beautified) — people must stay recognizable as themselves. Encoded in
+  `style_prompt` (config.json); keep that likeness language when touching it.
 
 ## Working rules (the user's standing instructions)
 
