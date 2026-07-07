@@ -297,6 +297,16 @@ number. Dry-runs always run sequentially so the planned-work log stays ordered.
 The pipeline also has built-in retry with exponential backoff for transient API
 errors, and it waits on provider jobs until they complete, fail, or time out.
 
+**Content-filter false positives are retried with a reworded prompt.** Both
+OpenAI (image styling/generation) and fal/Kling (clip rendering) sometimes flag
+innocent prompts — family photos, affectionate moments, words like "shot".
+When that happens the pipeline asks the text model to rephrase the prompt
+(same scene and action, unambiguous wording) and resubmits, up to
+`moderation_reword_attempts` times (config, default 3). The log shows the
+reworded prompt that succeeded; your storyboard keeps the original, so paste
+the reworded text into that transition's `motion_prompt` if you want it to
+stick for future re-renders.
+
 ---
 
 ## Output layout

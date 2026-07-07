@@ -879,7 +879,8 @@ class Pipeline:
                     return
                 try:
                     self.video_client.generate_clip(
-                        start, end, motion, duration, dst
+                        start, end, motion, duration, dst,
+                        reword=self.openai.reword_motion_prompt,
                     )
                     with self._lock:
                         # A fresh clip file invalidates its per-clip audio work:

@@ -19,17 +19,24 @@ def _http_status(exc: BaseException) -> Optional[int]:
 
 
 def is_moderation_error(exc: BaseException) -> bool:
-    """True when an error is OpenAI's content-moderation / safety rejection.
+    """True when an error is a content-moderation / safety rejection.
 
-    These are 400s that won't succeed if simply retried with the same prompt,
-    but *can* succeed once the prompt is reworded (see OpenAIClient), so callers
-    treat them specially rather than as plain permanent failures.
+    Covers OpenAI's image/text safety filter and fal's content checker (Kling
+    clip generation). These are 4xxs that won't succeed if simply retried with
+    the same prompt, but *can* succeed once the prompt is reworded (see
+    with_reword_recovery), so callers treat them specially rather than as
+    plain permanent failures.
     """
     text = str(exc).lower()
     return (
+        # OpenAI
         "moderation_blocked" in text
         or "safety system" in text
         or "safety_violations" in text
+        # fal / Kling
+        or "content_policy_violation" in text
+        or "content checker" in text
+        or "content policy" in text
     )
 
 
@@ -54,6 +61,54 @@ def is_retryable_error(exc: BaseException) -> bool:
     if 400 <= code < 500:
         return False  # other client error -> permanent, don't retry
     return True  # 5xx -> retry
+
+
+def with_reword_recovery(
+    run: Callable[[str], T],
+    prompt: str,
+    *,
+    reword: Callable[[str], str],
+    attempts: int,
+    description: str,
+) -> T:
+    """Run ``run(prompt)``; when a content filter rejects it, reword and retry.
+
+    ``run`` should do its own transient-error backoff (``with_retries``) — a
+    moderation rejection is classified non-retryable there, so it surfaces
+    here where the prompt can be *changed* instead of resubmitted verbatim.
+    Non-moderation errors propagate untouched. After ``attempts`` rewords the
+    last moderation error is raised.
+    """
+    attempt_prompt = prompt
+    last_exc: Optional[BaseException] = None
+    for round_ in range(attempts + 1):
+        try:
+            result = run(attempt_prompt)
+            if round_:
+                logger.info(
+                    "%s succeeded with a reworded prompt: %r — the original "
+                    "prompt is unchanged in your storyboard/config.",
+                    description, attempt_prompt,
+                )
+            return result
+        except Exception as exc:  # noqa: BLE001 - classified below
+            if not is_moderation_error(exc):
+                raise
+            last_exc = exc
+            if round_ >= attempts:
+                break
+            logger.warning(
+                "%s was blocked by the content filter (reword %d/%d): %s — "
+                "rewording the prompt and retrying",
+                description, round_ + 1, attempts, exc,
+            )
+            attempt_prompt = reword(attempt_prompt)
+    assert last_exc is not None
+    logger.error(
+        "%s still blocked after %d rewording attempts; giving up",
+        description, attempts,
+    )
+    raise last_exc
 
 
 def with_retries(

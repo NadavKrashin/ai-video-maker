@@ -12,7 +12,7 @@ from ..constants import VALID_DURATIONS
 from ..media.images import encode_image_data_url, normalize_image
 from ..logging_setup import logger
 from ..models import Frame, Storyboard, Transition
-from ..retry import is_moderation_error, with_retries
+from ..retry import with_retries, with_reword_recovery
 
 T = TypeVar("T")
 
@@ -37,6 +37,25 @@ _REWORD_SYSTEM = (
     "neutral ones), and avoid anything that reads as nudity, sexual content, or "
     "graphic violence. Do not add captions or text overlays. Return ONLY the "
     "rewritten image prompt, with no preamble or quotes."
+)
+
+# Same idea for MOTION prompts (fal/Kling's content checker flags clip prompts
+# the same way — e.g. innocent physical affection near a bed). The rewrite must
+# stay a valid image-to-video motion prompt, not become an image prompt.
+_REWORD_MOTION_SYSTEM = (
+    "You rewrite motion prompts for an image-to-video model that were "
+    "incorrectly flagged by an automated content-safety filter. The prompts "
+    "describe wholesome, safe-for-work scenes (family videos, everyday "
+    "moments) between two given photographs; the filter is over-triggering on "
+    "innocent wording. Rewrite the prompt so it keeps the SAME people, "
+    "actions, setting and staging, but remove or rephrase anything the filter "
+    "could misread as sexual, violent, or otherwise unsafe: make physical "
+    "affection unmistakably innocent and familial (a warm hug, leaning on a "
+    "shoulder), avoid mentioning beds/lying together/body parts, and replace "
+    "loaded words (e.g. 'shot' -> 'scene'). Keep it one to three short "
+    "sentences of continuous physical motion in present tense; no editing "
+    "effects, no morphing between people. Return ONLY the rewritten motion "
+    "prompt, with no preamble or quotes."
 )
 
 # Deterministic fallback used when even the reword model call fails: bolt an
@@ -334,44 +353,30 @@ class OpenAIClient:
     def _image_with_moderation_recovery(
         self, call: Callable[[str], bytes], prompt: str, description: str
     ) -> bytes:
-        """Run `call(prompt)` with the usual backoff, but if OpenAI's safety
-        filter rejects the prompt, reword it to be unambiguously safe-for-work
-        and try again (up to ``config.moderation_reword_attempts`` times).
-
-        Transient errors are still handled by ``with_retries`` inside each
-        attempt; a moderation rejection surfaces immediately (it is classified
-        non-retryable) so we can reword and re-enter rather than burning the
-        backoff budget on an identical prompt.
+        """Run `call(prompt)` with the usual backoff, rewording the prompt and
+        re-entering when OpenAI's safety filter rejects it (transient errors
+        are still handled by ``with_retries`` inside each attempt).
         """
-        attempt_prompt = prompt
-        last_exc: Optional[BaseException] = None
-        for reword in range(self.config.moderation_reword_attempts + 1):
-            try:
-                return self._retry(lambda: call(attempt_prompt), description)
-            except Exception as exc:  # noqa: BLE001
-                if not is_moderation_error(exc):
-                    raise
-                last_exc = exc
-                if reword >= self.config.moderation_reword_attempts:
-                    break
-                logger.warning(
-                    "%s was blocked by the safety filter (reword %d/%d): %s — "
-                    "rewording the prompt to be safe-for-work and retrying",
-                    description,
-                    reword + 1,
-                    self.config.moderation_reword_attempts,
-                    exc,
-                )
-                attempt_prompt = self._reword_prompt_for_safety(attempt_prompt)
-        assert last_exc is not None
-        logger.error(
-            "%s still blocked after %d rewording attempts; giving up",
-            description,
-            self.config.moderation_reword_attempts,
+        return with_reword_recovery(
+            lambda p: self._retry(lambda: call(p), description),
+            prompt,
+            reword=self._reword_prompt_for_safety,
+            attempts=self.config.moderation_reword_attempts,
+            description=description,
         )
-        raise last_exc
 
-    def _reword_prompt_for_safety(self, prompt: str) -> str:
+    def reword_motion_prompt(self, prompt: str) -> str:
+        """Rewrite a clip motion prompt that a video content filter rejected.
+
+        Handed to VideoClient.generate_clip as its `reword` callback, so a
+        Kling content_policy_violation gets the same reword-and-retry recovery
+        as image styling.
+        """
+        return self._reword_prompt_for_safety(prompt, system=_REWORD_MOTION_SYSTEM)
+
+    def _reword_prompt_for_safety(
+        self, prompt: str, system: str = _REWORD_SYSTEM
+    ) -> str:
         """Ask the text model to rewrite `prompt` so the safety filter accepts it.
 
         Falls back to appending an explicit safe-for-work clause if the rewrite
@@ -382,7 +387,7 @@ class OpenAIClient:
             resp = client.chat.completions.create(
                 model=self.config.openai_text_model,
                 messages=[
-                    {"role": "system", "content": _REWORD_SYSTEM},
+                    {"role": "system", "content": system},
                     {"role": "user", "content": prompt},
                 ],
             )

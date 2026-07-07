@@ -95,9 +95,11 @@ Lifecycle: `init` → `storyboard` (stops for review; writes json/md/preview.htm
   — don't add temperature params to chat calls.
 - Per-project overrides: a `projects/<name>/config.json` is merged key-over-key
   on top of the shared config.
-- OpenAI's safety filter sometimes false-positives on family photos during
-  styling; `_image_with_moderation_recovery` rewords and retries — that's
-  expected behaviour, not a bug to "fix".
+- Content filters false-positive on family content: OpenAI during styling,
+  and fal/Kling on clip motion prompts (`content_policy_violation`, e.g.
+  affection + "bed" wording). Both recover via reword-and-retry
+  (`with_reword_recovery` in retry.py; motion prompts reworded by
+  `reword_motion_prompt`). Expected behaviour, not a bug to "fix".
 - fal Kling durations are the string enum "5"/"10" (`fal_duration_as_string`);
   valid clip durations live in `constants.VALID_DURATIONS`.
 - Clips are named `<startid>_to_<endid>.mp4`; bridged clips (a missing middle

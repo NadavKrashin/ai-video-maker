@@ -8,10 +8,11 @@ switching models needs no code change.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from ..config import Config
 from ..logging_setup import logger
+from ..retry import with_reword_recovery
 from .download import download_file
 from .fal import FalSession, extract_media_url
 
@@ -63,11 +64,19 @@ class VideoClient:
         motion_prompt: str,
         duration: int,
         dst: Path,
+        reword: Optional[Callable[[str], str]] = None,
     ) -> None:
-        """Render the start->end clip and download it to `dst`."""
+        """Render the start->end clip and download it to `dst`.
+
+        When `reword` is given and fal's content checker rejects the motion
+        prompt (content_policy_violation — usually a false positive on
+        innocent wording), the prompt is reworded and the job resubmitted, up
+        to ``config.moderation_reword_attempts`` times — the same recovery the
+        image styling has. The frames are uploaded once; only the prompt
+        changes between attempts.
+        """
         start_url = self._upload(start_frame)
         end_url = self._upload(end_frame) if self.config.fal_end_frame_field else None
-        arguments = self._build_arguments(start_url, end_url, motion_prompt, duration)
         logger.info(
             "fal job: %s (model=%s, start=%s%s)",
             dst.name,
@@ -75,9 +84,24 @@ class VideoClient:
             start_frame.name,
             f", end={end_frame.name}" if end_url else "",
         )
-        result = self.fal.subscribe(
-            self.config.fal_model_id, arguments, description="fal generate"
-        )
+
+        def run(prompt: str) -> dict[str, Any]:
+            arguments = self._build_arguments(start_url, end_url, prompt, duration)
+            return self.fal.subscribe(
+                self.config.fal_model_id, arguments,
+                description=f"fal generate {dst.name}",
+            )
+
+        if reword is None:
+            result = run(motion_prompt)
+        else:
+            result = with_reword_recovery(
+                run,
+                motion_prompt,
+                reword=reword,
+                attempts=self.config.moderation_reword_attempts,
+                description=f"fal clip {dst.name}",
+            )
         video_url = extract_media_url(result, ("video",))
         download_file(
             video_url,
