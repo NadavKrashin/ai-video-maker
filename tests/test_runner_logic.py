@@ -419,10 +419,35 @@ class TestPresentationSegments:
         assert segments == clips and added is False
 
     def test_cli_override_beats_config(self, make_pipeline):
-        p = make_pipeline(credits_photos=False, opening_reveal=False)
+        p = make_pipeline(
+            credits_photos=False, opening_reveal=False, closing_letter=False
+        )
         p.config.credits_photos = True
         p.config.opening_reveal = True
-        assert p._presentation_flags() == (False, False)
+        p.config.closing_letter = True
+        assert p._presentation_flags() == (False, False, False)
+
+    def test_letter_appended_last(self, make_pipeline, workspace, monkeypatch):
+        self._stub_renderers(monkeypatch)
+        import ai_video_maker.runner as runner_mod
+        monkeypatch.setattr(
+            runner_mod, "render_letter_scroll",
+            lambda image, dst, *a, **k: _touch(dst),
+        )
+        p = make_pipeline(credits_photos=True, closing_letter=True)
+        clips = self._project(workspace)
+        workspace.letter_file.write_text("מתן היקר, אוהבים אותך", encoding="utf-8")
+        segments, added = p._presentation_segments(clips)
+        assert added is True
+        assert segments[-1].name == "letter.mp4"
+        assert "credits_002.mp4" in [s.name for s in segments]
+
+    def test_letter_without_file_skips(self, make_pipeline, workspace, monkeypatch):
+        self._stub_renderers(monkeypatch)
+        p = make_pipeline(closing_letter=True)
+        clips = self._project(workspace)
+        segments, added = p._presentation_segments(clips)
+        assert segments == clips and added is False
 
 
 class TestConsecutiveRuns:

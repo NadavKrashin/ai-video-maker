@@ -45,6 +45,7 @@ class RunOptions:
     # True/False -> per-run override (--opening-reveal / --no-opening-reveal).
     opening_reveal: Optional[bool] = None
     credits_photos: Optional[bool] = None
+    closing_letter: Optional[bool] = None
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> "RunOptions":
@@ -71,4 +72,5 @@ class RunOptions:
             no_combine=bool(get("no_combine")),
             opening_reveal=get("opening_reveal"),
             credits_photos=get("credits_photos"),
+            closing_letter=get("letter"),
         )

@@ -159,6 +159,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Append the original photos as an end-credits "
                          "montage after the last clip. Overrides the "
                          "credits_photos config key for this run.")
+    sp.add_argument("--letter", action=argparse.BooleanOptionalAction,
+                    default=None,
+                    help="Scroll the project's letter.txt (Hebrew-safe) over "
+                         "a dark background at the very end, credits-style. "
+                         "Overrides the closing_letter config key.")
 
     command("status",
             "Show the project's progress (frames, storyboard, clips, final "

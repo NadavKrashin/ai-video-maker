@@ -91,6 +91,11 @@ class Workspace:
         return self.failed_jobs_dir / "failed_jobs.json"
 
     @property
+    def letter_file(self) -> Path:
+        """User-written closing-letter text (used when closing_letter is on)."""
+        return self.root / "letter.txt"
+
+    @property
     def default_storyboard_json(self) -> Path:
         return self.storyboard_dir / "storyboard.json"
 

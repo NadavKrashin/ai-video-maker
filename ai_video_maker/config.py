@@ -104,6 +104,13 @@ class Config(BaseModel):
     # recorded in the storyboard (source_path), in movie order.
     credits_photos: bool = False
     credits_seconds_per_photo: float = 2.5
+    # closing_letter: scroll the text of projects/<name>/letter.txt over a
+    # dark background at the very end, credits-style. Hebrew/RTL-safe (bidi
+    # reordering happens in media/letter.py, not ffmpeg).
+    closing_letter: bool = False
+    letter_font_path: str = ""       # empty = auto-detect a Hebrew-capable font
+    letter_font_size: int = 64
+    letter_seconds_per_screen: float = 7.0  # scroll pace per screen height
 
     # How many image/clip/SFX API jobs to run at once. These steps are I/O-bound
     # (waiting on the provider), so a small thread pool runs them in parallel.

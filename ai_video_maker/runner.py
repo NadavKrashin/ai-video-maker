@@ -33,9 +33,11 @@ from .media.ffmpeg import (
     ffprobe_duration,
     find_generated_clips,
     mux_music,
+    render_letter_scroll,
     render_opening_reveal,
     render_photo_still,
 )
+from .media.letter import find_letter_font, render_letter_image
 from .media.images import (
     SUPPORTED_IMAGE_EXTS,
     list_input_images,
@@ -1094,13 +1096,16 @@ class Pipeline:
                 "[dry-run] would combine %d clip(s) into %s",
                 len(clips), final_video,
             )
-            reveal, credits = self._presentation_flags()
+            reveal, credits, letter = self._presentation_flags()
             if reveal:
                 logger.info("[dry-run] would open on the real first photo "
                             "(crossfade into the first clip)")
             if credits:
                 logger.info("[dry-run] would append the original photos as "
                             "an end-credits montage")
+            if letter:
+                logger.info("[dry-run] would append the scrolling closing "
+                            "letter from %s", self.workspace.letter_file)
             return
 
         if final_video.exists() and not self.force and not force_rebuild:
@@ -1141,8 +1146,8 @@ class Pipeline:
         if self.audio_enabled:
             self._add_music(music_file)
 
-    def _presentation_flags(self) -> tuple[bool, bool]:
-        """Resolve (opening_reveal, credits_photos): CLI override, else config."""
+    def _presentation_flags(self) -> tuple[bool, bool, bool]:
+        """(opening_reveal, credits_photos, closing_letter): CLI wins over config."""
         reveal = (
             self.options.opening_reveal
             if self.options.opening_reveal is not None
@@ -1153,7 +1158,12 @@ class Pipeline:
             if self.options.credits_photos is not None
             else self.config.credits_photos
         )
-        return reveal, credits
+        letter = (
+            self.options.closing_letter
+            if self.options.closing_letter is not None
+            else self.config.closing_letter
+        )
+        return reveal, credits, letter
 
     def _original_photo_sources(self) -> list[tuple[str, Path]]:
         """(frame id, original photo path) per storyboard frame, in order.
@@ -1190,23 +1200,24 @@ class Pipeline:
         stream-copying, because the stills' encoding differs from the
         provider clips'.
         """
-        reveal, credits = self._presentation_flags()
-        if not (reveal or credits) or not clips:
+        reveal, credits, letter = self._presentation_flags()
+        if not (reveal or credits or letter) or not clips:
             return clips, False
-        sources = self._original_photo_sources()
-        if not sources:
+        sources = self._original_photo_sources() if (reveal or credits) else []
+        if (reveal or credits) and not sources:
             logger.warning(
                 "opening_reveal/credits_photos are on, but this project's "
                 "storyboard records no original photos (source_path) — "
                 "skipping them. (Re-run `storyboard` on an image-based "
                 "project to record the sources.)"
             )
-            return clips, False
+            reveal = credits = False
 
         seg_dir = self.workspace.output_dir / "segments"
         seg_dir.mkdir(parents=True, exist_ok=True)
         width, height = self.config.target_width, self.config.target_height
         segments = list(clips)
+        added = False
 
         if reveal:
             first_id = segments[0].stem.split("_to_")[0]
@@ -1223,6 +1234,7 @@ class Pipeline:
                     hold=self.config.opening_reveal_hold_seconds,
                 )
                 segments[0] = dst
+                added = True
                 logger.info("Opening reveal: %s comes alive into %s.",
                             photo.name, clips[0].name)
 
@@ -1236,9 +1248,56 @@ class Pipeline:
                 )
                 stills.append(dst)
             segments += stills
+            added = True
             logger.info("End credits: %d original photo(s) appended.", len(stills))
 
-        return segments, True
+        if letter:
+            letter_segment = self._render_letter_segment(seg_dir, width, height)
+            if letter_segment is not None:
+                segments.append(letter_segment)
+                added = True
+
+        return segments, added
+
+    def _render_letter_segment(
+        self, seg_dir: Path, width: int, height: int
+    ) -> Optional[Path]:
+        """Render letter.txt as the scrolling closing segment; None to skip."""
+        letter_path = self.workspace.letter_file
+        if not letter_path.exists():
+            logger.warning(
+                "closing_letter is on, but %s does not exist — write your "
+                "letter there (plain text, Hebrew is fine) and re-run combine.",
+                letter_path,
+            )
+            return None
+        text = letter_path.read_text(encoding="utf-8").strip()
+        if not text:
+            logger.warning("closing_letter: %s is empty; skipping.", letter_path)
+            return None
+        try:
+            font = find_letter_font(self.config.letter_font_path)
+            image = render_letter_image(
+                text, width, height, font, self.config.letter_font_size
+            )
+            png = seg_dir / "letter.png"
+            image.save(png)
+            dst = seg_dir / "letter.mp4"
+            render_letter_scroll(
+                png, dst, width, height, image.height,
+                pixels_per_second=height / self.config.letter_seconds_per_screen,
+            )
+        except Exception as exc:  # noqa: BLE001 - extras must not kill combine
+            logger.error("Closing letter failed (%s); combining without it.", exc)
+            self.failed.record("letter", "letter", str(exc))
+            return None
+        logger.info(
+            "Closing letter: %d chars scrolled over ~%.0fs (font: %s).",
+            len(text),
+            (image.height - height) / (height / self.config.letter_seconds_per_screen),
+            Path(font).name,
+        )
+        return dst
 
     def _resolve_music_prompt(self) -> str:
         return (

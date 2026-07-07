@@ -232,6 +232,13 @@ original photos behind the animation — both pure local ffmpeg, no API cost:
 - `--credits-photos` (config: `credits_photos`): after the last clip, the
   original photos play as an end-credits montage, ~2.5s each
   (`credits_seconds_per_photo`), in movie order, under the same music bed.
+- `--letter` (config: `closing_letter`): write a letter in
+  `projects/<name>/letter.txt` (plain text; Hebrew and RTL are fully
+  supported) and it rolls credits-style over a dark background at the very
+  end. Empty lines become paragraph gaps; long lines wrap. Font is
+  auto-detected (override with `letter_font_path`), size via
+  `letter_font_size` (default 64), pace via `letter_seconds_per_screen`
+  (default 7.0 — higher is slower).
 
 Portrait photos are fitted whole onto a blurred background — nothing gets
 cropped. The photos come from the storyboard's recorded sources
@@ -259,7 +266,7 @@ project name as its first argument.
 | `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
 | `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 5\|10`, `--add-audio`, `--no-audio` |
 | `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-prompt`, `--music-file PATH` |
-| `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--add-audio`, `--no-audio`, `--[no-]opening-reveal`, `--[no-]credits-photos` |
+| `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--add-audio`, `--no-audio`, `--[no-]opening-reveal`, `--[no-]credits-photos`, `--[no-]letter` |
 | `status` | — |
 | `run` | everything above except `--clip`, plus `--no-combine` |
 

@@ -374,6 +374,56 @@ def render_photo_still(
         )
 
 
+def _letter_scroll_cmd(
+    image: Path,
+    dst: Path,
+    width: int,
+    height: int,
+    image_height: int,
+    pixels_per_second: float,
+) -> list[str]:
+    """Build the ffmpeg command scrolling a tall letter image (pure).
+
+    A screen-height crop window travels down the image at a constant speed;
+    on screen the text rolls upward through the frame, credits-style. The
+    duration is exactly the travel time from all-blank top padding to
+    all-blank bottom padding (min() clamps float rounding on the last frame).
+    """
+    duration = max(0.5, (image_height - height) / pixels_per_second)
+    graph = (
+        f"[0:v]fps={_SEGMENT_FPS},"
+        f"crop={width}:{height}:0:'min(t*{pixels_per_second:.3f},ih-{height})',"
+        f"setsar=1,format=yuv420p[v]"
+    )
+    return [
+        "ffmpeg", "-y",
+        "-loop", "1", "-t", f"{duration:.3f}", "-i", str(image),
+        "-filter_complex", graph, "-map", "[v]",
+        "-c:v", "libx264", "-crf", "18", "-preset", "medium", str(dst),
+    ]
+
+
+def render_letter_scroll(
+    image: Path,
+    dst: Path,
+    width: int,
+    height: int,
+    image_height: int,
+    pixels_per_second: float,
+) -> None:
+    """Render the tall letter image as a scrolling video segment at `dst`."""
+    _require_ffmpeg()
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    cmd = _letter_scroll_cmd(
+        image, dst, width, height, image_height, pixels_per_second
+    )
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg letter scroll failed:\n{result.stderr.strip()[-1500:]}"
+        )
+
+
 def _opening_reveal_cmd(
     photo: Path,
     clip: Path,

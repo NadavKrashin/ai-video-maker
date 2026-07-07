@@ -6,6 +6,7 @@ from pathlib import Path
 from PIL import Image
 
 from ai_video_maker.media.ffmpeg import (
+    _letter_scroll_cmd,
     _mux_music_cmd,
     _opening_reveal_cmd,
     _photo_fit_filter,
@@ -150,6 +151,17 @@ class TestPhotoSegments:
         assert cmd[cmd.index("-t") + 1] == "2.400"
         # clip audio delayed by the hold so sound starts as the photo wakes
         assert "adelay=1600" in graph and "[a]" in graph
+
+    def test_letter_scroll_travels_full_image(self):
+        # 3240 tall - 1080 window = 2160px of travel at 154.286 px/s -> ~14s
+        cmd = _letter_scroll_cmd(
+            Path("letter.png"), Path("out.mp4"), 1920, 1080,
+            image_height=3240, pixels_per_second=154.286,
+        )
+        assert cmd[cmd.index("-t") + 1] == "14.000"
+        graph = cmd[cmd.index("-filter_complex") + 1]
+        assert "crop=1920:1080:0:'min(t*154.286,ih-1080)'" in graph
+        assert "setsar=1" in graph
 
     def test_reveal_cmd_silent_clip_maps_no_audio(self):
         cmd = _opening_reveal_cmd(
