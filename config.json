@@ -16,9 +16,10 @@
   "fal_resolution": "",
   "fal_aspect_ratio": "",
   "fal_extra_arguments": {
-    "negative_prompt": "cuts, fades, dissolves, scene transitions, morphing, warping, objects clipping through each other, floating objects, distortion, camera shake, blur, low quality"
+    "cfg_scale": 0.7,
+    "negative_prompt": "crossfade, dissolve, fade transition, double exposure, ghosting, superimposed images, translucent overlay, cuts, scene transitions, frozen motionless subject, still frame, objects clipping through each other, floating objects, warping, distortion, camera shake, blur, low quality"
   },
-  "motion_prompt_suffix": "One single continuous shot: no cuts, no fades, no dissolves, no editing transitions, no new camera angles. Natural, physically plausible motion — characters and objects have weight and move around obstacles, never through them. The final frame must closely match the provided end image.",
+  "motion_prompt_suffix": "The subject stays visible and physically moving through the entire clip, starting in the first second — never held static. One single continuous shot: no cuts, no editing transitions, and never a full-screen fade or dissolve. When the setting or clothing differs between the two frames, the change unfolds gradually around the moving subject as part of the action, or behind a passing foreground object — the whole image must never blend between two scenes. Motion is natural and physically plausible; characters move around obstacles, never through them. The final frame must closely match the provided end image.",
   "audio_mode": "post",
   "sfx_model_id": "fal-ai/mmaudio-v2",
   "sfx_num_steps": 25,

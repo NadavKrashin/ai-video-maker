@@ -185,6 +185,11 @@ interpolates from one styled frame to the next):
   it invents cuts/fades on prompts that read like a scene change, and lets
   subjects clip through objects when a prompt overloads it. Tune both per
   model.
+- `cfg_scale` (in `fal_extra_arguments`, 0–1, Kling default 0.5) is prompt
+  adherence. Kling 3.0 sacrifices adherence first under load and falls back
+  to a full-screen dissolve when the subject is idle; `0.7` makes it follow
+  the staged action instead. Raise further if it still dissolves; lower it
+  if motion turns rigid or artifacts appear.
 - **Kling v2.5 Turbo Pro on fal (previous default, cheaper):** set `fal_model_id`
   to `"fal-ai/kling-video/v2.5-turbo/pro/image-to-video"`, `fal_start_frame_field`
   to `"image_url"`, and `fal_end_frame_field` to `"tail_image_url"`.
