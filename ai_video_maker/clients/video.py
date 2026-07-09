@@ -42,6 +42,8 @@ class VideoClient:
         duration: int,
     ) -> dict[str, Any]:
         c = self.config
+        if c.motion_prompt_suffix:
+            motion_prompt = f"{motion_prompt.rstrip()} {c.motion_prompt_suffix}"
         args: dict[str, Any] = {
             c.fal_start_frame_field: start_url,
             "prompt": motion_prompt,

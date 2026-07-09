@@ -178,6 +178,13 @@ interpolates from one styled frame to the next):
   `fal_end_frame_field` (`end_image_url`); set it to `""` for start-frame-only.
 - `fal_duration_as_string: true` because fal's Kling expects a string enum
   (`"5"`/`"10"`); set it `false` for a model that wants an integer.
+- `motion_prompt_suffix` is appended to **every** clip's motion prompt (the
+  planned per-clip prompts replace the global `motion_prompt`, so guardrails
+  must ride along here), and the `negative_prompt` in `fal_extra_arguments`
+  goes out with every request. Kling 3.0 is multi-shot-native — without these
+  it invents cuts/fades on prompts that read like a scene change, and lets
+  subjects clip through objects when a prompt overloads it. Tune both per
+  model.
 - **Kling v2.5 Turbo Pro on fal (previous default, cheaper):** set `fal_model_id`
   to `"fal-ai/kling-video/v2.5-turbo/pro/image-to-video"`, `fal_start_frame_field`
   to `"image_url"`, and `fal_end_frame_field` to `"tail_image_url"`.

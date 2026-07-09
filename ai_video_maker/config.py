@@ -49,6 +49,11 @@ class Config(BaseModel):
     fal_resolution: str = ""              # e.g. "720p", "1080p"; only sent when set
     fal_aspect_ratio: str = ""            # e.g. "16:9"; only sent when set
     fal_extra_arguments: dict[str, Any] = Field(default_factory=dict)
+    # Appended to EVERY clip's motion prompt (planned per-clip prompts replace
+    # the global motion_prompt, so model guardrails — "single continuous shot,
+    # no fades, realistic physics" — must ride along here to reach every clip).
+    # Kling 3.0 is multi-shot-native and will invent cuts/fades without it.
+    motion_prompt_suffix: str = ""
 
     # --- Audio (post-generation sound), also fal (auth via FAL_KEY). ---
     # Two layers:

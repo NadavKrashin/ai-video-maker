@@ -15,7 +15,10 @@
   "fal_duration_as_string": true,
   "fal_resolution": "",
   "fal_aspect_ratio": "",
-  "fal_extra_arguments": {},
+  "fal_extra_arguments": {
+    "negative_prompt": "cuts, fades, dissolves, scene transitions, morphing, warping, objects clipping through each other, floating objects, distortion, camera shake, blur, low quality"
+  },
+  "motion_prompt_suffix": "One single continuous shot: no cuts, no fades, no dissolves, no editing transitions, no new camera angles. Natural, physically plausible motion — characters and objects have weight and move around obstacles, never through them. The final frame must closely match the provided end image.",
   "audio_mode": "post",
   "sfx_model_id": "fal-ai/mmaudio-v2",
   "sfx_num_steps": 25,
