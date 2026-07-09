@@ -93,10 +93,20 @@ Lifecycle: `init` → `storyboard` (stops for review; writes json/md/preview.htm
   regenerate, or overwrite without asking. `ai_video_maker.egg-info/` is
   generated packaging metadata; ignore it.
 - `config.json` at the repo root is the user's live shared config. Current
-  model choices are deliberate: Kling v2.5 Turbo Pro (`fal_model_id`),
-  `gpt-image-2` for images (user wants OpenAI images), `gpt-5.1` for
-  text/vision planning. The gpt-5 model line rejects non-default `temperature`
-  — don't add temperature params to chat calls.
+  model choices are deliberate: Kling 3.0 Pro on this branch (`fal_model_id`;
+  main uses v2.5 Turbo Pro), `gpt-image-2` for images (user wants OpenAI
+  images), `gpt-5.1` for text/vision planning. The gpt-5 model line rejects
+  non-default `temperature` — don't add temperature params to chat calls.
+- Kling 3.0 full-screen-dissolves scene changes around an idle subject (it is
+  multi-shot-native and drops prompt adherence first under load) — text-only
+  "no dissolve" instructions were NOT enough. Countermeasures live in three
+  places and must stay together: `cfg_scale` 0.7 + crossfade-shaped
+  `negative_prompt` in `fal_extra_arguments`, the `motion_prompt_suffix`
+  (appended to every clip because planned prompts REPLACE the global
+  motion_prompt), and the Mode A planner's SAME-PERSON-CHANGED + PACING rules.
+  User preference: the subject morphing naturally (outfit/age) is fine; a
+  whole-screen blend is not — don't put "morphing" back in the negative
+  prompt. The user dropped Veo 3.1 (its branch exists but is unused).
 - Per-project overrides: a `projects/<name>/config.json` is merged key-over-key
   on top of the shared config.
 - Content filters false-positive on family content: OpenAI during styling,
