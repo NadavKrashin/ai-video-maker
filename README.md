@@ -180,7 +180,7 @@ endpoint, so each clip interpolates from one styled frame to the next):
 
 - **Start frame** → `fal_start_frame_field` (`first_frame_url`). **End frame** →
   `fal_end_frame_field` (`last_frame_url`); set it to `""` for start-frame-only.
-- **Durations are 4 or 8 seconds** (Veo accepts 4s/6s/8s clips). Veo wants them
+- **Durations are 4, 6 or 8 seconds** (all the lengths Veo accepts). Veo wants them
   as `"4s"`-style strings, hence `fal_duration_as_string: true` plus
   `fal_duration_suffix: "s"`.
 - `generate_audio: false` because sound is added by the pipeline's own
@@ -206,11 +206,11 @@ endpoint, so each clip interpolates from one styled frame to the next):
    re-runs.
 3. The styled frames are analysed by the vision model, which plans — for each
    consecutive pair — a tailored **motion prompt**, a **per-clip duration**
-   (4 or 8s), and a **sound prompt**, and writes
+   (4, 6 or 8s), and a **sound prompt**, and writes
    `storyboard/storyboard.json` + `storyboard.md`.
 
 `--no-analyze` skips step 3's vision call and uses the single global motion
-prompt with one duration for every clip. `--duration 4|8` forces one length
+prompt with one duration for every clip. `--duration 4|6|8` forces one length
 for all clips even with analysis on.
 
 ### `render`
@@ -283,8 +283,8 @@ project name as its first argument.
 | Command | Flags |
 |---------|-------|
 | `init` | — |
-| `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--duration 4\|8`, `--idea`, `--idea-file PATH`, `--frame-count N` |
-| `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 4\|8`, `--add-audio`, `--no-audio` |
+| `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--duration 4\|6\|8`, `--idea`, `--idea-file PATH`, `--frame-count N` |
+| `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 4\|6\|8`, `--add-audio`, `--no-audio` |
 | `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-prompt`, `--music-file PATH` |
 | `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--add-audio`, `--no-audio`, `--[no-]opening-reveal`, `--[no-]credits-photos`, `--[no-]letter` |
 | `status` | — |

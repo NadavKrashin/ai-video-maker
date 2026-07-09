@@ -96,10 +96,11 @@ _STORYBOARD_SYSTEM = (
     "natural continuation of the previous one so the start and end of "
     "every clip share the same framing and content. "
     "PER-CLIP DURATION: for each frame, also pick duration_to_next — the "
-    "length in seconds (either 4 or 8) of the clip that animates this "
+    "length in seconds (4, 6 or 8) of the clip that animates this "
     "frame into the next one. Choose 8 when the transition covers more "
-    "motion or a larger, slower change that needs room to breathe, and 4 "
-    "for quick, subtle changes. Vary it across the video; do not make "
+    "motion or a larger, slower change that needs room to breathe, 4 "
+    "for quick, subtle changes, and 6 for anything in between. Vary it "
+    "across the video; do not make "
     "them all the same. The last frame's duration_to_next is ignored. "
     "SOUND: for each frame, also write sound_to_next — a short phrase "
     "describing the diegetic ambient sound and sound effects for the clip "
@@ -165,10 +166,10 @@ _MODE_A_SYSTEM = (
     "environment except for the changes visible between the frames; no hard "
     "cuts, no people who appear in neither frame, no on-screen text. Do not "
     "mention frame numbers or that these are AI-generated images. "
-    "DURATION: pick a duration for each clip — either 4 or 8 seconds. Choose 8 "
-    "when the two frames differ a lot or the action needs room to play out; "
-    "choose 4 for quick, subtle changes. Vary it across the video; do not make "
-    "them all the same. "
+    "DURATION: pick a duration for each clip — 4, 6 or 8 seconds. Choose 8 "
+    "when the two frames differ a lot or the action needs room to play out, "
+    "4 for quick, subtle changes, and 6 for anything in between. Vary it "
+    "across the video; do not make them all the same. "
     "SOUND: also write sound_prompt — a short phrase describing the diegetic "
     "ambient sound and sound effects for that clip (e.g. 'waves lapping, gulls "
     "calling, soft wind'). Real on-screen/world sounds only — no music, no "
@@ -188,7 +189,7 @@ _STORYBOARD_NO_TEXT_FRAMES = (
 # Enforced via OpenAI structured outputs (json_schema, strict), so the model
 # can't omit fields or return the wrong types. The prose shape description in
 # _STORYBOARD_JSON_SHAPE stays for the semantic guidance (id format, when to
-# pick 4 vs 8, ...); the schema is the hard guarantee. Coercion in
+# pick 4 vs 6 vs 8, ...); the schema is the hard guarantee. Coercion in
 # _assemble_storyboard / _coerce_transition_plans remains as a final net.
 _DURATION_ENUM = sorted(VALID_DURATIONS)
 
@@ -269,14 +270,14 @@ _STORYBOARD_JSON_SHAPE = (
     '      "description": str,             // what happens in this frame\n'
     '      "image_prompt": str,            // full detailed image prompt\n'
     '      "negative_prompt": str,         // things to avoid\n'
-    '      "duration_to_next": 4 | 8,      // seconds of the clip into the next frame\n'
+    '      "duration_to_next": 4 | 6 | 8,  // seconds of the clip into the next frame\n'
     '      "sound_to_next": str            // ambient sound/SFX for that clip; no music, no speech\n'
     "    }, ...\n"
     "  ]\n"
     "}\n"
     "Do not include output_path or transitions; those are added later. "
     "Frame ids must be zero-padded 3-digit strings starting at 001. "
-    "duration_to_next must be exactly 4 or 8."
+    "duration_to_next must be exactly 4, 6 or 8."
 )
 
 
@@ -423,9 +424,9 @@ class OpenAIClient:
         If `frame_count` <= 0, the model chooses the number of frames that best
         fits the provided content instead of a fixed count.
 
-        If `default_duration` is set (4 or 8), every clip is forced to that
-        length; otherwise the model picks a per-clip duration (4 or 8) for each
-        transition so the video can mix short and long clips.
+        If `default_duration` is set (4, 6 or 8), every clip is forced to that
+        length; otherwise the model picks a per-clip duration (4, 6 or 8) for
+        each transition so the video can mix short and long clips.
         """
         client = self._ensure_client()
         system = _STORYBOARD_SYSTEM
@@ -482,8 +483,8 @@ class OpenAIClient:
         falls back to ``config.motion_prompt`` / ``config.duration`` so the
         caller can rely on the length and types.
 
-        When ``default_duration`` is set (4 or 8) every clip is forced to that
-        length instead of one chosen per pair.
+        When ``default_duration`` is set (4, 6 or 8) every clip is forced to
+        that length instead of one chosen per pair.
         """
         n = len(frames)
         if n < 2:
@@ -497,12 +498,12 @@ class OpenAIClient:
             "Return ONLY valid JSON with this exact shape:\n"
             "{\n"
             '  "transitions": [\n'
-            '    {"motion_prompt": str, "duration": 4 | 8, "sound_prompt": str}, ...\n'
+            '    {"motion_prompt": str, "duration": 4 | 6 | 8, "sound_prompt": str}, ...\n'
             "  ]\n"
             "}\n"
             f"The transitions array must have exactly {n - 1} items, in frame "
             "order (the first animates frame 001 into 002). duration must be "
-            "exactly 4 or 8."
+            "exactly 4, 6 or 8."
         )
         if default_duration:
             instruction += (
@@ -573,7 +574,7 @@ class OpenAIClient:
     ) -> Storyboard:
         """Normalise the model JSON and attach output paths + transitions.
 
-        Each transition takes the start frame's ``duration_to_next`` (4 or 8),
+        Each transition takes the start frame's ``duration_to_next`` (4, 6 or 8),
         unless ``default_duration`` forces every clip to one length.
         """
         frames: list[Frame] = []
