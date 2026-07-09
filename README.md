@@ -185,6 +185,12 @@ endpoint, so each clip interpolates from one styled frame to the next):
   `fal_duration_suffix: "s"`.
 - `generate_audio: false` because sound is added by the pipeline's own
   [audio step](#audio-sound) (and audio-on doubles Veo's price).
+- `motion_prompt_suffix` is appended to **every** clip's motion prompt (the
+  planned per-clip prompts replace the global `motion_prompt`, so guardrails
+  must ride along here), and the `negative_prompt` in `fal_extra_arguments`
+  goes out with every request. Together they pin each clip to one continuous,
+  physically plausible shot — no fades, no cuts, nothing clipping through
+  objects. Tune both per model.
 - **Kling v2.5 Turbo Pro on fal (cheaper):** set `fal_model_id` to
   `"fal-ai/kling-video/v2.5-turbo/pro/image-to-video"`, `fal_start_frame_field`
   to `"image_url"`, `fal_end_frame_field` to `"tail_image_url"`, and

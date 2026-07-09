@@ -16,7 +16,11 @@
   "fal_duration_suffix": "s",
   "fal_resolution": "1080p",
   "fal_aspect_ratio": "16:9",
-  "fal_extra_arguments": {"generate_audio": false},
+  "fal_extra_arguments": {
+    "generate_audio": false,
+    "negative_prompt": "cuts, fades, dissolves, scene transitions, morphing, warping, objects clipping through each other, floating objects, distortion, camera shake"
+  },
+  "motion_prompt_suffix": "One single continuous shot: no cuts, no fades, no dissolves, no editing transitions. Natural, physically plausible motion — characters and objects have weight and move around obstacles, never through them. End exactly on the provided last frame.",
   "audio_mode": "post",
   "sfx_model_id": "fal-ai/mmaudio-v2",
   "sfx_num_steps": 25,
