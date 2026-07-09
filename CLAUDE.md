@@ -9,8 +9,10 @@ your response). Keep it short and current; remove rules that no longer apply.
 ## What this project is
 
 A Python CLI pipeline that turns a folder of images (or a text idea) into a
-short 1920×1080 movie: OpenAI styles the images / plans a storyboard, fal.ai
-(Kling) renders a clip between each consecutive frame pair, optional fal audio
+short movie: OpenAI styles the images (1920×1080) / plans a storyboard, fal.ai
+(currently Seedance 2.0, previously Kling — the video model is config-swappable
+via the `fal_*` keys) renders a clip between each consecutive frame pair,
+`fal_resolution` caps the movie's resolution (720p on Seedance), optional fal audio
 adds per-clip SFX + a music bed, ffmpeg concatenates everything. It is being
 evolved into the backend of a future web app, so every CLI subcommand maps 1:1
 onto a `Pipeline.cmd_*` method (`ai_video_maker/runner.py`) that will become an
@@ -66,7 +68,8 @@ Core design rules:
    keys, defaults, or workflow behaviour, update the README in the same
    commit.
 6. **Never spend API credits without asking.** `storyboard`/`render`/`audio`
-   on a real project costs real money (a Kling clip is roughly $0.35–0.70).
+   on a real project costs real money (a Seedance 2.0 clip is roughly
+   $1.50–3.00; Kling was $0.35–0.70).
    Use `--dry-run`, the unit tests, or a disposable fixture project (create
    with `init _smoketest`, hand-write a storyboard.json + fake files, delete
    after) for verification. Real-credit test runs happen only with explicit
@@ -93,10 +96,18 @@ Lifecycle: `init` → `storyboard` (stops for review; writes json/md/preview.htm
   regenerate, or overwrite without asking. `ai_video_maker.egg-info/` is
   generated packaging metadata; ignore it.
 - `config.json` at the repo root is the user's live shared config. Current
-  model choices are deliberate: Kling v2.5 Turbo Pro (`fal_model_id`),
+  model choices are deliberate: Seedance 2.0 (`bytedance/seedance-2.0/
+  image-to-video`, swapped from Kling v2.5 Turbo Pro at the user's request —
+  the Kling recipe stays documented in the README for switching back),
   `gpt-image-2` for images (user wants OpenAI images), `gpt-5.1` for
   text/vision planning. The gpt-5 model line rejects non-default `temperature`
   — don't add temperature params to chat calls.
+- Seedance 2.0 specifics: end frame field is `end_image_url`, durations are
+  strings `"4"`…`"15"` (so the `"5"`/`"10"` enum still fits), max resolution
+  720p (final movie is 1280×720), and it generates native audio unless
+  `generate_audio: false` is sent — config.json disables it via
+  `fal_extra_arguments` so the pipeline's own `audio` step stays in charge.
+  Don't mix 720p Seedance clips with 1080p Kling clips in one project.
 - Per-project overrides: a `projects/<name>/config.json` is merged key-over-key
   on top of the shared config.
 - Content filters false-positive on family content: OpenAI during styling,
@@ -104,8 +115,9 @@ Lifecycle: `init` → `storyboard` (stops for review; writes json/md/preview.htm
   affection + "bed" wording). Both recover via reword-and-retry
   (`with_reword_recovery` in retry.py; motion prompts reworded by
   `reword_motion_prompt`). Expected behaviour, not a bug to "fix".
-- fal Kling durations are the string enum "5"/"10" (`fal_duration_as_string`);
-  valid clip durations live in `constants.VALID_DURATIONS`.
+- fal durations are sent as strings (`fal_duration_as_string`): Kling takes
+  the enum "5"/"10", Seedance takes "4"…"15"; valid clip durations live in
+  `constants.VALID_DURATIONS`.
 - Clips are named `<startid>_to_<endid>.mp4`; bridged clips (a missing middle
   frame) get non-consecutive names like `003_to_005.mp4` and become "stray"
   once the frame is restored — `combine` ignores strays by design.

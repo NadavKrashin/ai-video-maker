@@ -164,25 +164,41 @@ The pipeline is built around **consecutive frame pairs** (start → end). The vi
 model and the exact request shape come from the `fal_*` config fields, so you can
 swap models without touching code.
 
-**Default — Kling v2.5 Turbo Pro on fal** (supports start + end frame, so each
-clip interpolates from one styled frame to the next):
+**Default — Seedance 2.0 (ByteDance) on fal** (supports start + end frame, so
+each clip interpolates from one styled frame to the next):
 
 ```json
-"fal_model_id": "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
+"fal_model_id": "bytedance/seedance-2.0/image-to-video",
 "fal_start_frame_field": "image_url",
-"fal_end_frame_field": "tail_image_url",
-"fal_duration_as_string": true
+"fal_end_frame_field": "end_image_url",
+"fal_duration_as_string": true,
+"fal_resolution": "720p",
+"fal_aspect_ratio": "16:9",
+"fal_extra_arguments": {"generate_audio": false}
 ```
 
 - **Start frame** → `fal_start_frame_field` (`image_url`). **End frame** →
-  `fal_end_frame_field` (`tail_image_url`); set it to `""` for start-frame-only.
-- `fal_duration_as_string: true` because fal's Kling expects a string enum
-  (`"5"`/`"10"`); set it `false` for a model that wants an integer.
+  `fal_end_frame_field` (`end_image_url`); set it to `""` for start-frame-only.
+- `fal_duration_as_string: true` — Seedance wants `"4"`…`"15"` (or `"auto"`)
+  as strings; set it `false` for a model that wants an integer.
+- Seedance 2.0 caps at **720p** (the final movie is 1280×720, not 1080p) and
+  generates native audio by default — `generate_audio: false` keeps clips
+  silent so the pipeline's own `audio` step (SFX + music bed) stays in charge.
+  Drop that override (and skip `audio`) to try Seedance's built-in sound.
+- Cost: roughly $0.30/second (≈$1.50 per 5s clip); the fast tier
+  `bytedance/seedance-2.0/fast/image-to-video` is ≈$0.24/second.
+- **Kling v2.5 Turbo Pro on fal** (the previous default — 1080p-capable and
+  cheaper, ≈$0.35 per 5s clip): set `fal_model_id` to
+  `"fal-ai/kling-video/v2.5-turbo/pro/image-to-video"`, `fal_end_frame_field`
+  to `"tail_image_url"`, `fal_resolution`/`fal_aspect_ratio` to `""`, and
+  `fal_extra_arguments` to `{}`. Durations are the string enum `"5"`/`"10"`.
 - **Kling 3.0 on fal:** set `fal_model_id` to
   `"fal-ai/kling-video/v3/pro/image-to-video"`, `fal_start_frame_field` to
   `"start_image_url"`, and `fal_end_frame_field` to `"end_image_url"`.
 - Add extra model-specific args via `fal_extra_arguments`
   (e.g. `{"negative_prompt": "blur, distortion, low quality"}`).
+- Don't mix models within one project: clips of different resolutions
+  (Kling 1080p next to Seedance 720p) won't concatenate cleanly in `combine`.
 
 ---
 

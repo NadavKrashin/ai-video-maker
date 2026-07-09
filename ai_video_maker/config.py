@@ -36,16 +36,19 @@ class Config(BaseModel):
     openai_text_model: str = "gpt-5.1"
 
     # --- fal.ai image-to-video. Auth via FAL_KEY. ---
-    # Default: Kling v2.5 Turbo Pro (image_url + tail_image_url, start->end
-    # interpolation — same request shape as v2.1, better and cheaper).
-    # For Kling 3.0 use model "fal-ai/kling-video/v3/pro/image-to-video" with
-    # start field "start_image_url" and end field "end_image_url".
+    # config.json currently selects Seedance 2.0 (image_url + end_image_url,
+    # duration as string "4".."15", max 720p, generate_audio must be disabled
+    # via fal_extra_arguments to keep the post-audio pipeline in charge).
+    # These code defaults stay on Kling v2.5 Turbo Pro (image_url +
+    # tail_image_url) as the known-good fallback; see README "Model &
+    # start/end frames" for the per-model recipes (Kling 2.5/3.0, Seedance 2.0).
     fal_model_id: str = "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
     fal_start_frame_field: str = "image_url"
     # End-frame support is model-dependent. Leave empty to send only the start
-    # frame + motion prompt. Kling v2.1/v2.5 use "tail_image_url".
+    # frame + motion prompt. Kling v2.1/v2.5 use "tail_image_url"; Kling 3.0
+    # and Seedance 2.0 use "end_image_url".
     fal_end_frame_field: str = "tail_image_url"
-    fal_duration_as_string: bool = True   # fal Kling uses a string enum ("5"/"10")
+    fal_duration_as_string: bool = True   # Kling and Seedance both want strings
     fal_resolution: str = ""              # e.g. "720p", "1080p"; only sent when set
     fal_aspect_ratio: str = ""            # e.g. "16:9"; only sent when set
     fal_extra_arguments: dict[str, Any] = Field(default_factory=dict)
