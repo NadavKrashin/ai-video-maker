@@ -36,15 +36,15 @@ class Config(BaseModel):
     openai_text_model: str = "gpt-5.1"
 
     # --- fal.ai image-to-video. Auth via FAL_KEY. ---
-    # Default: Kling v2.5 Turbo Pro (image_url + tail_image_url, start->end
-    # interpolation — same request shape as v2.1, better and cheaper).
-    # For Kling 3.0 use model "fal-ai/kling-video/v3/pro/image-to-video" with
-    # start field "start_image_url" and end field "end_image_url".
-    fal_model_id: str = "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
-    fal_start_frame_field: str = "image_url"
+    # Default: Kling 3.0 Pro (start_image_url + end_image_url, start->end interpolation).
+    # For Kling v2.5 Turbo Pro (cheaper) use model
+    # "fal-ai/kling-video/v2.5-turbo/pro/image-to-video" with start field
+    # "image_url" and end field "tail_image_url".
+    fal_model_id: str = "fal-ai/kling-video/v3/pro/image-to-video"
+    fal_start_frame_field: str = "start_image_url"
     # End-frame support is model-dependent. Leave empty to send only the start
-    # frame + motion prompt. Kling v2.1/v2.5 use "tail_image_url".
-    fal_end_frame_field: str = "tail_image_url"
+    # frame + motion prompt. Kling v3 uses "end_image_url"; v2.1/v2.5 use "tail_image_url".
+    fal_end_frame_field: str = "end_image_url"
     fal_duration_as_string: bool = True   # fal Kling uses a string enum ("5"/"10")
     fal_resolution: str = ""              # e.g. "720p", "1080p"; only sent when set
     fal_aspect_ratio: str = ""            # e.g. "16:9"; only sent when set

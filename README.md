@@ -164,23 +164,23 @@ The pipeline is built around **consecutive frame pairs** (start → end). The vi
 model and the exact request shape come from the `fal_*` config fields, so you can
 swap models without touching code.
 
-**Default — Kling v2.5 Turbo Pro on fal** (supports start + end frame, so each
-clip interpolates from one styled frame to the next):
+**Default — Kling 3.0 Pro on fal** (supports start + end frame, so each clip
+interpolates from one styled frame to the next):
 
 ```json
-"fal_model_id": "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
-"fal_start_frame_field": "image_url",
-"fal_end_frame_field": "tail_image_url",
+"fal_model_id": "fal-ai/kling-video/v3/pro/image-to-video",
+"fal_start_frame_field": "start_image_url",
+"fal_end_frame_field": "end_image_url",
 "fal_duration_as_string": true
 ```
 
-- **Start frame** → `fal_start_frame_field` (`image_url`). **End frame** →
-  `fal_end_frame_field` (`tail_image_url`); set it to `""` for start-frame-only.
+- **Start frame** → `fal_start_frame_field` (`start_image_url`). **End frame** →
+  `fal_end_frame_field` (`end_image_url`); set it to `""` for start-frame-only.
 - `fal_duration_as_string: true` because fal's Kling expects a string enum
   (`"5"`/`"10"`); set it `false` for a model that wants an integer.
-- **Kling 3.0 on fal:** set `fal_model_id` to
-  `"fal-ai/kling-video/v3/pro/image-to-video"`, `fal_start_frame_field` to
-  `"start_image_url"`, and `fal_end_frame_field` to `"end_image_url"`.
+- **Kling v2.5 Turbo Pro on fal (previous default, cheaper):** set `fal_model_id`
+  to `"fal-ai/kling-video/v2.5-turbo/pro/image-to-video"`, `fal_start_frame_field`
+  to `"image_url"`, and `fal_end_frame_field` to `"tail_image_url"`.
 - Add extra model-specific args via `fal_extra_arguments`
   (e.g. `{"negative_prompt": "blur, distortion, low quality"}`).
 
