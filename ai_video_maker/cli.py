@@ -99,7 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Skip the vision analysis; use the single global motion "
                          "prompt and one duration for every clip.")
     sp.add_argument("--duration", type=int, choices=sorted(VALID_DURATIONS),
-                    help="Force every clip to this length (5 or 10 seconds); "
+                    help="Force every clip to this length (4 or 8 seconds); "
                          "omit to let the planner mix lengths.")
     sp.add_argument("--idea", default=None,
                     help="Generate the storyboard from this idea instead of "
@@ -182,7 +182,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--motion-prompt", default=None,
                     help="Override every clip's motion prompt.")
     sp.add_argument("--duration", type=int, choices=sorted(VALID_DURATIONS),
-                    help="Force every clip to this length (5 or 10 seconds).")
+                    help="Force every clip to this length (4 or 8 seconds).")
     sp.add_argument("--no-analyze", action="store_true",
                     help="Skip the vision analysis of the styled frames.")
     sp.add_argument("--no-combine", action="store_true",

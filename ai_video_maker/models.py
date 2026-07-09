@@ -26,7 +26,7 @@ class Transition(BaseModel):
     start_frame: str
     end_frame: str
     motion_prompt: str
-    duration: int = 5
+    duration: int = 4
     # Optional per-clip SFX/ambient guidance for the video->audio step. Empty
     # falls back to config.default_sfx_prompt.
     sound_prompt: str = ""
@@ -36,7 +36,7 @@ class Transition(BaseModel):
 class Storyboard(BaseModel):
     project_title: str
     style: str
-    duration_per_clip: int = 5
+    duration_per_clip: int = 4
     target_width: int = 1920
     target_height: int = 1080
     concept: str = ""

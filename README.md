@@ -164,23 +164,32 @@ The pipeline is built around **consecutive frame pairs** (start → end). The vi
 model and the exact request shape come from the `fal_*` config fields, so you can
 swap models without touching code.
 
-**Default — Kling v2.5 Turbo Pro on fal** (supports start + end frame, so each
-clip interpolates from one styled frame to the next):
+**Default — Veo 3.1 first-last-frame on fal** (a dedicated start + end frame
+endpoint, so each clip interpolates from one styled frame to the next):
 
 ```json
-"fal_model_id": "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
-"fal_start_frame_field": "image_url",
-"fal_end_frame_field": "tail_image_url",
-"fal_duration_as_string": true
+"fal_model_id": "fal-ai/veo3.1/first-last-frame-to-video",
+"fal_start_frame_field": "first_frame_url",
+"fal_end_frame_field": "last_frame_url",
+"fal_duration_as_string": true,
+"fal_duration_suffix": "s",
+"fal_resolution": "1080p",
+"fal_aspect_ratio": "16:9",
+"fal_extra_arguments": {"generate_audio": false}
 ```
 
-- **Start frame** → `fal_start_frame_field` (`image_url`). **End frame** →
-  `fal_end_frame_field` (`tail_image_url`); set it to `""` for start-frame-only.
-- `fal_duration_as_string: true` because fal's Kling expects a string enum
-  (`"5"`/`"10"`); set it `false` for a model that wants an integer.
-- **Kling 3.0 on fal:** set `fal_model_id` to
-  `"fal-ai/kling-video/v3/pro/image-to-video"`, `fal_start_frame_field` to
-  `"start_image_url"`, and `fal_end_frame_field` to `"end_image_url"`.
+- **Start frame** → `fal_start_frame_field` (`first_frame_url`). **End frame** →
+  `fal_end_frame_field` (`last_frame_url`); set it to `""` for start-frame-only.
+- **Durations are 4 or 8 seconds** (Veo accepts 4s/6s/8s clips). Veo wants them
+  as `"4s"`-style strings, hence `fal_duration_as_string: true` plus
+  `fal_duration_suffix: "s"`.
+- `generate_audio: false` because sound is added by the pipeline's own
+  [audio step](#audio-sound) (and audio-on doubles Veo's price).
+- **Kling v2.5 Turbo Pro on fal (cheaper):** set `fal_model_id` to
+  `"fal-ai/kling-video/v2.5-turbo/pro/image-to-video"`, `fal_start_frame_field`
+  to `"image_url"`, `fal_end_frame_field` to `"tail_image_url"`, and
+  `fal_duration_suffix` to `""`. Note Kling only accepts 5s/10s clips, so also
+  change `VALID_DURATIONS` in `ai_video_maker/constants.py` back to `{5, 10}`.
 - Add extra model-specific args via `fal_extra_arguments`
   (e.g. `{"negative_prompt": "blur, distortion, low quality"}`).
 
@@ -197,11 +206,11 @@ clip interpolates from one styled frame to the next):
    re-runs.
 3. The styled frames are analysed by the vision model, which plans — for each
    consecutive pair — a tailored **motion prompt**, a **per-clip duration**
-   (5 or 10s), and a **sound prompt**, and writes
+   (4 or 8s), and a **sound prompt**, and writes
    `storyboard/storyboard.json` + `storyboard.md`.
 
 `--no-analyze` skips step 3's vision call and uses the single global motion
-prompt with one duration for every clip. `--duration 5|10` forces one length
+prompt with one duration for every clip. `--duration 4|8` forces one length
 for all clips even with analysis on.
 
 ### `render`
@@ -274,8 +283,8 @@ project name as its first argument.
 | Command | Flags |
 |---------|-------|
 | `init` | — |
-| `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
-| `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 5\|10`, `--add-audio`, `--no-audio` |
+| `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--duration 4\|8`, `--idea`, `--idea-file PATH`, `--frame-count N` |
+| `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 4\|8`, `--add-audio`, `--no-audio` |
 | `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-prompt`, `--music-file PATH` |
 | `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--add-audio`, `--no-audio`, `--[no-]opening-reveal`, `--[no-]credits-photos`, `--[no-]letter` |
 | `status` | — |

@@ -45,7 +45,10 @@ class VideoClient:
         args: dict[str, Any] = {
             c.fal_start_frame_field: start_url,
             "prompt": motion_prompt,
-            "duration": str(duration) if c.fal_duration_as_string else duration,
+            "duration": (
+                f"{duration}{c.fal_duration_suffix}"
+                if c.fal_duration_as_string else duration
+            ),
         }
         # End frame is only sent when the model documents a field for it.
         if end_url and c.fal_end_frame_field:
