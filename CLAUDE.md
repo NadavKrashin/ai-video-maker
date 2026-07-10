@@ -103,8 +103,9 @@ Lifecycle: `init` → `storyboard` (stops for review; writes json/md/preview.htm
   text/vision planning. The gpt-5 model line rejects non-default `temperature`
   — don't add temperature params to chat calls.
 - Seedance 2.0 specifics: end frame field is `end_image_url`, durations are
-  strings `"4"`…`"15"` (so the `"5"`/`"10"` enum still fits), max resolution
-  720p (final movie is 1280×720), and it generates native audio unless
+  strings `"4"`…`"15"` (so the `"5"`/`"10"` enum still fits), documented max
+  resolution 720p (final movie is 1280×720; some fal pages claim 1080p on the
+  standard tier — unverified), and it generates native audio unless
   `generate_audio: false` is sent — config.json disables it via
   `fal_extra_arguments` so the pipeline's own `audio` step stays in charge.
   Don't mix 720p Seedance clips with 1080p Kling clips in one project.

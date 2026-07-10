@@ -181,12 +181,22 @@ each clip interpolates from one styled frame to the next):
   `fal_end_frame_field` (`end_image_url`); set it to `""` for start-frame-only.
 - `fal_duration_as_string: true` — Seedance wants `"4"`…`"15"` (or `"auto"`)
   as strings; set it `false` for a model that wants an integer.
-- Seedance 2.0 caps at **720p** (the final movie is 1280×720, not 1080p) and
-  generates native audio by default — `generate_audio: false` keeps clips
-  silent so the pipeline's own `audio` step (SFX + music bed) stays in charge.
-  Drop that override (and skip `audio`) to try Seedance's built-in sound.
-- Cost: roughly $0.30/second (≈$1.50 per 5s clip); the fast tier
-  `bytedance/seedance-2.0/fast/image-to-video` is ≈$0.24/second.
+- Resolution: fal's official API repo documents **480p/720p** only (movie is
+  1280×720), but some fal model pages advertise **1080p on the standard
+  tier**. If 1080p matters, test `"fal_resolution": "1080p"` on a single clip
+  (`render <proj> --clip ID`) — an invalid value fails fast before charging.
+- Seedance generates native audio by default — `generate_audio: false` keeps
+  clips silent so the pipeline's own `audio` step (SFX + music bed) stays in
+  charge. Drop that override (and skip `audio`) to try Seedance's built-in
+  sound; fal charges the same either way.
+- Cost & tiers (per second of video): standard ≈$0.30 (≈$1.50/5s clip),
+  fast tier `bytedance/seedance-2.0/fast/image-to-video` ≈$0.24, mini tier
+  `bytedance/seedance-2.0/mini` ≈$0.15 at 720p / ≈$0.07 at 480p. A cheap
+  draft→final workflow: put the mini model id in a project's
+  `projects/<name>/config.json` override while iterating on prompts/durations,
+  then remove the override and re-render approved clips on standard.
+- For reproducible A/B tests of prompt wording, pin a seed:
+  `"fal_extra_arguments": {"generate_audio": false, "seed": 42}`.
 - **Kling v2.5 Turbo Pro on fal** (the previous default — 1080p-capable and
   cheaper, ≈$0.35 per 5s clip): set `fal_model_id` to
   `"fal-ai/kling-video/v2.5-turbo/pro/image-to-video"`, `fal_end_frame_field`
