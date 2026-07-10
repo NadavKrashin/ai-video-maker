@@ -41,7 +41,11 @@ Core design rules:
   is regenerated its `sfx:`/`fade:` state entries must be cleared.
 - Transition motion prompts must describe in-world subject action, not camera
   moves (see `_MODE_A_SYSTEM` in `clients/openai_client.py`); the user
-  explicitly rejects "zoom/pan/pull-back" slideshow-style prompts.
+  explicitly rejects "zoom/pan/pull-back" slideshow-style prompts. Since the
+  Seedance swap they must also end with a stability clause + "One continuous
+  shot, no cuts." — Seedance is multi-shot-capable and will cut mid-clip on
+  scene-change-ish prompts otherwise (Kling couldn't). Don't remove those
+  closing clauses.
 - When a pair's two frames show DIFFERENT people, the motion prompt must stage
   an exit-and-entrance (or reveal) — never continuous identity: Kling morphs
   one person into the other otherwise, which the user finds creepy. Same
