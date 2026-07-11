@@ -45,6 +45,12 @@ Core design rules:
   one person into the other otherwise, which the user finds creepy. Same
   person at a different age/in different clothes may animate continuously.
   Enforced in `_MODE_A_SYSTEM` and the fallback `motion_prompt` in config.json.
+- The flip side: when both frames show the SAME person, the motion prompt
+  must say so explicitly ("the same little boy, now in ...") using singular
+  he/she — never singular "they/their" and never handover phrasing like
+  "the scene shifts to a toddler ...". Both made Kling swap in a
+  different-looking kid mid-story on a real project. Enforced in
+  `_MODE_A_SYSTEM` ("SAME PERSON, ONE PROTAGONIST").
 - Clip durations must LEAN SHORT: 5s by default, 10s only for HARD
   transitions. "Hard" is a concrete checklist, not vibes: different people
   between the frames, a location/setting change, a noticeable wardrobe or
