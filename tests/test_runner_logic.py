@@ -515,13 +515,19 @@ class TestPresentationSegments:
         p.config.intro_clip = True
         assert p._presentation_flags() == (False, False, False, False)
 
+    def _global_intro(self, pipeline, workspace) -> Path:
+        """Point the shared intro at a tmp file (never the real repo root)."""
+        src = _touch(workspace.root / "shared_intro.mp4")
+        pipeline.config.intro_file = str(src)
+        return src
+
     def test_intro_prepends_normalized_segment(
         self, make_pipeline, workspace, monkeypatch
     ):
         calls = self._stub_renderers(monkeypatch)
         p = make_pipeline(intro_clip=True)
         clips = self._project(workspace)
-        _touch(workspace.intro_file)
+        self._global_intro(p, workspace)
         segments, added = p._presentation_segments(clips)
         assert added is True
         assert segments[0].name == "intro.mp4"
@@ -531,6 +537,7 @@ class TestPresentationSegments:
     def test_intro_without_file_skips(self, make_pipeline, workspace, monkeypatch):
         calls = self._stub_renderers(monkeypatch)
         p = make_pipeline(intro_clip=True)
+        p.config.intro_file = str(workspace.root / "missing_intro.mp4")
         clips = self._project(workspace)
         segments, added = p._presentation_segments(clips)
         assert segments == clips and added is False
@@ -542,13 +549,19 @@ class TestPresentationSegments:
         self._stub_renderers(monkeypatch)
         p = make_pipeline(intro_clip=True, opening_reveal=True)
         clips = self._project(workspace)
-        _touch(workspace.intro_file)
+        self._global_intro(p, workspace)
         segments, added = p._presentation_segments(clips)
         assert added is True
         assert [s.name for s in segments[:2]] == [
             "intro.mp4", "opening_reveal.mp4",
         ]
         assert segments[2:] == clips[1:]
+
+    def test_intro_source_resolves_against_repo_root(self, pipeline):
+        from ai_video_maker.workspace import PROJECT_ROOT
+        assert pipeline._intro_source() == PROJECT_ROOT / "intro.mp4"
+        pipeline.config.intro_file = "assets/opener.mp4"
+        assert pipeline._intro_source() == PROJECT_ROOT / "assets/opener.mp4"
 
     def test_letter_over_credits_merges_into_one_section(
         self, make_pipeline, workspace, monkeypatch

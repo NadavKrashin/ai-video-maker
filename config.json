@@ -32,6 +32,7 @@
   "credits_photos": false,
   "credits_seconds_per_photo": 1.5,
   "intro_clip": false,
+  "intro_file": "intro.mp4",
   "closing_letter": false,
   "letter_font_path": "",
   "letter_font_size": 64,

@@ -104,9 +104,12 @@ class Config(BaseModel):
     # recorded in the storyboard (source_path), in movie order.
     credits_photos: bool = False
     credits_seconds_per_photo: float = 1.5
-    # intro_clip: prepend the user's own intro video (projects/<name>/intro.mp4)
-    # before everything else, normalized to the movie's frame size.
+    # intro_clip: prepend the user's own intro video before everything else,
+    # normalized to the movie's frame size. The intro is SHARED by all
+    # projects: intro_file resolves against the repo root (absolute paths
+    # work too), and a per-project config.json can still override it.
     intro_clip: bool = False
+    intro_file: str = "intro.mp4"
     # closing_letter: scroll the text of projects/<name>/letter.txt over a
     # dark background at the very end, credits-style. Hebrew/RTL-safe (bidi
     # reordering happens in media/letter.py, not ffmpeg).

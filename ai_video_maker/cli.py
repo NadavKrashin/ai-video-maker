@@ -166,9 +166,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "Overrides the closing_letter config key.")
     sp.add_argument("--intro", action=argparse.BooleanOptionalAction,
                     default=None,
-                    help="Prepend the project's intro.mp4 before everything "
-                         "else (normalized to the movie's frame size). "
-                         "Overrides the intro_clip config key for this run.")
+                    help="Prepend the shared intro video (intro.mp4 at the "
+                         "repo root; intro_file config key relocates it) "
+                         "before everything else, normalized to the movie's "
+                         "frame size. Overrides the intro_clip config key "
+                         "for this run.")
 
     command("status",
             "Show the project's progress (frames, storyboard, clips, final "

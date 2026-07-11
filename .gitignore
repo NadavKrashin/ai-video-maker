@@ -13,6 +13,9 @@ env/
 # OS
 .DS_Store
 
+# The shared intro video (config: intro_file) is user media, not code.
+/intro.mp4
+
 # Per-movie workspaces hold all generated media & runtime artifacts
 # (input_images/, frames, clips, output, storyboard, logs, state). Each run uses
 # projects/<name>/, so the whole tree is ignored.

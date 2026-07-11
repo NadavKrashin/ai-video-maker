@@ -1169,7 +1169,7 @@ class Pipeline:
             intro, reveal, credits, letter = self._presentation_flags()
             if intro:
                 logger.info("[dry-run] would prepend the intro clip from %s",
-                            self.workspace.intro_file)
+                            self._intro_source())
             if reveal:
                 logger.info("[dry-run] would open on the real first photo "
                             "(crossfade into the first clip)")
@@ -1302,10 +1302,12 @@ class Pipeline:
                 "project to record the sources.)"
             )
             reveal = credits = False
-        if intro and not self.workspace.intro_file.exists():
+        if intro and not self._intro_source().exists():
             logger.warning(
                 "intro_clip is on, but %s does not exist — drop your intro "
-                "video there and re-run combine.", self.workspace.intro_file,
+                "video there (it's shared by every project; the intro_file "
+                "config key relocates it) and re-run combine.",
+                self._intro_source(),
             )
             intro = False
         letter_text = self._letter_text() if letter else None
@@ -1412,11 +1414,16 @@ class Pipeline:
             return None
         return text
 
+    def _intro_source(self) -> Path:
+        """The shared intro video: config.intro_file, repo-root relative."""
+        path = Path(self.config.intro_file)
+        return path if path.is_absolute() else PROJECT_ROOT / path
+
     def _render_intro_segment(
         self, seg_dir: Path, width: int, height: int
     ) -> Optional[Path]:
         """The user's intro clip, normalized to the movie's frame size."""
-        src = self.workspace.intro_file
+        src = self._intro_source()
         dst = seg_dir / "intro.mp4"
         if self._segment_fresh(dst, [src]):
             logger.info("Reusing intro clip (unchanged).")

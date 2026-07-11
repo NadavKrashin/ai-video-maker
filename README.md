@@ -227,10 +227,13 @@ is only rebuilt with `--force`.
 **Presentation extras (optional, off by default).** All pure local ffmpeg,
 no API cost:
 
-- `--intro` (config: `intro_clip`): drop your own intro video at
-  `projects/<name>/intro.mp4` and it plays before everything else (before the
-  opening reveal too), scaled to fit the movie's frame size on black pads —
-  never cropped. Its own audio is kept, with the music bed mixed over it.
+- `--intro` (config: `intro_clip`): drop your own intro video at `intro.mp4`
+  in the repo root — it's **shared by every project** — and it plays before
+  everything else (before the opening reveal too), scaled to fit the movie's
+  frame size on black pads — never cropped. Its own audio is kept, with the
+  music bed mixed over it. The `intro_file` config key relocates it (repo-root
+  relative or absolute), and a per-project `config.json` can override it for
+  one movie.
 - `--opening-reveal` (config: `opening_reveal`): the movie opens on the real,
   unstyled first photo, holds ~1.6s (`opening_reveal_hold_seconds`), then
   crossfades into the first clip — "the photo comes alive".
