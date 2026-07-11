@@ -341,7 +341,10 @@ When that happens the pipeline asks the text model to rephrase the prompt
 `moderation_reword_attempts` times (config, default 3). The log shows the
 reworded prompt that succeeded; your storyboard keeps the original, so paste
 the reworded text into that transition's `motion_prompt` if you want it to
-stick for future re-renders.
+stick for future re-renders. If every reword of a clip's motion prompt is
+still blocked, the clip is tried one final time with a generic safe fallback
+prompt — the start/end frames still drive the motion, so you get a usable
+(if less directed) clip instead of a failed render.
 
 ---
 

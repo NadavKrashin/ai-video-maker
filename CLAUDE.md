@@ -113,10 +113,14 @@ Lifecycle: `init` → `storyboard` (stops for review; writes json/md/preview.htm
 - Per-project overrides: a `projects/<name>/config.json` is merged key-over-key
   on top of the shared config.
 - Content filters false-positive on family content: OpenAI during styling,
-  and fal/Kling on clip motion prompts (`content_policy_violation`, e.g.
-  affection + "bed" wording). Both recover via reword-and-retry
-  (`with_reword_recovery` in retry.py; motion prompts reworded by
-  `reword_motion_prompt`). Expected behaviour, not a bug to "fix".
+  and fal/Kling on clip motion prompts (`content_policy_violation`). Kling's
+  worst trigger is a baby/child being physically handled (lifted, bounced,
+  settled) plus bed/crib/blanket wording. Recovery is reword-and-retry
+  (`with_reword_recovery` in retry.py; each rewrite drops risky detail rather
+  than paraphrasing), and clip generation ends with one `last_resort` try
+  using the generic `SAFE_FALLBACK_MOTION_PROMPT` (clients/video.py) so a
+  false positive degrades the prompt, not the render. Expected behaviour,
+  not a bug to "fix".
 - fal Kling durations are the string enum "5"/"10" (`fal_duration_as_string`);
   valid clip durations live in `constants.VALID_DURATIONS`.
 - Clips are named `<startid>_to_<endid>.mp4`; bridged clips (a missing middle

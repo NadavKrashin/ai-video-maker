@@ -70,14 +70,19 @@ def with_reword_recovery(
     reword: Callable[[str], str],
     attempts: int,
     description: str,
+    last_resort: Optional[str] = None,
 ) -> T:
     """Run ``run(prompt)``; when a content filter rejects it, reword and retry.
 
     ``run`` should do its own transient-error backoff (``with_retries``) — a
     moderation rejection is classified non-retryable there, so it surfaces
     here where the prompt can be *changed* instead of resubmitted verbatim.
-    Non-moderation errors propagate untouched. After ``attempts`` rewords the
-    last moderation error is raised.
+    Non-moderation errors propagate untouched.
+
+    When ``attempts`` rewords are exhausted and ``last_resort`` is given, one
+    final try is made with that fixed prompt — a deliberately bland, generic
+    text that carries no flagged wording at all — before the last moderation
+    error is raised. This trades prompt fidelity for actually getting output.
     """
     attempt_prompt = prompt
     last_exc: Optional[BaseException] = None
@@ -104,6 +109,25 @@ def with_reword_recovery(
             )
             attempt_prompt = reword(attempt_prompt)
     assert last_exc is not None
+    if last_resort and last_resort != attempt_prompt:
+        logger.warning(
+            "%s still blocked after %d rewording attempts — trying one last "
+            "time with a generic fallback prompt",
+            description, attempts,
+        )
+        try:
+            result = run(last_resort)
+            logger.info(
+                "%s succeeded with the generic fallback prompt — the clip "
+                "follows the start/end frames but ignores the planned motion "
+                "wording.",
+                description,
+            )
+            return result
+        except Exception as exc:  # noqa: BLE001 - classified below
+            if not is_moderation_error(exc):
+                raise
+            last_exc = exc
     logger.error(
         "%s still blocked after %d rewording attempts; giving up",
         description, attempts,

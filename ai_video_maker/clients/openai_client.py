@@ -52,10 +52,18 @@ _REWORD_MOTION_SYSTEM = (
     "could misread as sexual, violent, or otherwise unsafe: make physical "
     "affection unmistakably innocent and familial (a warm hug, leaning on a "
     "shoulder), avoid mentioning beds/lying together/body parts, and replace "
-    "loaded words (e.g. 'shot' -> 'scene'). Keep it one to three short "
-    "sentences of continuous physical motion in present tense; no editing "
-    "effects, no morphing between people. Return ONLY the rewritten motion "
-    "prompt, with no preamble or quotes."
+    "loaded words (e.g. 'shot' -> 'scene'). BABIES AND CHILDREN trip the "
+    "filter hardest: when a baby or child is in the scene, drop wording about "
+    "their body being physically handled — lifted, carried, bounced, lowered, "
+    "settled, laid down — and drop bed/crib/blanket mentions; describe the "
+    "moment at scene level instead (e.g. 'the parent and baby share a joyful "
+    "moment as the scene moves to the cozy room'). The two input images "
+    "already define the scene, so it is always safe to LOSE detail: make each "
+    "rewrite noticeably simpler and more generic than the text you were "
+    "given, deleting the risky details entirely rather than paraphrasing "
+    "them. Keep it one to three short sentences of continuous physical motion "
+    "in present tense; no editing effects, no morphing between people. Return "
+    "ONLY the rewritten motion prompt, with no preamble or quotes."
 )
 
 # Deterministic fallback used when even the reword model call fails: bolt an

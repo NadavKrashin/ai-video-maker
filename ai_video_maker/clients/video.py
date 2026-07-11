@@ -16,6 +16,18 @@ from ..retry import with_reword_recovery
 from .download import download_file
 from .fal import FalSession, extract_media_url
 
+# Final fallback when every reword of a motion prompt is still rejected by the
+# content checker (with_reword_recovery's last_resort). Deliberately generic:
+# no physical-contact verbs, no furniture, no body words — nothing left for the
+# checker to misread. The start/end frames still drive the clip, so a bland
+# prompt produces a usable (if less directed) result instead of a failed clip.
+SAFE_FALLBACK_MOTION_PROMPT = (
+    "Smooth, gentle, natural motion carries the first frame into the second. "
+    "Everyone moves calmly and naturally in a warm, wholesome moment. The "
+    "final frame closely matches the provided end image. No sudden cuts, no "
+    "text, no distortion."
+)
+
 
 class VideoClient:
     """Renders one clip per consecutive frame pair via fal."""
@@ -101,6 +113,7 @@ class VideoClient:
                 reword=reword,
                 attempts=self.config.moderation_reword_attempts,
                 description=f"fal clip {dst.name}",
+                last_resort=SAFE_FALLBACK_MOTION_PROMPT,
             )
         video_url = extract_media_url(result, ("video",))
         download_file(

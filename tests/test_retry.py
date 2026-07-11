@@ -84,3 +84,53 @@ class TestWithRewordRecovery:
                 attempts=2, description="t",
             )
         assert len(rewords) == 2  # exactly `attempts` rewords, then give up
+
+    def test_last_resort_tried_after_rewords_exhausted(self):
+        calls = []
+
+        def run(prompt):
+            calls.append(prompt)
+            if prompt != "generic fallback":
+                raise RuntimeError(_FAL_MODERATION)
+            return f"ok:{prompt}"
+
+        result = with_reword_recovery(
+            run, "flagged",
+            reword=lambda p: f"{p}+",
+            attempts=2, description="t",
+            last_resort="generic fallback",
+        )
+        assert result == "ok:generic fallback"
+        assert calls == ["flagged", "flagged+", "flagged++", "generic fallback"]
+
+    def test_last_resort_also_blocked_raises(self):
+        calls = []
+
+        def run(prompt):
+            calls.append(prompt)
+            raise RuntimeError(_FAL_MODERATION)
+
+        with pytest.raises(RuntimeError, match="content_policy_violation"):
+            with_reword_recovery(
+                run, "p",
+                reword=lambda p: f"{p}+",
+                attempts=1, description="t",
+                last_resort="generic fallback",
+            )
+        assert calls == ["p", "p+", "generic fallback"]
+
+    def test_last_resort_skipped_when_it_equals_last_attempt(self):
+        calls = []
+
+        def run(prompt):
+            calls.append(prompt)
+            raise RuntimeError(_FAL_MODERATION)
+
+        with pytest.raises(RuntimeError, match="content_policy_violation"):
+            with_reword_recovery(
+                run, "p",
+                reword=lambda p: "generic fallback",
+                attempts=1, description="t",
+                last_resort="generic fallback",
+            )
+        assert calls == ["p", "generic fallback"]  # not resubmitted verbatim
