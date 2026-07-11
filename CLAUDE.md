@@ -45,12 +45,15 @@ Core design rules:
   one person into the other otherwise, which the user finds creepy. Same
   person at a different age/in different clothes may animate continuously.
   Enforced in `_MODE_A_SYSTEM` and the fallback `motion_prompt` in config.json.
-- Clip durations must LEAN SHORT: strongly prefer 5s clips; 10s is reserved
-  for genuinely hard transitions only (e.g. a different-people
-  exit-and-entrance that needs room to play out). The user rejected planners
-  that hand out 10s freely. Encoded in `_STORYBOARD_SYSTEM` and
-  `_MODE_A_SYSTEM` (clients/openai_client.py); keep that bias when touching
-  the duration guidance.
+- Clip durations must LEAN SHORT: 5s by default, 10s only for HARD
+  transitions. "Hard" is a concrete checklist, not vibes: different people
+  between the frames, a location/setting change, a noticeable wardrobe or
+  appearance change, or a motion prompt needing 2+ sequential beats. The
+  user rejected planners that hand out 10s freely, but a hard pair squeezed
+  into 5s makes the subject visibly teleport (seen in a real render), so
+  don't over-tighten either. Encoded in `_STORYBOARD_SYSTEM` and
+  `_MODE_A_SYSTEM` (clients/openai_client.py); keep both sides of that
+  balance when touching the duration guidance.
 - Styling must preserve LIKENESS while being an unmistakable Pixar-style
   cartoon: the whole scene (people, clothing, background) renders as a
   stylized 3D animated film still — never near-photorealistic — but with
