@@ -163,6 +163,13 @@ _MODE_A_SYSTEM = (
     "the character, drifting with their gaze). NEVER write a prompt that is "
     "only camera choreography, and do not default to 'zoom in', 'zoom out', "
     "'pan', or 'pull back'. "
+    "LAND ON THE END FRAME: each clip stops exactly at its end frame, so the "
+    "FINAL clause of every motion_prompt must describe the subject already "
+    "in the end frame's pose, place, and activity, and every action the "
+    "prompt starts must be finished by then. Before writing, look at the END "
+    "frame of the pair and work backwards: what happens so the start frame "
+    "arrives exactly there? Never end the prompt mid-action or still inside "
+    "the start frame's activity. "
     "DIFFERENT PEOPLE: before writing each motion_prompt, check whether the "
     "person or people in the start frame are the SAME individuals as in the "
     "end frame. If anyone differs (e.g. a man in one frame and a woman in the "
@@ -274,6 +281,12 @@ _TRANSITIONS_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "properties": {
+                    # Declared FIRST (property order = generation order) so
+                    # the model anchors on which frame pair it is describing
+                    # before writing the motion. A real 20-frame plan slipped
+                    # by one pair mid-array; code re-aligns by this index
+                    # (_realign_by_pair_index).
+                    "pair_index": {"type": "integer"},
                     "motion_prompt": {"type": "string"},
                     # The model rates how much the two frames differ; the
                     # DURATION is derived in code (_coerce_transition_plans),
@@ -282,7 +295,9 @@ _TRANSITIONS_SCHEMA: dict[str, Any] = {
                     "difficulty": {"type": "integer", "enum": [1, 2, 3, 4, 5]},
                     "sound_prompt": {"type": "string"},
                 },
-                "required": ["motion_prompt", "difficulty", "sound_prompt"],
+                "required": [
+                    "pair_index", "motion_prompt", "difficulty", "sound_prompt",
+                ],
                 "additionalProperties": False,
             },
         }
@@ -297,6 +312,29 @@ def _json_schema_format(name: str, schema: dict[str, Any]) -> dict[str, Any]:
         "type": "json_schema",
         "json_schema": {"name": name, "strict": True, "schema": schema},
     }
+
+
+def _realign_by_pair_index(items: list[Any], count: int) -> list[Any]:
+    """Order transition items by their declared 1-based ``pair_index``.
+
+    On a real 20-frame plan the model slipped one pair mid-array, so a
+    transition landed on the wrong frame pair. Each item now declares which
+    pair it describes, and that declaration wins over array position. Falls
+    back to the given order when the indices are missing, out of range, or
+    duplicated — positional order is then the best remaining guess.
+    """
+    by_index: dict[int, Any] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            return items
+        try:
+            idx = int(item.get("pair_index"))
+        except (TypeError, ValueError):
+            return items
+        if not 1 <= idx <= count or idx in by_index:
+            return items
+        by_index[idx] = item
+    return [by_index.get(i, {}) for i in range(1, count + 1)]
 
 
 _STORYBOARD_JSON_SHAPE = (
@@ -543,14 +581,17 @@ class OpenAIClient:
             "Return ONLY valid JSON with this exact shape:\n"
             "{\n"
             '  "transitions": [\n'
-            '    {"motion_prompt": str, "difficulty": 1-5, '
-            '"sound_prompt": str}, ...\n'
+            '    {"pair_index": int, "motion_prompt": str, '
+            '"difficulty": 1-5, "sound_prompt": str}, ...\n'
             "  ]\n"
             "}\n"
             f"The transitions array must have exactly {n - 1} items, in frame "
-            "order (the first animates frame 001 into 002). Rate difficulty "
-            "by how much the two frames differ, per the system instructions; "
-            "clip lengths are derived from it."
+            "order. pair_index anchors each item to its frames: the item with "
+            "pair_index k animates frame k into frame k+1 (pair_index 1 = "
+            "frame 001 into 002), and its motion_prompt must END at exactly "
+            "what frame k+1 shows. Rate difficulty by how much the two frames "
+            "differ, per the system instructions; clip lengths are derived "
+            "from it."
         )
         if default_duration:
             instruction += (
@@ -603,7 +644,7 @@ class OpenAIClient:
         may be long (highest difficulty wins) so long clips stay the
         exception even if the model inflates its ratings.
         """
-        items = data.get("transitions") or []
+        items = _realign_by_pair_index(data.get("transitions") or [], count)
         long_indices = (
             set() if default_duration
             else self._select_long_clips(items, count)
