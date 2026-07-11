@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any, Callable, Optional, TypeVar
@@ -19,6 +20,13 @@ T = TypeVar("T")
 # Longest edge (px) for frames sent to the vision model. Low-detail vision uses
 # ~512px anyway, so anything bigger is pure upload weight.
 _VISION_MAX_EDGE = 768
+
+# At most this fraction of a video's clips may get the long (10s) duration.
+# The planner rates each pair's difficulty and code derives durations from it
+# (_coerce_transition_plans); the cap keeps the movie leaning on short, pacy
+# clips even when the model inflates its ratings — real plans have come back
+# all-5s and all-10s under prompt-side guidance alone.
+_LONG_CLIP_MAX_FRACTION = 1 / 3
 
 # Reword a prompt that OpenAI's safety filter wrongly flagged. The video pipeline
 # never intends harmful content, so flags are typically benign wording the filter
@@ -188,19 +196,19 @@ _MODE_A_SYSTEM = (
     "end frame read as a different child; the video model will then swap in "
     "a new character instead of keeping one. Never add people or children "
     "who are not visible in the frames. "
-    "DURATION: for each pair, first set hard_transition. It is true when ANY "
-    "of these hold: the people in the two frames differ (the "
-    "exit-and-entrance above); the location or setting changes between the "
-    "frames; the same person's clothing or overall appearance changes "
-    "noticeably; or your motion_prompt needs two or more sequential beats "
-    "('then', 'next') to carry the start frame into the end frame. Check the "
-    "two images, not your intentions — if the start frame is outdoors and "
-    "the end frame is on a bed indoors in a new outfit, that pair IS hard no "
-    "matter how smoothly you word the motion. Then duration follows "
-    "mechanically: 10 when hard_transition is true (cramming such a change "
-    "into 5 seconds makes the subject visibly teleport), 5 when it is false "
-    "(same people, same place, same outfit, one continuous action — short "
-    "clips keep the film pacy and interpolate more reliably). "
+    "DIFFICULTY: for each pair, rate difficulty 1-5 by how much the two "
+    "IMAGES differ — judge the pixels, not how gracefully you can word the "
+    "motion: 1 = same setting and outfit, one continuous action; 2 = small "
+    "change (light, pose, expression, camera); 3 = exactly ONE major change "
+    "(the setting changes OR the outfit changes, everything else carries "
+    "over); 4 = two major changes at once (setting AND outfit change, or a "
+    "multi-stage journey that must depart, travel, and settle); 5 = the "
+    "frames share almost nothing, or the people differ (the "
+    "exit-and-entrance above). Rate honestly and comparatively: in a family "
+    "photo-album movie most consecutive pairs change setting or outfit — "
+    "that alone is a 3, not a 4. Clip length is derived from this rating "
+    "(easy pairs get short, pacy clips; only the hardest get long ones), so "
+    "do not inflate it. "
     "SOUND: also write sound_prompt — a short phrase describing the diegetic "
     "ambient sound and sound effects for that clip (e.g. 'waves lapping, gulls "
     "calling, soft wind'). Real on-screen/world sounds only — no music, no "
@@ -267,17 +275,14 @@ _TRANSITIONS_SCHEMA: dict[str, Any] = {
                 "type": "object",
                 "properties": {
                     "motion_prompt": {"type": "string"},
-                    # Decided BEFORE duration (property order = generation
-                    # order) so the model must classify the pair against the
-                    # hard-transition checklist instead of defaulting to 5.
-                    "hard_transition": {"type": "boolean"},
-                    "duration": {"type": "integer", "enum": _DURATION_ENUM},
+                    # The model rates how much the two frames differ; the
+                    # DURATION is derived in code (_coerce_transition_plans),
+                    # not chosen by the model — prompt-side "prefer 5" biases
+                    # produced all-5s and all-10s plans on real projects.
+                    "difficulty": {"type": "integer", "enum": [1, 2, 3, 4, 5]},
                     "sound_prompt": {"type": "string"},
                 },
-                "required": [
-                    "motion_prompt", "hard_transition", "duration",
-                    "sound_prompt",
-                ],
+                "required": ["motion_prompt", "difficulty", "sound_prompt"],
                 "additionalProperties": False,
             },
         }
@@ -516,10 +521,12 @@ class OpenAIClient:
         """Vision-analyze consecutive frames and plan each clip between them.
 
         Returns one ``(motion_prompt, duration, sound_prompt)`` per consecutive
-        pair — exactly ``len(frames) - 1`` items, in frame order. The result is
-        always fully populated: any frame the model omits or returns malformed
-        falls back to ``config.motion_prompt`` / ``config.duration`` so the
-        caller can rely on the length and types.
+        pair — exactly ``len(frames) - 1`` items, in frame order. Durations are
+        derived from the model's per-pair difficulty ratings (see
+        ``_coerce_transition_plans``). The result is always fully populated:
+        any pair the model omits or returns malformed falls back to
+        ``config.motion_prompt`` and the short duration, so the caller can
+        rely on the length and types.
 
         When ``default_duration`` is set (5 or 10) every clip is forced to that
         length instead of one chosen per pair.
@@ -536,15 +543,14 @@ class OpenAIClient:
             "Return ONLY valid JSON with this exact shape:\n"
             "{\n"
             '  "transitions": [\n'
-            '    {"motion_prompt": str, "hard_transition": bool, '
-            '"duration": 5 | 10, "sound_prompt": str}, ...\n'
+            '    {"motion_prompt": str, "difficulty": 1-5, '
+            '"sound_prompt": str}, ...\n'
             "  ]\n"
             "}\n"
             f"The transitions array must have exactly {n - 1} items, in frame "
-            "order (the first animates frame 001 into 002). hard_transition "
-            "is true when the pair shows different people, a setting change, "
-            "a wardrobe change, or needs multi-beat action; duration is 10 "
-            "when hard_transition is true, else 5."
+            "order (the first animates frame 001 into 002). Rate difficulty "
+            "by how much the two frames differ, per the system instructions; "
+            "clip lengths are derived from it."
         )
         if default_duration:
             instruction += (
@@ -589,22 +595,48 @@ class OpenAIClient:
     def _coerce_transition_plans(
         self, data: dict[str, Any], count: int, default_duration: Optional[int]
     ) -> list[tuple[str, int, str]]:
-        """Normalise the model JSON into exactly `count` transition plans."""
+        """Normalise the model JSON into exactly `count` transition plans.
+
+        The clip length is derived here from the model's per-pair difficulty
+        rating, not taken from the model: difficulty 4-5 gets a long clip,
+        1-3 a short one, and at most ``_LONG_CLIP_MAX_FRACTION`` of the pairs
+        may be long (highest difficulty wins) so long clips stay the
+        exception even if the model inflates its ratings.
+        """
         items = data.get("transitions") or []
+        long_indices = (
+            set() if default_duration
+            else self._select_long_clips(items, count)
+        )
         plans: list[tuple[str, int, str]] = []
         for i in range(count):
             item = items[i] if i < len(items) and isinstance(items[i], dict) else {}
             motion = str(item.get("motion_prompt") or "").strip() or self.config.motion_prompt
-            duration = default_duration or self._coerce_duration(
-                item.get("duration"), self.config.duration
+            duration = default_duration or (
+                max(VALID_DURATIONS) if i in long_indices else min(VALID_DURATIONS)
             )
-            # The model's own hardness verdict wins over an inconsistent
-            # duration: a pair it called hard must not be squeezed into 5s.
-            if not default_duration and item.get("hard_transition") is True:
-                duration = max(VALID_DURATIONS)
             sound = str(item.get("sound_prompt") or "").strip()
             plans.append((motion, duration, sound))
         return plans
+
+    def _select_long_clips(self, items: list[Any], count: int) -> set[int]:
+        """Pick which pairs get the long duration from their difficulty ratings.
+
+        Difficulty >= 4 qualifies; if more than a third of the pairs qualify,
+        only the highest-rated (earliest on ties) keep the long clip.
+        """
+        def rating(i: int) -> int:
+            item = items[i] if i < len(items) and isinstance(items[i], dict) else {}
+            try:
+                d = int(item.get("difficulty"))
+            except (TypeError, ValueError):
+                return 3  # unrated -> ordinary pair, short clip
+            return min(5, max(1, d))
+
+        candidates = [i for i in range(count) if rating(i) >= 4]
+        cap = math.ceil(count * _LONG_CLIP_MAX_FRACTION)
+        candidates.sort(key=lambda i: (-rating(i), i))
+        return set(candidates[:cap])
 
     def _coerce_duration(self, value: Any, fallback: int) -> int:
         """Return `value` if it is a valid clip duration, else `fallback`."""

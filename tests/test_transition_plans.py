@@ -1,4 +1,4 @@
-"""openai_client._coerce_transition_plans: durations follow the hardness verdict."""
+"""openai_client._coerce_transition_plans: durations derive from difficulty."""
 from __future__ import annotations
 
 from ai_video_maker.clients.openai_client import OpenAIClient
@@ -10,33 +10,45 @@ def _plans(config, data, count, default_duration=None):
     )
 
 
+def _item(difficulty, motion="m", sound="s"):
+    return {"motion_prompt": motion, "difficulty": difficulty,
+            "sound_prompt": sound}
+
+
+def _durations(plans):
+    return [d for _, d, _ in plans]
+
+
 class TestCoerceTransitionPlans:
-    def test_hard_transition_forces_10_over_inconsistent_5(self, config):
-        data = {"transitions": [
-            {"motion_prompt": "m", "hard_transition": True, "duration": 5,
-             "sound_prompt": "s"},
-        ]}
-        assert _plans(config, data, 1) == [("m", 10, "s")]
+    def test_difficulty_4_and_5_get_long_clips(self, config):
+        data = {"transitions": [_item(1), _item(3), _item(4), _item(5),
+                                _item(2), _item(3)]}
+        assert _durations(_plans(config, data, 6)) == [5, 5, 10, 10, 5, 5]
 
-    def test_easy_transition_keeps_model_duration(self, config):
-        data = {"transitions": [
-            {"motion_prompt": "m", "hard_transition": False, "duration": 5,
-             "sound_prompt": "s"},
-            {"motion_prompt": "m2", "hard_transition": False, "duration": 10,
-             "sound_prompt": "s2"},
-        ]}
-        assert _plans(config, data, 2) == [("m", 5, "s"), ("m2", 10, "s2")]
+    def test_long_clips_capped_at_a_third_highest_difficulty_wins(self, config):
+        # 5 of 6 pairs claim to be hard; only ceil(6/3)=2 stay long, and the
+        # difficulty-5 pairs outrank the 4s.
+        data = {"transitions": [_item(4), _item(5), _item(4), _item(5),
+                                _item(4), _item(1)]}
+        assert _durations(_plans(config, data, 6)) == [5, 10, 5, 10, 5, 5]
 
-    def test_default_duration_overrides_hardness(self, config):
-        data = {"transitions": [
-            {"motion_prompt": "m", "hard_transition": True, "duration": 10,
-             "sound_prompt": "s"},
-        ]}
-        assert _plans(config, data, 1, default_duration=5) == [("m", 5, "s")]
+    def test_tie_break_prefers_earlier_pairs(self, config):
+        data = {"transitions": [_item(4), _item(4), _item(4)]}
+        assert _durations(_plans(config, data, 3)) == [10, 5, 5]
 
-    def test_missing_items_fall_back_to_config(self, config):
+    def test_default_duration_overrides_difficulty(self, config):
+        data = {"transitions": [_item(5)]}
+        assert _durations(_plans(config, data, 1, default_duration=5)) == [5]
+
+    def test_unrated_or_malformed_pairs_stay_short(self, config):
+        data = {"transitions": [{"motion_prompt": "m", "sound_prompt": "s"},
+                                {"motion_prompt": "m", "difficulty": "hard",
+                                 "sound_prompt": "s"}]}
+        assert _durations(_plans(config, data, 2)) == [5, 5]
+
+    def test_missing_items_fall_back_to_config_motion(self, config):
         plans = _plans(config, {"transitions": []}, 2)
         assert plans == [
-            (config.motion_prompt, config.duration, ""),
-            (config.motion_prompt, config.duration, ""),
+            (config.motion_prompt, 5, ""),
+            (config.motion_prompt, 5, ""),
         ]

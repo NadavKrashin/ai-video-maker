@@ -51,15 +51,15 @@ Core design rules:
   "the scene shifts to a toddler ...". Both made Kling swap in a
   different-looking kid mid-story on a real project. Enforced in
   `_MODE_A_SYSTEM` ("SAME PERSON, ONE PROTAGONIST").
-- Clip durations must LEAN SHORT: 5s by default, 10s only for HARD
-  transitions. "Hard" is a concrete checklist, not vibes: different people
-  between the frames, a location/setting change, a noticeable wardrobe or
-  appearance change, or a motion prompt needing 2+ sequential beats. The
-  user rejected planners that hand out 10s freely, but a hard pair squeezed
-  into 5s makes the subject visibly teleport (seen in a real render), so
-  don't over-tighten either. Encoded in `_STORYBOARD_SYSTEM` and
-  `_MODE_A_SYSTEM` (clients/openai_client.py); keep both sides of that
-  balance when touching the duration guidance.
+- Clip durations must LEAN SHORT, and prompt-side bias alone cannot deliver
+  it: real plans came back all-5s under "prefer 5" and all-10s under a
+  hard-transition checklist (in a photo-album movie nearly every pair
+  changes setting or outfit). The planner therefore only RATES each pair's
+  difficulty 1-5 (3 = one major change, 4 = two at once, 5 = shares almost
+  nothing / different people) and code derives durations: >=4 → 10s, capped
+  at 1/3 of clips (`_LONG_CLIP_MAX_FRACTION`, `_select_long_clips` in
+  clients/openai_client.py). A hard pair squeezed into 5s visibly teleports
+  (seen in a real render), so keep both sides of the balance.
 - Styling must preserve LIKENESS while being an unmistakable Pixar-style
   cartoon: the whole scene (people, clothing, background) renders as a
   stylized 3D animated film still — never near-photorealistic — but with

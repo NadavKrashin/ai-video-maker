@@ -59,8 +59,8 @@ class TestCoerceTransitionPlans:
     def test_fills_missing_and_malformed(self, config):
         client = self._client(config)
         data = {"transitions": [
-            {"motion_prompt": "pan", "duration": 10, "sound_prompt": "wind"},
-            {"motion_prompt": "", "duration": 7},  # blank prompt, bad duration
+            {"motion_prompt": "pan", "difficulty": 5, "sound_prompt": "wind"},
+            {"motion_prompt": "", "difficulty": None},  # blank prompt, unrated
         ]}
         plans = client._coerce_transition_plans(data, count=3, default_duration=None)
         assert plans[0] == ("pan", 10, "wind")
@@ -69,7 +69,7 @@ class TestCoerceTransitionPlans:
 
     def test_default_duration_overrides_all(self, config):
         client = self._client(config)
-        data = {"transitions": [{"motion_prompt": "x", "duration": 10}]}
+        data = {"transitions": [{"motion_prompt": "x", "difficulty": 5}]}
         plans = client._coerce_transition_plans(data, count=1, default_duration=5)
         assert plans[0][1] == 5
 
