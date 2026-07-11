@@ -166,6 +166,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "before everything else, normalized to the movie's "
                          "frame size. Overrides the intro_clip config key "
                          "for this run.")
+    sp.add_argument("--final", action="store_true",
+                    help="Shorthand for the full presentation: --intro "
+                         "--credits-photos in one flag (an explicit "
+                         "--no-intro / --no-credits-photos still wins).")
 
     command("status",
             "Show the project's progress (frames, storyboard, clips, final "

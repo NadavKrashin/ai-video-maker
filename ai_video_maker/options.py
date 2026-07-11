@@ -53,6 +53,16 @@ class RunOptions:
         def get(name: str, default=None):
             return getattr(args, name, default)
 
+        # --final is CLI shorthand for the full presentation package; an
+        # explicit per-flag choice (--no-intro etc.) still wins over it.
+        final = bool(get("final"))
+
+        def presentation(name: str):
+            explicit = get(name)
+            if explicit is None and final:
+                return True
+            return explicit
+
         return cls(
             force=bool(get("force")),
             dry_run=bool(get("dry_run")),
@@ -70,7 +80,7 @@ class RunOptions:
             add_audio=bool(get("add_audio")),
             no_audio=bool(get("no_audio")),
             no_combine=bool(get("no_combine")),
-            credits_photos=get("credits_photos"),
+            credits_photos=presentation("credits_photos"),
             closing_letter=get("letter"),
-            intro_clip=get("intro"),
+            intro_clip=presentation("intro"),
         )

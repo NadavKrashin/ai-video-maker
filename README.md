@@ -227,6 +227,9 @@ is only rebuilt with `--force`.
 **Presentation extras (optional, off by default).** All pure local ffmpeg,
 no API cost:
 
+- `--final`: shorthand for the full presentation package — `--intro
+  --credits-photos` in one flag. An explicit `--no-intro` /
+  `--no-credits-photos` still wins over it.
 - `--intro` (config: `intro_clip`): drop your own intro video at `intro.mp4`
   in the repo root — it's **shared by every project** — and it plays before
   everything else, scaled to fit the movie's frame size on black pads — never
@@ -281,7 +284,7 @@ project name as its first argument.
 | `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
 | `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 5\|10`, `--add-audio`, `--no-audio` |
 | `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-prompt`, `--music-file PATH` |
-| `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--add-audio`, `--no-audio`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter` |
+| `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--add-audio`, `--no-audio`, `--final`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter` |
 | `status` | — |
 | `run` | everything above except `--clip`, plus `--no-combine` |
 
