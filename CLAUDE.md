@@ -60,6 +60,11 @@ Core design rules:
   at 1/3 of clips (`_LONG_CLIP_MAX_FRACTION`, `_select_long_clips` in
   clients/openai_client.py). A hard pair squeezed into 5s visibly teleports
   (seen in a real render), so keep both sides of the balance.
+- With ~20 frames in one vision call the planner can slip a pair mid-array
+  (a transition describing the PREVIOUS pair — happened on a real plan).
+  Every transition therefore declares a `pair_index` that code re-aligns by
+  (`_realign_by_pair_index`), and motion prompts must END at exactly what
+  the end frame shows. Don't remove either guard.
 - Styling must preserve LIKENESS while being an unmistakable Pixar-style
   cartoon: the whole scene (people, clothing, background) renders as a
   stylized 3D animated film still — never near-photorealistic — but with
