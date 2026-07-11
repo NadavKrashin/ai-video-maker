@@ -44,6 +44,13 @@ Core design rules:
 - Transition motion prompts must describe in-world subject action, not camera
   moves (see `_MODE_A_SYSTEM` in `clients/openai_client.py`); the user
   explicitly rejects "zoom/pan/pull-back" slideshow-style prompts.
+- Motion prompts are BEAT-BUDGETED to the clip length: 5s = exactly one
+  continuous action, 10s = max two beats. User-verified on a real clip: an
+  overloaded 5s prompt (lift-carry-seat-examine) made Kling swap in another
+  kid, while a rewritten single-action prompt ("kid runs to the patio ...")
+  rendered fine. Kling also can't show cross-ground travel when the subject
+  fills both frames — stage exit-past-camera + re-entry, or world morphs
+  around a steady subject, instead.
 - When a pair's two frames show DIFFERENT people, the motion prompt must stage
   an exit-and-entrance (or reveal) — never continuous identity: Kling morphs
   one person into the other otherwise, which the user finds creepy. Same

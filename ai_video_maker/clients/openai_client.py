@@ -197,12 +197,21 @@ _MODE_A_SYSTEM = (
     "out. (The same person at a different age or in different clothes is "
     "still the same person — continuous growth or change is fine there.) "
     "Do not describe editing effects ('crossfade', 'dissolve', 'transition', "
-    "'morph') — describe continuous physical motion only. Keep each "
-    "motion_prompt concrete and compact (one to three short sentences), in "
-    "present tense; preserve each person's identity, wardrobe, and "
-    "environment except for the changes visible between the frames; no hard "
-    "cuts, no people who appear in neither frame, no on-screen text. Do not "
-    "mention frame numbers or that these are AI-generated images. "
+    "'morph') — describe continuous physical motion only. "
+    "BEAT BUDGET: rate the pair's difficulty BEFORE writing the motion, "
+    "because the rating sets the clip's length and the length sets how much "
+    "can happen. Difficulty 1-3 = a 5-second clip = exactly ONE continuous "
+    "action, one or two short sentences ('the toddler runs to the patio "
+    "chair and settles onto it, picking up the corn cob'). Difficulty 4-5 = "
+    "up to 10 seconds = at most TWO beats. A prompt with more beats than "
+    "the clip can hold does not get compressed — the model drops or fakes "
+    "the beats, typically by swapping in a different-looking person "
+    "(a real 5-second lift-carry-seat-and-examine prompt came out as "
+    "another child entering the frame). Keep every motion_prompt in present "
+    "tense; preserve each person's identity, wardrobe, and environment "
+    "except for the changes visible between the frames; no hard cuts, no "
+    "people who appear in neither frame, no on-screen text. Do not mention "
+    "frame numbers or that these are AI-generated images. "
     "SAME PERSON, ONE PROTAGONIST: when both frames show the same individual "
     "— even at a different age, in different clothes, or in a new setting — "
     "write the prompt so there is unmistakably ONE person throughout. Say it "
@@ -292,22 +301,24 @@ _TRANSITIONS_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "properties": {
-                    # Declared FIRST (property order = generation order) so
-                    # the model anchors on which frame pair it is describing
-                    # before writing the motion. A real 20-frame plan slipped
-                    # by one pair mid-array; code re-aligns by this index
-                    # (_realign_by_pair_index).
+                    # Property order = generation order, and it matters:
+                    # pair_index first so the model anchors on which frame
+                    # pair it is describing (a real 20-frame plan slipped by
+                    # one pair mid-array; code re-aligns by this index in
+                    # _realign_by_pair_index), then difficulty so the beat
+                    # budget of the motion prompt can depend on the clip
+                    # length that will be derived from it.
                     "pair_index": {"type": "integer"},
-                    "motion_prompt": {"type": "string"},
                     # The model rates how much the two frames differ; the
                     # DURATION is derived in code (_coerce_transition_plans),
                     # not chosen by the model — prompt-side "prefer 5" biases
                     # produced all-5s and all-10s plans on real projects.
                     "difficulty": {"type": "integer", "enum": [1, 2, 3, 4, 5]},
+                    "motion_prompt": {"type": "string"},
                     "sound_prompt": {"type": "string"},
                 },
                 "required": [
-                    "pair_index", "motion_prompt", "difficulty", "sound_prompt",
+                    "pair_index", "difficulty", "motion_prompt", "sound_prompt",
                 ],
                 "additionalProperties": False,
             },
@@ -592,8 +603,8 @@ class OpenAIClient:
             "Return ONLY valid JSON with this exact shape:\n"
             "{\n"
             '  "transitions": [\n'
-            '    {"pair_index": int, "motion_prompt": str, '
-            '"difficulty": 1-5, "sound_prompt": str}, ...\n'
+            '    {"pair_index": int, "difficulty": 1-5, '
+            '"motion_prompt": str, "sound_prompt": str}, ...\n'
             "  ]\n"
             "}\n"
             f"The transitions array must have exactly {n - 1} items, in frame "
@@ -602,7 +613,8 @@ class OpenAIClient:
             "frame 001 into 002), and its motion_prompt must END at exactly "
             "what frame k+1 shows. Rate difficulty by how much the two frames "
             "differ, per the system instructions; clip lengths are derived "
-            "from it."
+            "from it, so budget the motion's beats accordingly (1-3: one "
+            "action; 4-5: at most two)."
         )
         if default_duration:
             instruction += (
