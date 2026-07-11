@@ -558,16 +558,36 @@ class Pipeline:
     def _invalidate_stale_clips(self, stale_tids: list[str]) -> None:
         """Delete rendered clips whose frames changed, so `render` redoes them.
 
-        Also clears their clip/SFX/fade state; without this a re-rendered clip
-        would skip its audio as "done" from the previous file.
+        Rendered clips cost real credits to recreate, so the deletion is
+        listed and gated on confirmation — a broad re-style must not silently
+        wipe a whole project's clips. Declining keeps the files (render will
+        then skip them as done, even though they no longer match the frames).
+
+        Also clears the deleted clips' clip/SFX/fade state; without this a
+        re-rendered clip would skip its audio as "done" from the previous
+        file.
         """
-        for tid in stale_tids:
-            clip = self.workspace.clips_dir / f"{tid}.mp4"
-            if not clip.exists():
-                continue
-            if self.dry_run:
+        clips = [self.workspace.clips_dir / f"{tid}.mp4" for tid in stale_tids]
+        clips = [c for c in clips if c.exists()]
+        if not clips:
+            return
+        if self.dry_run:
+            for clip in clips:
                 logger.info("[dry-run] would invalidate stale clip %s", clip.name)
-                continue
+            return
+        lines = [
+            f"{len(clips)} already-rendered clip(s) are STALE (a frame next to "
+            "them was re-styled) and no longer match the styled images:"
+        ] + [f"  {c.name}" for c in clips]
+        if not self._ask(
+            lines,
+            f"Delete {len(clips)} stale clip(s) so `render` regenerates them "
+            "(spends video credits)? [y/N] ",
+            "Keeping the stale clips; `render` will treat them as done. "
+            "Delete the files under clips/ yourself when you want them redone.",
+        ):
+            return
+        for clip in clips:
             clip.unlink()
             self.state.clear(
                 f"clip:{clip.name}", f"sfx:{clip.name}", f"fade:{clip.name}"

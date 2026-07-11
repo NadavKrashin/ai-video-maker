@@ -277,6 +277,38 @@ class TestReconcileStoryboard:
         assert not p.state.is_done("sfx:a_to_b.mp4")
         assert not p.state.is_done("fade:a_to_b.mp4")
 
+    def test_invalidate_stale_clips_declined_keeps_clips_and_state(
+        self, config, workspace
+    ):
+        from ai_video_maker.options import RunOptions
+        from ai_video_maker.runner import Pipeline
+
+        asked = []
+
+        def deny(lines, question):
+            asked.append(question)
+            return False
+
+        p = Pipeline(config, workspace, RunOptions(), confirm=deny)
+        clip = _touch(workspace.clips_dir / "a_to_b.mp4")
+        p.state.set("sfx:a_to_b.mp4", "done")
+        p._invalidate_stale_clips(["a_to_b"])
+        assert clip.exists()
+        assert p.state.is_done("sfx:a_to_b.mp4")
+        assert len(asked) == 1  # rendered clips are never deleted silently
+
+    def test_invalidate_stale_clips_no_files_never_asks(
+        self, config, workspace
+    ):
+        from ai_video_maker.options import RunOptions
+        from ai_video_maker.runner import Pipeline
+
+        def fail_ask(lines, question):  # pragma: no cover - must not be hit
+            raise AssertionError("should not ask when nothing exists")
+
+        p = Pipeline(config, workspace, RunOptions(), confirm=fail_ask)
+        p._invalidate_stale_clips(["a_to_b", "b_to_c"])  # no clip files
+
 
 class TestStyledTargets:
     def test_slug_naming_by_default(self, pipeline, workspace):
