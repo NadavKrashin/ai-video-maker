@@ -258,6 +258,39 @@ class TestReconcileStoryboard:
         assert replanned == ["a_to_b", "b_to_c"]
         assert stale == ["a_to_b", "b_to_c"]
 
+    def test_touched_but_identical_frames_are_not_stale(
+        self, make_pipeline, workspace
+    ):
+        # The real-world wipeout: a sync tool bumped every styled image's
+        # mtime without changing content, and mtime-based staleness deleted
+        # every rendered clip. Content hashes must shrug that off.
+        p = self._pipeline(make_pipeline)
+        pairs = _make_frame_pairs(workspace, ["a", "b", "c"])
+        first, _, _ = p._reconcile_storyboard(None, pairs)  # records hashes
+        first.save(workspace.default_storyboard_json)
+        saved = Storyboard.load(workspace.default_storyboard_json)
+        future = time.time() + 50
+        for n in ("a", "b", "c"):
+            os.utime(workspace.styled_images_dir / f"{n}.png", (future, future))
+        sb, replanned, stale = p._reconcile_storyboard(saved, pairs)
+        assert replanned == [] and stale == []
+
+    def test_changed_content_is_stale_even_with_old_mtime(
+        self, make_pipeline, workspace
+    ):
+        p = self._pipeline(make_pipeline)
+        pairs = _make_frame_pairs(workspace, ["a", "b", "c"])
+        first, _, _ = p._reconcile_storyboard(None, pairs)
+        first.save(workspace.default_storyboard_json)
+        saved = Storyboard.load(workspace.default_storyboard_json)
+        b = workspace.styled_images_dir / "b.png"
+        b.write_bytes(b"restyled content")
+        past = time.time() - 50  # mtime says "unchanged"; content says otherwise
+        os.utime(b, (past, past))
+        sb, replanned, stale = p._reconcile_storyboard(saved, pairs)
+        assert replanned == ["a_to_b", "b_to_c"]
+        assert stale == ["a_to_b", "b_to_c"]
+
     def test_no_saved_storyboard_plans_all(self, make_pipeline, workspace):
         p = self._pipeline(make_pipeline)
         pairs = _make_frame_pairs(workspace, ["a", "b", "c"])

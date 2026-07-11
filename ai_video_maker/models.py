@@ -19,6 +19,11 @@ class Frame(BaseModel):
     # (workspace-relative). Lets the pipeline detect that a styled file no
     # longer matches its source (inputs swapped/reordered) and re-style it.
     source_path: str = ""
+    # SHA-1 of the styled image when the storyboard was saved. Staleness of
+    # transitions/clips is decided by comparing content hashes, because file
+    # mtimes lie: a cloud-sync client re-materializing untouched files once
+    # made every frame look "changed" and wiped a project's rendered clips.
+    styled_hash: str = ""
 
 
 class Transition(BaseModel):

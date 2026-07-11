@@ -31,7 +31,11 @@ Core design rules:
 - A styled image is re-styled when its source is newer or when
   `Frame.source_path` shows it came from a different file — gated on a
   confirmation because it spends credits. When a frame changes, its adjacent
-  clips are deleted (stale) so `render` redoes them.
+  clips are deleted (stale) so `render` redoes them — but staleness is
+  decided by CONTENT HASH (`Frame.styled_hash`), never by mtime, and the
+  deletion is confirm-gated: a cloud-sync client once bumped every styled
+  image's mtime and the old mtime heuristic silently wiped a project's
+  rendered clips (real money). Keep both protections.
 - **No `input()` or other stdin use inside `ai_video_maker/`** — all
   interactivity lives in `cli.py` via the injected `confirm` callback.
 - Resume is existence-based for files (styled images, clips) and

@@ -14,6 +14,7 @@ individually instead.
 """
 from __future__ import annotations
 
+import hashlib
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -61,6 +62,17 @@ ConfirmFn = Callable[[list[str], str], bool]
 
 # One planned clip: (start_frame, end_frame, motion_prompt, duration, sound_prompt)
 ClipPair = tuple[Path, Path, str, int, str]
+
+
+def _file_sha1(path: Path) -> str:
+    """Content hash of a file ("" if missing); used for staleness detection."""
+    if not path.exists():
+        return ""
+    digest = hashlib.sha1()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _fit_credits_and_letter(
@@ -440,6 +452,7 @@ class Pipeline:
         are unchanged, only the plan around them is new.)
         """
         root = self.workspace.root
+        hashes = {dst: _file_sha1(dst) for _, dst in frame_pairs}
         frames = [
             Frame(
                 id=self._frame_id(dst),
@@ -447,6 +460,7 @@ class Pipeline:
                 image_prompt="",
                 output_path=dst.relative_to(root).as_posix(),
                 source_path=src.relative_to(root).as_posix(),
+                styled_hash=hashes[dst],
             )
             for src, dst in frame_pairs
         ]
@@ -456,9 +470,23 @@ class Pipeline:
         sb_path = self.workspace.default_storyboard_json
         sb_mtime = sb_path.stat().st_mtime if (saved and sb_path.exists()) else 0.0
         styled_paths = [dst for _, dst in frame_pairs]
+        recorded_hashes = {
+            f.output_path: f.styled_hash
+            for f in (saved.frames if saved else [])
+            if f.styled_hash
+        }
 
         def frame_changed(p: Path) -> bool:
-            return p.exists() and p.stat().st_mtime > sb_mtime
+            if not p.exists():
+                return False
+            # Content comparison first: mtimes lie (a cloud-sync client
+            # re-materializing untouched files once made every frame look
+            # "changed" and wiped a project's rendered clips).
+            recorded = recorded_hashes.get(p.relative_to(root).as_posix())
+            if recorded:
+                return hashes.get(p, "") != recorded
+            # Storyboards saved before hashes existed: mtime heuristic.
+            return p.stat().st_mtime > sb_mtime
 
         saved_tr = {
             (t.start_frame, t.end_frame): t
