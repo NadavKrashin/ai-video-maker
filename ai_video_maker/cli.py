@@ -149,11 +149,6 @@ def build_parser() -> argparse.ArgumentParser:
     _add_audio_flags(sp)
     sp.add_argument("--music-file", default=None,
                     help="Use this audio file as the music bed.")
-    sp.add_argument("--opening-reveal", action=argparse.BooleanOptionalAction,
-                    default=None,
-                    help="Open the movie on the real (unstyled) first photo, "
-                         "then crossfade into the first clip. Overrides the "
-                         "opening_reveal config key for this run.")
     sp.add_argument("--credits-photos", action=argparse.BooleanOptionalAction,
                     default=None,
                     help="Append the original photos as an end-credits "

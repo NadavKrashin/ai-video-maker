@@ -229,14 +229,10 @@ no API cost:
 
 - `--intro` (config: `intro_clip`): drop your own intro video at `intro.mp4`
   in the repo root — it's **shared by every project** — and it plays before
-  everything else (before the opening reveal too), scaled to fit the movie's
-  frame size on black pads — never cropped. Its own audio is kept, with the
-  music bed mixed over it. The `intro_file` config key relocates it (repo-root
-  relative or absolute), and a per-project `config.json` can override it for
-  one movie.
-- `--opening-reveal` (config: `opening_reveal`): the movie opens on the real,
-  unstyled first photo, holds ~1.6s (`opening_reveal_hold_seconds`), then
-  crossfades into the first clip — "the photo comes alive".
+  everything else, scaled to fit the movie's frame size on black pads — never
+  cropped. Its own audio is kept, with the music bed mixed over it. The
+  `intro_file` config key relocates it (repo-root relative or absolute), and
+  a per-project `config.json` can override it for one movie.
 - `--credits-photos` (config: `credits_photos`): after the last clip, the
   original photos play as an end-credits montage, ~1.5s each
   (`credits_seconds_per_photo`), in movie order, under the same music bed.
@@ -258,11 +254,11 @@ no API cost:
 Portrait photos are fitted whole onto a blurred background — nothing gets
 cropped. The photos come from the storyboard's recorded sources
 (`source_path`), so the montage stays in sync with edits automatically. Use
-`--no-intro` / `--no-opening-reveal` / `--no-credits-photos` / `--no-letter`
-to override config for one run.
+`--no-intro` / `--no-credits-photos` / `--no-letter` to override config for
+one run.
 
 Rendered segments live in `output/segments/` and are **reused** on the next
-combine as long as their inputs (the photo, the first clip, `letter.txt`,
+combine as long as their inputs (the intro video, the photos, `letter.txt`,
 the config files) haven't changed since; edit any input and only the affected
 segment is re-rendered. Delete `output/segments/` to force a full redo.
 
@@ -285,7 +281,7 @@ project name as its first argument.
 | `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
 | `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 5\|10`, `--add-audio`, `--no-audio` |
 | `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-prompt`, `--music-file PATH` |
-| `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--add-audio`, `--no-audio`, `--[no-]intro`, `--[no-]opening-reveal`, `--[no-]credits-photos`, `--[no-]letter` |
+| `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--add-audio`, `--no-audio`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter` |
 | `status` | — |
 | `run` | everything above except `--clip`, plus `--no-combine` |
 

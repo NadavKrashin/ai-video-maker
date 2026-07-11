@@ -11,7 +11,6 @@ from ai_video_maker.media.ffmpeg import (
     _letter_overlay_cmd,
     _letter_scroll_cmd,
     _mux_music_cmd,
-    _opening_reveal_cmd,
     _photo_fit_filter,
     _photo_still_cmd,
     find_generated_clips,
@@ -143,18 +142,6 @@ class TestPhotoSegments:
         graph = cmd[cmd.index("-filter_complex") + 1]
         assert "fade=t=in" in graph and "fade=t=out:st=2.000" in graph
 
-    def test_reveal_cmd_crossfades_at_hold_offset(self):
-        cmd = _opening_reveal_cmd(
-            Path("p.jpg"), Path("c.mp4"), Path("out.mp4"), 1920, 1080,
-            hold=1.6, fade=0.8, clip_has_audio=True,
-        )
-        graph = cmd[cmd.index("-filter_complex") + 1]
-        assert "xfade=transition=fade:duration=0.800:offset=1.600" in graph
-        # still must last hold+fade so the crossfade has frames to blend with
-        assert cmd[cmd.index("-t") + 1] == "2.400"
-        # clip audio delayed by the hold so sound starts as the photo wakes
-        assert "adelay=1600" in graph and "[a]" in graph
-
     def test_letter_scroll_travels_full_image(self):
         # 3240 tall - 1080 window = 2160px of travel at 154.286 px/s -> ~14s
         cmd = _letter_scroll_cmd(
@@ -208,14 +195,6 @@ class TestPhotoSegments:
         )
         joined = " ".join(cmd)
         assert "-c:a" not in joined and "0:a" not in joined
-
-    def test_reveal_cmd_silent_clip_maps_no_audio(self):
-        cmd = _opening_reveal_cmd(
-            Path("p.jpg"), Path("c.mp4"), Path("out.mp4"), 1920, 1080,
-            hold=1.0, fade=0.8, clip_has_audio=False,
-        )
-        joined = " ".join(cmd)
-        assert "adelay" not in joined and "-c:a" not in joined
 
 
 class TestFindGeneratedClips:

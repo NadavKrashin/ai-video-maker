@@ -451,7 +451,6 @@ class TestPresentationSegments:
 
         monkeypatch.setattr(runner_mod, "render_photo_still", stub("still", 1))
         monkeypatch.setattr(runner_mod, "render_intro_segment", stub("intro", 1))
-        monkeypatch.setattr(runner_mod, "render_opening_reveal", stub("reveal", 2))
         monkeypatch.setattr(runner_mod, "render_letter_scroll", stub("scroll", 1))
         monkeypatch.setattr(runner_mod, "render_letter_overlay", stub("overlay", 2))
         monkeypatch.setattr(runner_mod, "combine_clips", stub("concat", 1))
@@ -483,20 +482,11 @@ class TestPresentationSegments:
             "credits_002_1.50s.mp4",
         ]
 
-    def test_reveal_replaces_first_clip(self, make_pipeline, workspace, monkeypatch):
-        self._stub_renderers(monkeypatch)
-        p = make_pipeline(opening_reveal=True)
-        clips = self._project(workspace)
-        segments, added = p._presentation_segments(clips)
-        assert added is True
-        assert segments[0].name == "opening_reveal.mp4"
-        assert segments[1:] == clips[1:]
-
     def test_no_recorded_sources_skips_cleanly(
         self, make_pipeline, workspace, monkeypatch
     ):
         self._stub_renderers(monkeypatch)
-        p = make_pipeline(credits_photos=True, opening_reveal=True)
+        p = make_pipeline(credits_photos=True)
         # storyboard whose frames carry no source_path (legacy / Mode B)
         _write_frames(workspace, range(1, 4))
         _storyboard(workspace, 3).save(workspace.default_storyboard_json)
@@ -506,14 +496,12 @@ class TestPresentationSegments:
 
     def test_cli_override_beats_config(self, make_pipeline):
         p = make_pipeline(
-            credits_photos=False, opening_reveal=False, closing_letter=False,
-            intro_clip=False,
+            credits_photos=False, closing_letter=False, intro_clip=False,
         )
         p.config.credits_photos = True
-        p.config.opening_reveal = True
         p.config.closing_letter = True
         p.config.intro_clip = True
-        assert p._presentation_flags() == (False, False, False, False)
+        assert p._presentation_flags() == (False, False, False)
 
     def _global_intro(self, pipeline, workspace) -> Path:
         """Point the shared intro at a tmp file (never the real repo root)."""
@@ -542,20 +530,6 @@ class TestPresentationSegments:
         segments, added = p._presentation_segments(clips)
         assert segments == clips and added is False
         assert "intro" not in calls
-
-    def test_intro_comes_before_the_opening_reveal(
-        self, make_pipeline, workspace, monkeypatch
-    ):
-        self._stub_renderers(monkeypatch)
-        p = make_pipeline(intro_clip=True, opening_reveal=True)
-        clips = self._project(workspace)
-        self._global_intro(p, workspace)
-        segments, added = p._presentation_segments(clips)
-        assert added is True
-        assert [s.name for s in segments[:2]] == [
-            "intro.mp4", "opening_reveal.mp4",
-        ]
-        assert segments[2:] == clips[1:]
 
     def test_intro_source_resolves_against_repo_root(self, pipeline):
         from ai_video_maker.workspace import PROJECT_ROOT
@@ -600,9 +574,10 @@ class TestPresentationSegments:
     ):
         calls = self._stub_renderers(monkeypatch)
         p = make_pipeline(
-            opening_reveal=True, credits_photos=True, closing_letter=True
+            intro_clip=True, credits_photos=True, closing_letter=True
         )
         clips = self._project(workspace)
+        self._global_intro(p, workspace)
         workspace.letter_file.write_text("שלום", encoding="utf-8")
         first, added = p._presentation_segments(clips)
         assert added is True
@@ -618,16 +593,17 @@ class TestPresentationSegments:
     ):
         calls = self._stub_renderers(monkeypatch)
         p = make_pipeline(
-            opening_reveal=True, credits_photos=True, closing_letter=True
+            intro_clip=True, credits_photos=True, closing_letter=True
         )
         clips = self._project(workspace)
+        self._global_intro(p, workspace)
         workspace.letter_file.write_text("שלום", encoding="utf-8")
         p._presentation_segments(clips)
         calls.clear()
         future = time.time() + 50
         os.utime(workspace.letter_file, (future, future))  # letter edited
         p._presentation_segments(clips)
-        assert "reveal" not in calls              # untouched -> reused
+        assert "intro" not in calls               # untouched -> reused
         assert "overlay" in calls                 # letter section redone
 
 

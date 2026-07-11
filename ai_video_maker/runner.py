@@ -38,7 +38,6 @@ from .media.ffmpeg import (
     render_intro_segment,
     render_letter_overlay,
     render_letter_scroll,
-    render_opening_reveal,
     render_photo_still,
 )
 from .media.letter import find_letter_font, render_letter_image
@@ -1166,13 +1165,10 @@ class Pipeline:
                 "[dry-run] would combine %d clip(s) into %s",
                 len(clips), final_video,
             )
-            intro, reveal, credits, letter = self._presentation_flags()
+            intro, credits, letter = self._presentation_flags()
             if intro:
                 logger.info("[dry-run] would prepend the intro clip from %s",
                             self._intro_source())
-            if reveal:
-                logger.info("[dry-run] would open on the real first photo "
-                            "(crossfade into the first clip)")
             if credits:
                 logger.info("[dry-run] would append the original photos as "
                             "an end-credits montage")
@@ -1229,18 +1225,12 @@ class Pipeline:
             except Exception as exc:  # noqa: BLE001 - cosmetic, never fatal
                 logger.warning("End fade skipped: %s", exc)
 
-    def _presentation_flags(self) -> tuple[bool, bool, bool, bool]:
-        """(intro_clip, opening_reveal, credits_photos, closing_letter):
-        CLI wins over config."""
+    def _presentation_flags(self) -> tuple[bool, bool, bool]:
+        """(intro_clip, credits_photos, closing_letter): CLI wins over config."""
         intro = (
             self.options.intro_clip
             if self.options.intro_clip is not None
             else self.config.intro_clip
-        )
-        reveal = (
-            self.options.opening_reveal
-            if self.options.opening_reveal is not None
-            else self.config.opening_reveal
         )
         credits = (
             self.options.credits_photos
@@ -1252,7 +1242,7 @@ class Pipeline:
             if self.options.closing_letter is not None
             else self.config.closing_letter
         )
-        return intro, reveal, credits, letter
+        return intro, credits, letter
 
     def _original_photo_sources(self) -> list[tuple[str, Path]]:
         """(frame id, original photo path) per storyboard frame, in order.
@@ -1282,7 +1272,6 @@ class Pipeline:
         """Wrap the clip list with the optional presentation segments.
 
         intro_clip prepends the user's own intro video before everything;
-        opening_reveal replaces the first clip with photo→crossfade→clip;
         credits_photos appends one still per original photo. Segments are
         cheap local ffmpeg renders, so they're rebuilt on every combine (no
         state tracking to invalidate). Returns the segment list plus whether
@@ -1290,18 +1279,18 @@ class Pipeline:
         stream-copying, because the stills' encoding differs from the
         provider clips'.
         """
-        intro, reveal, credits, letter = self._presentation_flags()
-        if not (intro or reveal or credits or letter) or not clips:
+        intro, credits, letter = self._presentation_flags()
+        if not (intro or credits or letter) or not clips:
             return clips, False
-        sources = self._original_photo_sources() if (reveal or credits) else []
-        if (reveal or credits) and not sources:
+        sources = self._original_photo_sources() if credits else []
+        if credits and not sources:
             logger.warning(
-                "opening_reveal/credits_photos are on, but this project's "
-                "storyboard records no original photos (source_path) — "
-                "skipping them. (Re-run `storyboard` on an image-based "
-                "project to record the sources.)"
+                "credits_photos is on, but this project's storyboard records "
+                "no original photos (source_path) — skipping it. (Re-run "
+                "`storyboard` on an image-based project to record the "
+                "sources.)"
             )
-            reveal = credits = False
+            credits = False
         if intro and not self._intro_source().exists():
             logger.warning(
                 "intro_clip is on, but %s does not exist — drop your intro "
@@ -1313,7 +1302,7 @@ class Pipeline:
         letter_text = self._letter_text() if letter else None
         if letter and letter_text is None:
             letter = False
-        if not (intro or reveal or credits or letter):
+        if not (intro or credits or letter):
             return clips, False
 
         seg_dir = self.workspace.output_dir / "segments"
@@ -1322,30 +1311,6 @@ class Pipeline:
         segments = list(clips)
         added = False
 
-        if reveal:
-            first_id = segments[0].stem.split("_to_")[0]
-            photo = dict(sources).get(first_id)
-            if photo is None:
-                logger.warning(
-                    "opening_reveal: no original photo recorded for frame %r; "
-                    "skipping the reveal.", first_id,
-                )
-            else:
-                dst = seg_dir / "opening_reveal.mp4"
-                if self._segment_fresh(dst, [photo, segments[0]]):
-                    logger.info("Reusing opening reveal (unchanged).")
-                else:
-                    render_opening_reveal(
-                        photo, segments[0], dst, width, height,
-                        hold=self.config.opening_reveal_hold_seconds,
-                    )
-                    logger.info("Opening reveal: %s comes alive into %s.",
-                                photo.name, clips[0].name)
-                segments[0] = dst
-                added = True
-
-        # After the reveal, which replaces segments[0] and must see the first
-        # CLIP there — the intro then lands in front of whatever opens the movie.
         if intro:
             section = self._render_intro_segment(seg_dir, width, height)
             if section is not None:

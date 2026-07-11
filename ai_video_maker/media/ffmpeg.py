@@ -310,9 +310,9 @@ def mux_music(
     tmp.replace(video)
 
 
-# --- Real-photo presentation segments (opening reveal / end credits) -------- #
-# Rendered locally from the user's original photos; frame rate only needs to be
-# sensible, since these segments always go through the re-encoding concat path.
+# --- Presentation segments (intro / end credits / letter) ------------------- #
+# Rendered locally; frame rate only needs to be sensible, since these segments
+# always go through the re-encoding concat path.
 _SEGMENT_FPS = 30
 
 
@@ -544,64 +544,3 @@ def apply_end_fade(video: Path, seconds: float) -> None:
     tmp.replace(video)
 
 
-def _opening_reveal_cmd(
-    photo: Path,
-    clip: Path,
-    dst: Path,
-    width: int,
-    height: int,
-    hold: float,
-    fade: float,
-    clip_has_audio: bool,
-) -> list[str]:
-    """Build the ffmpeg command for the photo→clip opening reveal (pure).
-
-    The still runs `hold` seconds, then crossfades over `fade` seconds into
-    the clip (xfade needs the still to last hold+fade). The clip's audio, if
-    any, is delayed by `hold` so sound begins as the photo comes alive.
-    """
-    graph = (
-        _photo_fit_filter(width, height)
-        + f",fps={_SEGMENT_FPS},format=yuv420p,settb=AVTB[ph];"
-        f"[1:v]fps={_SEGMENT_FPS},format=yuv420p,setsar=1,settb=AVTB[cl];"
-        f"[ph][cl]xfade=transition=fade:duration={fade:.3f}:offset={hold:.3f}[v]"
-    )
-    maps = ["-map", "[v]"]
-    audio_codec: list[str] = []
-    if clip_has_audio:
-        delay_ms = int(round(hold * 1000))
-        graph += f";[1:a]adelay={delay_ms}:all=1[a]"
-        maps += ["-map", "[a]"]
-        audio_codec = ["-c:a", "aac"]
-    return [
-        "ffmpeg", "-y",
-        "-loop", "1", "-t", f"{hold + fade:.3f}", "-i", str(photo),
-        "-i", str(clip),
-        "-filter_complex", graph, *maps,
-        "-c:v", "libx264", "-crf", "18", "-preset", "medium",
-        *audio_codec, str(dst),
-    ]
-
-
-def render_opening_reveal(
-    photo: Path,
-    clip: Path,
-    dst: Path,
-    width: int,
-    height: int,
-    hold: float,
-    fade: float = 0.8,
-) -> None:
-    """Render `photo` held for `hold`s, crossfading into `clip`, to `dst`."""
-    _require_ffmpeg()
-    _require_ffmpeg("ffprobe")  # audio probing decides the mux graph
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    cmd = _opening_reveal_cmd(
-        photo, clip, dst, width, height, hold, fade,
-        clip_has_audio=has_audio_stream(clip),
-    )
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"ffmpeg opening reveal failed:\n{result.stderr.strip()[-1500:]}"
-        )

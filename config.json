@@ -27,8 +27,6 @@
   "music_prompt": "Soft cinematic instrumental underscore, gentle and warm, no vocals.",
   "music_volume": 0.85,
   "music_loop": false,
-  "opening_reveal": false,
-  "opening_reveal_hold_seconds": 1.6,
   "credits_photos": false,
   "credits_seconds_per_photo": 1.5,
   "intro_clip": false,
