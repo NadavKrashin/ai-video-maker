@@ -12,7 +12,7 @@ from typing import Any, Callable, Optional
 
 from ..config import Config
 from ..logging_setup import logger
-from ..retry import with_reword_recovery
+from ..retry import is_moderation_error, with_reword_recovery
 from .download import download_file
 from .fal import FalSession, extract_media_url
 
@@ -107,14 +107,25 @@ class VideoClient:
         if reword is None:
             result = run(motion_prompt)
         else:
-            result = with_reword_recovery(
-                run,
-                motion_prompt,
-                reword=reword,
-                attempts=self.config.moderation_reword_attempts,
-                description=f"fal clip {dst.name}",
-                last_resort=SAFE_FALLBACK_MOTION_PROMPT,
-            )
+            try:
+                result = with_reword_recovery(
+                    run,
+                    motion_prompt,
+                    reword=reword,
+                    attempts=self.config.moderation_reword_attempts,
+                    description=f"fal clip {dst.name}",
+                    last_resort=SAFE_FALLBACK_MOTION_PROMPT,
+                )
+            except Exception as exc:
+                if is_moderation_error(exc):
+                    logger.error(
+                        "%s: suspect the frames, not the prompt — try "
+                        "re-rolling the styling of %s or %s (delete the "
+                        "styled image and re-run storyboard), then render "
+                        "this clip again.",
+                        dst.name, start_frame.name, end_frame.name,
+                    )
+                raise
         video_url = extract_media_url(result, ("video",))
         download_file(
             video_url,

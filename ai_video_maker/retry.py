@@ -128,6 +128,13 @@ def with_reword_recovery(
             if not is_moderation_error(exc):
                 raise
             last_exc = exc
+            logger.error(
+                "%s: even the deliberately generic fallback prompt was "
+                "blocked — the content checker is almost certainly flagging "
+                "the input media (an image), not the prompt text. Rewording "
+                "cannot fix this; regenerate the flagged input instead.",
+                description,
+            )
     logger.error(
         "%s still blocked after %d rewording attempts; giving up",
         description, attempts,
