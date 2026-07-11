@@ -188,17 +188,19 @@ _MODE_A_SYSTEM = (
     "end frame read as a different child; the video model will then swap in "
     "a new character instead of keeping one. Never add people or children "
     "who are not visible in the frames. "
-    "DURATION: pick a duration for each clip — either 5 or 10 seconds. "
-    "Default to 5: short clips keep the film pacy and interpolate more "
-    "reliably. But FIRST check whether the pair is a HARD transition. Choose "
-    "10 when ANY of these hold: the people in the two frames differ (the "
+    "DURATION: for each pair, first set hard_transition. It is true when ANY "
+    "of these hold: the people in the two frames differ (the "
     "exit-and-entrance above); the location or setting changes between the "
     "frames; the same person's clothing or overall appearance changes "
     "noticeably; or your motion_prompt needs two or more sequential beats "
-    "('then', 'next') to carry the start frame into the end frame. Cramming "
-    "such a change into 5 seconds makes the subject visibly teleport — give "
-    "it 10. Every other pair — same people, same place, same outfit, one "
-    "continuous action — gets 5. "
+    "('then', 'next') to carry the start frame into the end frame. Check the "
+    "two images, not your intentions — if the start frame is outdoors and "
+    "the end frame is on a bed indoors in a new outfit, that pair IS hard no "
+    "matter how smoothly you word the motion. Then duration follows "
+    "mechanically: 10 when hard_transition is true (cramming such a change "
+    "into 5 seconds makes the subject visibly teleport), 5 when it is false "
+    "(same people, same place, same outfit, one continuous action — short "
+    "clips keep the film pacy and interpolate more reliably). "
     "SOUND: also write sound_prompt — a short phrase describing the diegetic "
     "ambient sound and sound effects for that clip (e.g. 'waves lapping, gulls "
     "calling, soft wind'). Real on-screen/world sounds only — no music, no "
@@ -265,10 +267,17 @@ _TRANSITIONS_SCHEMA: dict[str, Any] = {
                 "type": "object",
                 "properties": {
                     "motion_prompt": {"type": "string"},
+                    # Decided BEFORE duration (property order = generation
+                    # order) so the model must classify the pair against the
+                    # hard-transition checklist instead of defaulting to 5.
+                    "hard_transition": {"type": "boolean"},
                     "duration": {"type": "integer", "enum": _DURATION_ENUM},
                     "sound_prompt": {"type": "string"},
                 },
-                "required": ["motion_prompt", "duration", "sound_prompt"],
+                "required": [
+                    "motion_prompt", "hard_transition", "duration",
+                    "sound_prompt",
+                ],
                 "additionalProperties": False,
             },
         }
@@ -527,14 +536,15 @@ class OpenAIClient:
             "Return ONLY valid JSON with this exact shape:\n"
             "{\n"
             '  "transitions": [\n'
-            '    {"motion_prompt": str, "duration": 5 | 10, "sound_prompt": str}, ...\n'
+            '    {"motion_prompt": str, "hard_transition": bool, '
+            '"duration": 5 | 10, "sound_prompt": str}, ...\n'
             "  ]\n"
             "}\n"
             f"The transitions array must have exactly {n - 1} items, in frame "
-            "order (the first animates frame 001 into 002). duration must be "
-            "exactly 5 or 10; prefer 5, but use 10 for hard transitions "
-            "(different people, a setting change, a wardrobe change, or "
-            "multi-beat action)."
+            "order (the first animates frame 001 into 002). hard_transition "
+            "is true when the pair shows different people, a setting change, "
+            "a wardrobe change, or needs multi-beat action; duration is 10 "
+            "when hard_transition is true, else 5."
         )
         if default_duration:
             instruction += (
@@ -588,6 +598,10 @@ class OpenAIClient:
             duration = default_duration or self._coerce_duration(
                 item.get("duration"), self.config.duration
             )
+            # The model's own hardness verdict wins over an inconsistent
+            # duration: a pair it called hard must not be squeezed into 5s.
+            if not default_duration and item.get("hard_transition") is True:
+                duration = max(VALID_DURATIONS)
             sound = str(item.get("sound_prompt") or "").strip()
             plans.append((motion, duration, sound))
         return plans
