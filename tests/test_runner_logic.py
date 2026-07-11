@@ -450,6 +450,7 @@ class TestPresentationSegments:
             return fake
 
         monkeypatch.setattr(runner_mod, "render_photo_still", stub("still", 1))
+        monkeypatch.setattr(runner_mod, "render_intro_segment", stub("intro", 1))
         monkeypatch.setattr(runner_mod, "render_opening_reveal", stub("reveal", 2))
         monkeypatch.setattr(runner_mod, "render_letter_scroll", stub("scroll", 1))
         monkeypatch.setattr(runner_mod, "render_letter_overlay", stub("overlay", 2))
@@ -505,12 +506,49 @@ class TestPresentationSegments:
 
     def test_cli_override_beats_config(self, make_pipeline):
         p = make_pipeline(
-            credits_photos=False, opening_reveal=False, closing_letter=False
+            credits_photos=False, opening_reveal=False, closing_letter=False,
+            intro_clip=False,
         )
         p.config.credits_photos = True
         p.config.opening_reveal = True
         p.config.closing_letter = True
-        assert p._presentation_flags() == (False, False, False)
+        p.config.intro_clip = True
+        assert p._presentation_flags() == (False, False, False, False)
+
+    def test_intro_prepends_normalized_segment(
+        self, make_pipeline, workspace, monkeypatch
+    ):
+        calls = self._stub_renderers(monkeypatch)
+        p = make_pipeline(intro_clip=True)
+        clips = self._project(workspace)
+        _touch(workspace.intro_file)
+        segments, added = p._presentation_segments(clips)
+        assert added is True
+        assert segments[0].name == "intro.mp4"
+        assert segments[1:] == clips
+        assert "intro" in calls
+
+    def test_intro_without_file_skips(self, make_pipeline, workspace, monkeypatch):
+        calls = self._stub_renderers(monkeypatch)
+        p = make_pipeline(intro_clip=True)
+        clips = self._project(workspace)
+        segments, added = p._presentation_segments(clips)
+        assert segments == clips and added is False
+        assert "intro" not in calls
+
+    def test_intro_comes_before_the_opening_reveal(
+        self, make_pipeline, workspace, monkeypatch
+    ):
+        self._stub_renderers(monkeypatch)
+        p = make_pipeline(intro_clip=True, opening_reveal=True)
+        clips = self._project(workspace)
+        _touch(workspace.intro_file)
+        segments, added = p._presentation_segments(clips)
+        assert added is True
+        assert [s.name for s in segments[:2]] == [
+            "intro.mp4", "opening_reveal.mp4",
+        ]
+        assert segments[2:] == clips[1:]
 
     def test_letter_over_credits_merges_into_one_section(
         self, make_pipeline, workspace, monkeypatch

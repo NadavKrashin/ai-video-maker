@@ -7,6 +7,7 @@ from PIL import Image
 
 from ai_video_maker.media.ffmpeg import (
     _end_fade_cmd,
+    _intro_segment_cmd,
     _letter_overlay_cmd,
     _letter_scroll_cmd,
     _mux_music_cmd,
@@ -189,6 +190,24 @@ class TestPhotoSegments:
         )
         joined = " ".join(cmd)
         assert "afade" not in joined and "-c:a" not in joined
+
+    def test_intro_cmd_fits_and_pads_without_cropping(self):
+        cmd = _intro_segment_cmd(
+            Path("intro.mp4"), Path("out.mp4"), 1920, 1080, has_audio=True
+        )
+        graph = cmd[cmd.index("-filter_complex") + 1]
+        # fitted whole (never cropped), centred on black pads, concat-safe
+        assert "force_original_aspect_ratio=decrease" in graph
+        assert "pad=1920:1080:(ow-iw)/2:(oh-ih)/2" in graph
+        assert "setsar=1" in graph
+        assert "-c:a" in cmd and "0:a" in cmd  # intro sound kept
+
+    def test_intro_cmd_silent_source_maps_no_audio(self):
+        cmd = _intro_segment_cmd(
+            Path("intro.mp4"), Path("out.mp4"), 1920, 1080, has_audio=False
+        )
+        joined = " ".join(cmd)
+        assert "-c:a" not in joined and "0:a" not in joined
 
     def test_reveal_cmd_silent_clip_maps_no_audio(self):
         cmd = _opening_reveal_cmd(

@@ -164,6 +164,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Scroll the project's letter.txt (Hebrew-safe) over "
                          "a dark background at the very end, credits-style. "
                          "Overrides the closing_letter config key.")
+    sp.add_argument("--intro", action=argparse.BooleanOptionalAction,
+                    default=None,
+                    help="Prepend the project's intro.mp4 before everything "
+                         "else (normalized to the movie's frame size). "
+                         "Overrides the intro_clip config key for this run.")
 
     command("status",
             "Show the project's progress (frames, storyboard, clips, final "

@@ -374,6 +374,47 @@ def render_photo_still(
         )
 
 
+def _intro_segment_cmd(
+    src: Path, dst: Path, width: int, height: int, has_audio: bool
+) -> list[str]:
+    """Build the ffmpeg command normalizing the user's intro clip (pure).
+
+    The intro can come from anywhere (a phone, an editor), so it's scaled to
+    fit inside the movie's width×height (black pads preserve the aspect
+    ratio) and re-encoded at the segment fps with square pixels — otherwise
+    the concat filter refuses to join it with the provider clips.
+    """
+    graph = (
+        f"[0:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,"
+        f"fps={_SEGMENT_FPS},format=yuv420p[v]"
+    )
+    maps = ["-map", "[v]"]
+    audio_codec: list[str] = []
+    if has_audio:
+        maps += ["-map", "0:a"]
+        audio_codec = ["-c:a", "aac"]
+    return [
+        "ffmpeg", "-y", "-i", str(src),
+        "-filter_complex", graph, *maps,
+        "-c:v", "libx264", "-crf", "18", "-preset", "medium",
+        *audio_codec, str(dst),
+    ]
+
+
+def render_intro_segment(src: Path, dst: Path, width: int, height: int) -> None:
+    """Normalize the user's intro clip to the movie's canvas, into `dst`."""
+    _require_ffmpeg()
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    cmd = _intro_segment_cmd(src, dst, width, height, has_audio_stream(src))
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg intro segment failed for {src.name}:\n"
+            f"{result.stderr.strip()[-1500:]}"
+        )
+
+
 def _letter_scroll_cmd(
     image: Path,
     dst: Path,

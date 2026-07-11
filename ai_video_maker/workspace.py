@@ -96,6 +96,11 @@ class Workspace:
         return self.root / "letter.txt"
 
     @property
+    def intro_file(self) -> Path:
+        """User-supplied intro video prepended to the movie (intro_clip)."""
+        return self.root / "intro.mp4"
+
+    @property
     def default_storyboard_json(self) -> Path:
         return self.storyboard_dir / "storyboard.json"
 

@@ -104,6 +104,9 @@ class Config(BaseModel):
     # recorded in the storyboard (source_path), in movie order.
     credits_photos: bool = False
     credits_seconds_per_photo: float = 2.5
+    # intro_clip: prepend the user's own intro video (projects/<name>/intro.mp4)
+    # before everything else, normalized to the movie's frame size.
+    intro_clip: bool = False
     # closing_letter: scroll the text of projects/<name>/letter.txt over a
     # dark background at the very end, credits-style. Hebrew/RTL-safe (bidi
     # reordering happens in media/letter.py, not ffmpeg).
