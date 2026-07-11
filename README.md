@@ -235,7 +235,7 @@ no API cost:
   unstyled first photo, holds ~1.6s (`opening_reveal_hold_seconds`), then
   crossfades into the first clip — "the photo comes alive".
 - `--credits-photos` (config: `credits_photos`): after the last clip, the
-  original photos play as an end-credits montage, ~2.5s each
+  original photos play as an end-credits montage, ~1.5s each
   (`credits_seconds_per_photo`), in movie order, under the same music bed.
 - `--letter` (config: `closing_letter`): write a letter in
   `projects/<name>/letter.txt` (plain text; Hebrew and RTL are fully

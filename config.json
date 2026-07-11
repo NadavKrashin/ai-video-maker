@@ -30,7 +30,7 @@
   "opening_reveal": false,
   "opening_reveal_hold_seconds": 1.6,
   "credits_photos": false,
-  "credits_seconds_per_photo": 2.5,
+  "credits_seconds_per_photo": 1.5,
   "intro_clip": false,
   "closing_letter": false,
   "letter_font_path": "",

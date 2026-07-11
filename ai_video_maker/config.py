@@ -103,7 +103,7 @@ class Config(BaseModel):
     # so viewers see the real moments behind the animation. Uses the photos
     # recorded in the storyboard (source_path), in movie order.
     credits_photos: bool = False
-    credits_seconds_per_photo: float = 2.5
+    credits_seconds_per_photo: float = 1.5
     # intro_clip: prepend the user's own intro video (projects/<name>/intro.mp4)
     # before everything else, normalized to the movie's frame size.
     intro_clip: bool = False

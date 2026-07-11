@@ -479,8 +479,8 @@ class TestPresentationSegments:
         assert added is True
         assert segments[: len(clips)] == clips
         assert [s.name for s in segments[len(clips):]] == [
-            "credits_000_2.50s.mp4", "credits_001_2.50s.mp4",
-            "credits_002_2.50s.mp4",
+            "credits_000_1.50s.mp4", "credits_001_1.50s.mp4",
+            "credits_002_1.50s.mp4",
         ]
 
     def test_reveal_replaces_first_clip(self, make_pipeline, workspace, monkeypatch):
