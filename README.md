@@ -197,7 +197,8 @@ clip interpolates from one styled frame to the next):
    re-runs.
 3. The styled frames are analysed by the vision model, which plans — for each
    consecutive pair — a tailored **motion prompt**, a **per-clip duration**
-   (5 or 10s), and a **sound prompt**, and writes
+   (5 or 10s, leaning 5s; 10s is reserved for genuinely hard transitions),
+   and a **sound prompt**, and writes
    `storyboard/storyboard.json` + `storyboard.md`.
 
 `--no-analyze` skips step 3's vision call and uses the single global motion

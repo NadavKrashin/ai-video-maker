@@ -45,10 +45,20 @@ Core design rules:
   one person into the other otherwise, which the user finds creepy. Same
   person at a different age/in different clothes may animate continuously.
   Enforced in `_MODE_A_SYSTEM` and the fallback `motion_prompt` in config.json.
-- Styling must preserve LIKENESS: cartoon rendering, real facial geometry.
-  The user rejected "Disney-princess-ified" faces (enlarged eyes, slimmed,
-  beautified) — people must stay recognizable as themselves. Encoded in
-  `style_prompt` (config.json); keep that likeness language when touching it.
+- Clip durations must LEAN SHORT: strongly prefer 5s clips; 10s is reserved
+  for genuinely hard transitions only (e.g. a different-people
+  exit-and-entrance that needs room to play out). The user rejected planners
+  that hand out 10s freely. Encoded in `_STORYBOARD_SYSTEM` and
+  `_MODE_A_SYSTEM` (clients/openai_client.py); keep that bias when touching
+  the duration guidance.
+- Styling must preserve LIKENESS while being an unmistakable Pixar-style
+  cartoon: the whole scene (people, clothing, background) renders as a
+  stylized 3D animated film still — never near-photorealistic — but with
+  real facial geometry. The user rejected both "Disney-princess-ified" faces
+  (enlarged eyes, slimmed, beautified) AND outputs that stayed too realistic;
+  people must stay recognizable as themselves inside a full cartoon look.
+  Encoded in `style_prompt` / `scratch_style_prompt` (config.json); keep both
+  the likeness and full-scene-cartoon language when touching them.
 
 ## Working rules (the user's standing instructions)
 

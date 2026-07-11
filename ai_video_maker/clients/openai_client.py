@@ -97,10 +97,12 @@ _STORYBOARD_SYSTEM = (
     "every clip share the same framing and content. "
     "PER-CLIP DURATION: for each frame, also pick duration_to_next — the "
     "length in seconds (either 5 or 10) of the clip that animates this "
-    "frame into the next one. Choose 10 when the transition covers more "
-    "motion or a larger, slower change that needs room to breathe, and 5 "
-    "for quick, subtle changes. Vary it across the video; do not make "
-    "them all the same. The last frame's duration_to_next is ignored. "
+    "frame into the next one. STRONGLY PREFER 5: short clips keep the film "
+    "pacy, and because consecutive frames are closely related, 5 seconds is "
+    "enough for almost every transition. Reserve 10 for the rare genuinely "
+    "difficult transition that cannot play out in 5 seconds (a large staged "
+    "change that must unfold in steps). If in doubt, pick 5. The last "
+    "frame's duration_to_next is ignored. "
     "SOUND: for each frame, also write sound_to_next — a short phrase "
     "describing the diegetic ambient sound and sound effects for the clip "
     "that animates this frame into the next one (e.g. 'waves lapping, gulls "
@@ -154,10 +156,10 @@ _MODE_A_SYSTEM = (
     "people as one continuous character and NEVER imply a person "
     "transforming, turning into, or becoming someone else — the interpolating "
     "model will morph one face and body into the other, which looks "
-    "grotesque. Prefer 10 seconds for these pairs so the exit and entrance "
-    "both have room to play out. (The same person at a different age or in "
-    "different clothes is still the same person — continuous growth or change "
-    "is fine there.) "
+    "grotesque. An exit-and-entrance like this is one of the few transitions "
+    "that justifies a 10-second clip, so both movements have room to play "
+    "out. (The same person at a different age or in different clothes is "
+    "still the same person — continuous growth or change is fine there.) "
     "Do not describe editing effects ('crossfade', 'dissolve', 'transition', "
     "'morph') — describe continuous physical motion only. Keep each "
     "motion_prompt concrete and compact (one to three short sentences), in "
@@ -165,10 +167,12 @@ _MODE_A_SYSTEM = (
     "environment except for the changes visible between the frames; no hard "
     "cuts, no people who appear in neither frame, no on-screen text. Do not "
     "mention frame numbers or that these are AI-generated images. "
-    "DURATION: pick a duration for each clip — either 5 or 10 seconds. Choose 10 "
-    "when the two frames differ a lot or the action needs room to play out; "
-    "choose 5 for quick, subtle changes. Vary it across the video; do not make "
-    "them all the same. "
+    "DURATION: pick a duration for each clip — either 5 or 10 seconds. "
+    "STRONGLY PREFER 5: short clips keep the film pacy and interpolate more "
+    "reliably. Choose 10 ONLY when the transition is genuinely hard to pull "
+    "off in 5 seconds — the two frames differ so much that the staged action "
+    "(such as a different-people exit-and-entrance) physically needs more "
+    "time. If in doubt, pick 5. "
     "SOUND: also write sound_prompt — a short phrase describing the diegetic "
     "ambient sound and sound effects for that clip (e.g. 'waves lapping, gulls "
     "calling, soft wind'). Real on-screen/world sounds only — no music, no "
@@ -269,7 +273,7 @@ _STORYBOARD_JSON_SHAPE = (
     '      "description": str,             // what happens in this frame\n'
     '      "image_prompt": str,            // full detailed image prompt\n'
     '      "negative_prompt": str,         // things to avoid\n'
-    '      "duration_to_next": 5 | 10,     // seconds of the clip into the next frame\n'
+    '      "duration_to_next": 5 | 10,     // clip seconds into the next frame; prefer 5\n'
     '      "sound_to_next": str            // ambient sound/SFX for that clip; no music, no speech\n'
     "    }, ...\n"
     "  ]\n"
@@ -502,7 +506,7 @@ class OpenAIClient:
             "}\n"
             f"The transitions array must have exactly {n - 1} items, in frame "
             "order (the first animates frame 001 into 002). duration must be "
-            "exactly 5 or 10."
+            "exactly 5 or 10; prefer 5 unless the transition truly needs 10."
         )
         if default_duration:
             instruction += (
