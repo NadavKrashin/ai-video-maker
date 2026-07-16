@@ -79,11 +79,19 @@ Core design rules:
   it: real plans came back all-5s under "prefer 5" and all-10s under a
   hard-transition checklist (in a photo-album movie nearly every pair
   changes setting or outfit). The planner therefore only RATES each pair's
-  difficulty 1-5 (3 = one major change, 4 = two at once, 5 = shares almost
-  nothing / different people) and code derives durations: >=4 → 10s, capped
+  difficulty 1-5 (3 = one major change, 4 = two at once OR any transition
+  that can't physically play out in 5s, 5 = shares almost nothing /
+  different people) and code derives durations: >=4 → 10s, capped
   at 1/3 of clips (`_LONG_CLIP_MAX_FRACTION`, `_select_long_clips` in
   clients/openai_client.py). A hard pair squeezed into 5s visibly teleports
   (seen in a real render), so keep both sides of the balance.
+- A RELOCATION WITHIN ONE SETTING (high chair → couch across the same room,
+  subject prominent in both frames) is a difficulty-4 pair even though the
+  setting/outfit don't change: exit + crossing + arrival can't compress
+  into one 5s action, so Kling degrades it into a disguised cut (real
+  render: baby drops out of frame, camera slides to the couch — no
+  transition at all). Rate it 4 → 10s and stage the full journey with a
+  motivated camera following the subject.
 - With ~20 frames in one vision call the planner can slip a pair mid-array
   (a transition describing the PREVIOUS pair — happened on a real plan).
   Every transition therefore declares a `pair_index` that code re-aligns by
