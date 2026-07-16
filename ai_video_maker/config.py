@@ -117,6 +117,16 @@ class Config(BaseModel):
     # Applied after music muxing so the bed fades too. 0 disables.
     end_fade_seconds: float = 1.5
 
+    # --- Cloudinary order intake (the animoments web frontend) ------------- #
+    # After payment the web app uploads each order's photos to its own folder:
+    # <cloudinary_orders_folder>/<order-id>_<customer>-<stamp>/ in this cloud.
+    # `pipeline.py orders` lists them, `pipeline.py ingest` downloads one into
+    # a project. The cloud name is public; the Admin-API key/secret are
+    # secrets and come from .env (CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET),
+    # never from here.
+    cloudinary_cloud_name: str = ""
+    cloudinary_orders_folder: str = "video-orders"
+
     # How many image/clip/SFX API jobs to run at once. These steps are I/O-bound
     # (waiting on the provider), so a small thread pool runs them in parallel.
     # Raise for speed; lower to 1 if you hit rate limits (transient 429s are

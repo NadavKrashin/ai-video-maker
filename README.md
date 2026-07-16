@@ -35,6 +35,30 @@ edits (it reuses the saved storyboard while your images are unchanged); pass
 Whenever a step finishes, the app prints the exact command for the next step,
 and `status` will always tell you where you stand.
 
+### Paid web orders (Cloudinary intake)
+
+When an order comes in from the animoments web app, its photos are already in
+Cloudinary (one folder per order, photos named by their position in the movie).
+Instead of `init` + a manual download, pull the order straight into a project:
+
+```bash
+python pipeline.py orders                   # list waiting orders, newest first
+python pipeline.py ingest matan AM-20260716-XY12   # create projects/matan/ + download
+python pipeline.py storyboard matan         # ...and continue as usual
+```
+
+The order argument is the order id from the confirmation email, the full
+folder name, or any unique fragment of it (e.g. the customer's name).
+Photos are saved as `01.jpg, 02.jpg, ...` so the movie keeps the customer's
+chosen order; re-running skips files that already exist (`--force`
+re-downloads, `--dry-run` just lists). Ingesting into a project that already
+holds a *different* order's images fails loudly — one project per order.
+
+Setup: `config.json` carries the (public) `cloudinary_cloud_name` and
+`cloudinary_orders_folder`; the Admin-API credentials go in `.env` as
+`CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` (Cloudinary console →
+Settings → API Keys).
+
 ### Editing cookbook
 
 Styled frames and clips are **keyed by your input filenames** (input
@@ -137,6 +161,11 @@ OPENAI_API_KEY=sk-...
 
 # fal.ai key (image-to-video + audio) — from https://fal.ai/dashboard/keys:
 FAL_KEY=your-fal-key
+
+# Cloudinary Admin API (only needed for `orders`/`ingest` — the web-order
+# intake) — from the Cloudinary console, Settings -> API Keys:
+CLOUDINARY_API_KEY=...
+CLOUDINARY_API_SECRET=...
 ```
 
 > **Auth:** OpenAI generates/edits the images and plans the storyboard; fal.ai
@@ -280,10 +309,12 @@ after the clips.
 ## All commands & flags
 
 Global: `--config config.json` (before the command). Every command takes the
-project name as its first argument.
+project name as its first argument (except `orders`, which is project-less).
 
 | Command | Flags |
 |---------|-------|
+| `orders` | — (no project argument; lists Cloudinary order folders) |
+| `ingest` | `<order>` (id / folder / unique fragment), `--force`, `--dry-run` |
 | `init` | — |
 | `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
 | `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 5\|10`, `--add-audio`, `--no-audio` |

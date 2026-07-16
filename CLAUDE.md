@@ -138,9 +138,35 @@ Core design rules:
 .venv/bin/python pipeline.py status <project>  # project state + next step
 ```
 
-Lifecycle: `init` → `storyboard` (stops for review; writes json/md/preview.html)
+Lifecycle: (`orders` → `ingest` for paid web orders, or `init` + manual
+images) → `storyboard` (stops for review; writes json/md/preview.html)
 → `render` (plan + confirm; `--clip ID` redoes one clip) → `audio` → `combine`;
 `run` chains them with confirmation gates.
+
+## The web frontend (animoments) & order intake
+
+- The customer-facing web app lives in a SEPARATE repo:
+  `../animoments` (github.com/itaycohen1010/animoments). Standing rule:
+  frontend changes go on a **separate branch** there; this pipeline repo
+  works on `main`.
+- After payment the frontend uploads each order's photos to Cloudinary
+  (cloud `dmxkoz4jo`, unsigned preset `videoOrders`), one folder per order:
+  `video-orders/<ORDER-ID>_<customer>-<dd.mm.yyyy_HH-MM>/` with photos named
+  `1, 2, ...` = their position in the movie, each asset tagged with the
+  folder leaf name and carrying `context.order`. Customer PII is NOT stored
+  in Cloudinary (email only). The order id (`AM-...`) reaches the user by
+  confirmation email.
+- `pipeline.py orders` / `pipeline.py ingest <project> <order>` are the
+  intake commands (`clients/cloudinary_client.py`; Admin API, basic auth via
+  CLOUDINARY_API_KEY/SECRET in .env). Asset listing is BY TAG first (works
+  in both Cloudinary folder modes), public_id-prefix as fallback. `orders`
+  is the one project-less CLI command — special-cased in cli.py before
+  workspace resolution.
+- Long-term direction (agreed 2026-07-16): evolve this into an order queue —
+  payment webhook → auto-ingest + storyboard → review-from-anywhere dashboard
+  (FastAPI wrapper around `Pipeline`, confirm callback becomes a pending
+  "approve" action) → upload final + notify customer. Keep review gates
+  human; automate only the plumbing.
 
 ## Gotchas / facts sessions keep rediscovering
 

@@ -5,8 +5,9 @@ a ``Workspace`` (all per-movie paths), and ``RunOptions`` (this run's choices).
 Nothing here reads global state, argparse, or the terminal, so the same
 orchestration can be driven by the CLI or, later, an API request.
 
-The public surface is one method per lifecycle command (``cmd_storyboard``,
-``cmd_render``, ``cmd_audio``, ``cmd_combine``, ``cmd_status``, ``cmd_run``),
+The public surface is one method per lifecycle command (``cmd_ingest``,
+``cmd_storyboard``, ``cmd_render``, ``cmd_audio``, ``cmd_combine``,
+``cmd_status``, ``cmd_run``),
 dispatched via :meth:`Pipeline.execute`. Anything interactive happens through
 the injected ``confirm`` callback — the CLI wires it to a terminal prompt, an
 API caller simply omits it (every gate auto-proceeds) and drives the steps
@@ -23,6 +24,12 @@ from typing import Any, Callable, Optional
 from tqdm import tqdm
 
 from .clients.audio import AudioClient
+from .clients.cloudinary_client import (
+    CloudinaryClient,
+    ingest_filename,
+    resolve_order_folder,
+)
+from .clients.download import download_file
 from .clients.openai_client import OpenAIClient
 from .clients.video import VideoClient
 from .config import Config
@@ -158,6 +165,7 @@ class Pipeline:
         (flushing a run with zero failures deletes the previous report).
         """
         handlers: dict[str, Callable[[], None]] = {
+            "ingest": self.cmd_ingest,
             "storyboard": self.cmd_storyboard,
             "render": self.cmd_render,
             "audio": self.cmd_audio,
@@ -228,6 +236,77 @@ class Pipeline:
         return " ".join(
             ["python pipeline.py", command, self.workspace.root.name, *flags]
         )
+
+    # ----------------------------- ingest step ---------------------------- #
+    def cmd_ingest(self) -> None:
+        """Download a paid web order's photos from Cloudinary into input_images/.
+
+        The animoments frontend uploads each order to its own Cloudinary
+        folder after payment, photos named by their position in the movie.
+        ``options.order`` accepts the order id from the confirmation email,
+        the full folder name, or any unique fragment (e.g. the customer's
+        name). Photos are saved as 01.jpg, 02.jpg, ... so the movie keeps the
+        customer's chosen order. Resume is existence-based: files already
+        downloaded are skipped, so an interrupted run is simply re-run
+        (--force re-downloads everything).
+        """
+        if not self.options.order:
+            raise PipelineError(
+                "ingest needs an order reference. List the waiting orders "
+                "with:  python pipeline.py orders"
+            )
+        client = CloudinaryClient.from_config(self.config)
+        folder = resolve_order_folder(self.options.order, client.list_order_folders())
+        assets = client.list_order_assets(folder)
+        if not assets:
+            raise PipelineError(f"Order folder '{folder}' contains no images.")
+
+        targets = [
+            (asset, self.workspace.input_images_dir
+             / ingest_filename(seq, len(assets), asset.format))
+            for seq, asset in enumerate(assets, start=1)
+        ]
+
+        # Refuse to mix orders: any input image that isn't one of this order's
+        # target names means the project already holds other photos.
+        expected = {dst.name for _, dst in targets}
+        foreign = [
+            p.name
+            for p in list_input_images(self.workspace.input_images_dir)
+            if p.name not in expected
+        ]
+        if foreign:
+            raise PipelineError(
+                f"{self.workspace.input_images_dir} already contains other "
+                f"images ({', '.join(foreign[:5])}{'...' if len(foreign) > 5 else ''}) "
+                "— ingest into a fresh project instead of mixing orders."
+            )
+
+        pending = [
+            (asset, dst) for asset, dst in targets
+            if self.force or not dst.exists()
+        ]
+        logger.info(
+            "Order folder: %s — %d photo(s), %d to download.",
+            folder, len(targets), len(pending),
+        )
+        if self.dry_run:
+            for asset, dst in targets:
+                note = "" if (asset, dst) in pending else "  (exists, skipped)"
+                logger.info("DRY-RUN: %s -> %s%s", asset.public_id, dst.name, note)
+            return
+        for asset, dst in tqdm(pending, desc="Downloading photos", unit="photo"):
+            download_file(
+                asset.url, dst,
+                max_retries=self.config.max_retries,
+                base_delay=self.config.retry_base_delay_seconds,
+                description=f"download {asset.public_id}",
+            )
+        logger.info(
+            "Ingested %d photo(s) into %s", len(pending),
+            self.workspace.input_images_dir,
+        )
+        logger.info("Next step:  %s", self._next_command("storyboard"))
 
     # --------------------------- storyboard step -------------------------- #
     def cmd_storyboard(self) -> None:

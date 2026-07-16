@@ -36,6 +36,9 @@ class RunOptions:
     frame_count: Optional[int] = None
     # render: limit to (and force-redo) these clips, e.g. ["003_to_004"].
     clips: Optional[list[str]] = None
+    # ingest: which Cloudinary order to download (order id / folder name /
+    # any unique fragment of it).
+    order: Optional[str] = None
     # Per-run audio override; neither set -> config.audio_mode decides.
     add_audio: bool = False
     no_audio: bool = False
@@ -77,6 +80,7 @@ class RunOptions:
             idea_file=get("idea_file"),
             frame_count=get("frame_count"),
             clips=get("clip"),
+            order=get("order"),
             add_audio=bool(get("add_audio")),
             no_audio=bool(get("no_audio")),
             no_combine=bool(get("no_combine")),

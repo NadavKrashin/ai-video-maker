@@ -4,6 +4,8 @@ The CLI is a thin shell around the pipeline's lifecycle commands — each
 subcommand maps 1:1 onto a ``Pipeline.cmd_*`` method (and, later, an API
 endpoint):
 
+    orders      list the paid web orders waiting in Cloudinary (project-less)
+    ingest      download an order's photos into a (new) project
     init        create the project workspace
     storyboard  style/plan and write the editable storyboard, then stop
     render      generate clips (and missing frames) from the storyboard
@@ -34,6 +36,8 @@ from .workspace import PROJECT_ROOT, Workspace
 
 _LIFECYCLE = """\
 project lifecycle:
+  python pipeline.py orders                 # list paid web orders in Cloudinary
+  python pipeline.py ingest myfilm AM-...   # download an order's photos into a new project
   python pipeline.py init myfilm            # create projects/myfilm/, add images
   python pipeline.py storyboard myfilm      # style images + plan clips, stop for review
   python pipeline.py render myfilm          # generate the clips from the storyboard
@@ -81,10 +85,39 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Project name; its workspace is projects/<name>/.")
         return sp
 
+    # `orders` is the one project-less command (it inspects Cloudinary, not a
+    # workspace), so it bypasses the command() helper and is handled early in
+    # main() before any project resolution.
+    sub.add_parser(
+        "orders",
+        help="List the paid web orders waiting in Cloudinary (newest first).",
+        description="List the paid web orders waiting in Cloudinary (newest "
+                    "first). Each printed folder name starts with the order "
+                    "id from the confirmation email; ingest one with "
+                    "`python pipeline.py ingest <project> <order-id>`.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
     command("init",
             "Create the project workspace (input_images/, clips/, output/, ...) "
             "and exit. Drop your source images into the printed input_images/ "
             "folder afterwards.")
+
+    sp = command("ingest",
+                 "Download a paid web order's photos from Cloudinary into the "
+                 "project's input_images/, creating the project if needed. "
+                 "Photos are saved as 01.jpg, 02.jpg, ... preserving the "
+                 "customer's chosen order; already-downloaded files are "
+                 "skipped, so an interrupted run can just be re-run.")
+    sp.add_argument("order",
+                    help="Which order: the order id from the confirmation "
+                         "email (AM-...), the full Cloudinary folder name, or "
+                         "any unique fragment of it (e.g. the customer's "
+                         "name). See `python pipeline.py orders`.")
+    sp.add_argument("--force", action="store_true",
+                    help="Re-download photos that already exist locally.")
+    sp.add_argument("--dry-run", action="store_true",
+                    help="List what would be downloaded without downloading.")
 
     sp = command("storyboard",
                  "Create the storyboard and stop for review. By default your "
@@ -230,9 +263,39 @@ def _make_confirm(assume_yes: bool):
     return confirm
 
 
+def _cmd_orders(args: argparse.Namespace) -> int:
+    """Project-less listing of the paid web orders waiting in Cloudinary."""
+    from .clients.cloudinary_client import CloudinaryClient
+
+    load_dotenv(PROJECT_ROOT / ".env")
+    config_path = Path(args.config)
+    if not config_path.is_absolute():
+        config_path = PROJECT_ROOT / config_path
+    try:
+        config = Config.load(config_path)
+        folders = CloudinaryClient.from_config(config).list_order_folders()
+    except PipelineError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if not folders:
+        print("No order folders found in Cloudinary.")
+        return 0
+    print(f"{len(folders)} order folder(s) in Cloudinary (newest first):")
+    for name in folders:
+        print(f"  {name}")
+    print("\nDownload one into a new project with:")
+    print("  python pipeline.py ingest <project> <order-id>")
+    return 0
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    # `orders` inspects Cloudinary, not a project workspace — handle it before
+    # any project resolution (it has no `project` argument at all).
+    if args.command == "orders":
+        return _cmd_orders(args)
 
     # Every movie lives in its own workspace under projects/<name>/.
     try:
@@ -249,7 +312,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"Put your source images in {workspace.input_images_dir}/")
         print(f"then plan the movie with:  python pipeline.py storyboard {args.project}")
         return 0
-    if not workspace.root.exists():
+    # `ingest` bootstraps a fresh project (init + download) by design.
+    if not workspace.root.exists() and args.command != "ingest":
         parser.error(
             f"Project '{args.project}' does not exist. Create it first:\n"
             f"  python pipeline.py init {args.project}"
