@@ -1679,7 +1679,12 @@ class Pipeline:
                 key=natural_sort_key,
             )
 
-        inputs = list_input_images(ws.input_images_dir)
+        # A hand-made or partially-synced project may lack subdirectories;
+        # status must describe it, not crash on it.
+        inputs = (
+            list_input_images(ws.input_images_dir)
+            if ws.input_images_dir.exists() else []
+        )
         styled = _pngs(ws.styled_images_dir)
         generated = _pngs(ws.generated_frames_dir)
 
@@ -1715,11 +1720,11 @@ class Pipeline:
                     "rendered": exists,
                     "sfx": exists and self.state.is_done(f"sfx:{clip.name}"),
                 })
-            stray = [
-                p.name for p in sorted(
-                    set(find_generated_clips(ws.clips_dir)) - set(expected)
-                )
-            ]
+            found = (
+                find_generated_clips(ws.clips_dir)
+                if ws.clips_dir.exists() else []
+            )
+            stray = [p.name for p in sorted(set(found) - set(expected))]
 
         if storyboard is None and not storyboard_error:
             next_step = "storyboard"
