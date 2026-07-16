@@ -51,6 +51,19 @@ Core design rules:
   rendered fine. Kling also can't show cross-ground travel when the subject
   fills both frames — stage exit-past-camera + re-entry, or world morphs
   around a steady subject, instead.
+- Beat budgets need WORD CAPS enforced in code, not just prompt rules: a
+  real plan under the beat-budget rule alone still wrote 79–113 words for
+  every 5s clip, and an 84-word 5s prompt rendered as a whip-pan blur (a
+  disguised cut). Caps: 5s ≤ 35 words, 10s ≤ 60 (`_MOTION_WORD_LIMITS`);
+  over-budget prompts get a targeted condense call in
+  `_coerce_transition_plans` (`_condense_motion_prompt`, falls back to the
+  original on failure).
+- NO OFF-SCREEN HANDS in motion prompts: an action done TO the subject by
+  someone not visible in the frames ("as if being lifted out", "is gently
+  set down") makes Kling levitate the subject — a real clip had the toddler
+  flying out of his stroller into glowing light. Subjects act under their
+  own power, or hold steady while the world transforms. Enforced in
+  `_MODE_A_SYSTEM` and `_CONDENSE_MOTION_SYSTEM`.
 - When a pair's two frames show DIFFERENT people, the motion prompt must stage
   an exit-and-entrance (or reveal) — never continuous identity: Kling morphs
   one person into the other otherwise, which the user finds creepy. Same

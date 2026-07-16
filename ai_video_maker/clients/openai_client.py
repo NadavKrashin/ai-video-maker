@@ -28,6 +28,35 @@ _VISION_MAX_EDGE = 768
 # all-5s and all-10s under prompt-side guidance alone.
 _LONG_CLIP_MAX_FRACTION = 1 / 3
 
+# Hard word budgets for motion prompts, by clip duration. Kling drops or fakes
+# beats it can't fit (a real 84-word 5s prompt rendered as a whip-pan blur —
+# a disguised cut), and prompt-side guidance alone doesn't hold the line: a
+# real plan under the beat-budget rule still wrote 79-113 words for every 5s
+# clip. Over-budget prompts are condensed by a targeted text call in
+# _coerce_transition_plans, mirroring how durations are derived in code.
+_MOTION_WORD_LIMITS = {min(VALID_DURATIONS): 35, max(VALID_DURATIONS): 60}
+
+# Condense an over-budget motion prompt down to what the clip can hold.
+_CONDENSE_MOTION_SYSTEM = (
+    "You condense motion prompts for an image-to-video model that "
+    "interpolates between two given frames (the START and END of one clip). "
+    "The prompt you receive stages more action than the clip's length can "
+    "hold; the video model reacts by dropping or faking beats — a whip-pan "
+    "blur, a morphed or swapped person. Rewrite the prompt to fit the stated "
+    "word limit, keeping only: (1) the single most essential subject action "
+    "(a 5-second clip holds exactly ONE continuous action; 10 seconds at "
+    "most two beats); (2) any same-person phrasing ('the same little boy, "
+    "now ...') with singular he/she — never 'they'; (3) a brief final clause "
+    "landing on the same end state the original ends on. Cut secondary "
+    "gestures, scenery and wardrobe inventories, and camera directions — the "
+    "two frames already carry the visual detail. Every remaining action must "
+    "be performed by a visible person under their own power: remove actions "
+    "done to the subject by anyone off-screen (being lifted, carried, set "
+    "down). No editing terms (crossfade, dissolve, morph, transition). "
+    "Present tense. Return ONLY the condensed motion prompt, no preamble or "
+    "quotes."
+)
+
 # Reword a prompt that OpenAI's safety filter wrongly flagged. The video pipeline
 # never intends harmful content, so flags are typically benign wording the filter
 # misreads (e.g. "shot", a body description). We ask the text model to keep the
@@ -174,13 +203,25 @@ _MODE_A_SYSTEM = (
     "around them (light, background, and surroundings flow into the new "
     "scene). Describe visible travel only when one of the two frames "
     "already shows the subject small or far away. "
+    "NO OFF-SCREEN HANDS: every action must be performed by a person "
+    "visible in the frames, under their own power. NEVER write actions done "
+    "TO the subject by an unseen agent — 'is lifted out', 'is carried', "
+    "'is gently set down', 'as if being lifted' — when no such person is "
+    "visible: the video model cannot render the invisible helper, so the "
+    "subject levitates through the air instead. If a "
+    "transition seems to need an off-screen handler, restage it: the "
+    "subject moves under their own power (climbs down, stands up, turns) "
+    "or holds steady while the world transforms around them. "
     "LAND ON THE END FRAME: each clip stops exactly at its end frame, so the "
     "FINAL clause of every motion_prompt must describe the subject already "
     "in the end frame's pose, place, and activity, and every action the "
     "prompt starts must be finished by then. Before writing, look at the END "
     "frame of the pair and work backwards: what happens so the start frame "
     "arrives exactly there? Never end the prompt mid-action or still inside "
-    "the start frame's activity. "
+    "the start frame's activity. Keep the landing clause SHORT — the end "
+    "frame itself supplies the visual detail, so never append an inventory "
+    "of pose, outfit, and expression ('... exactly as seen in the next "
+    "frame'). "
     "DIFFERENT PEOPLE: before writing each motion_prompt, check whether the "
     "person or people in the start frame are the SAME individuals as in the "
     "end frame. If anyone differs (e.g. a man in one frame and a woman in the "
@@ -201,12 +242,15 @@ _MODE_A_SYSTEM = (
     "BEAT BUDGET: rate the pair's difficulty BEFORE writing the motion, "
     "because the rating sets the clip's length and the length sets how much "
     "can happen. Difficulty 1-3 = a 5-second clip = exactly ONE continuous "
-    "action, one or two short sentences ('she crosses the kitchen and sets "
-    "the tray on the table' / 'the toddler runs to the patio chair and "
+    "action, ONE sentence, AT MOST 35 WORDS ('she crosses the kitchen and "
+    "sets the tray on the table' / 'the toddler runs to the patio chair and "
     "settles onto it'). Difficulty 4-5 = up to 10 seconds = at most TWO "
-    "beats. A prompt with more beats than the clip can hold does not get "
-    "compressed — the model drops or fakes the beats, typically by swapping "
-    "in a different-looking subject mid-clip. Keep every motion_prompt in "
+    "beats, two sentences, AT MOST 60 WORDS. These word caps are hard "
+    "limits: an over-cap prompt is mechanically condensed before rendering "
+    "and may lose the wrong detail, so stay under the cap yourself. A "
+    "prompt with more beats than the clip can hold does not get compressed "
+    "— the model drops or fakes the beats, typically by swapping in a "
+    "different-looking subject mid-clip. Keep every motion_prompt in "
     "present tense; preserve each person's identity, wardrobe, and "
     "environment except for the changes visible between the frames; no hard "
     "cuts, no people who appear in neither frame, no on-screen text. Do not "
@@ -337,6 +381,16 @@ def _json_schema_format(name: str, schema: dict[str, Any]) -> dict[str, Any]:
         "type": "json_schema",
         "json_schema": {"name": name, "strict": True, "schema": schema},
     }
+
+
+def _motion_word_limit(duration: int) -> int:
+    """Word budget for a motion prompt of `duration` seconds.
+
+    Unknown durations get the most permissive budget rather than a guess —
+    the budget exists to catch clearly overloaded prompts, not to nickel-
+    and-dime borderline ones.
+    """
+    return _MOTION_WORD_LIMITS.get(duration, max(_MOTION_WORD_LIMITS.values()))
 
 
 def _realign_by_pair_index(items: list[Any], count: int) -> list[Any]:
@@ -669,6 +723,10 @@ class OpenAIClient:
         1-3 a short one, and at most ``_LONG_CLIP_MAX_FRACTION`` of the pairs
         may be long (highest difficulty wins) so long clips stay the
         exception even if the model inflates its ratings.
+
+        Motion prompts over the word budget for their derived duration are
+        condensed here for the same reason durations are derived here:
+        prompt-side guidance alone hasn't held on real plans.
         """
         items = _realign_by_pair_index(data.get("transitions") or [], count)
         long_indices = (
@@ -682,9 +740,48 @@ class OpenAIClient:
             duration = default_duration or (
                 max(VALID_DURATIONS) if i in long_indices else min(VALID_DURATIONS)
             )
+            if len(motion.split()) > _motion_word_limit(duration):
+                motion = self._condense_motion_prompt(motion, duration)
             sound = str(item.get("sound_prompt") or "").strip()
             plans.append((motion, duration, sound))
         return plans
+
+    def _condense_motion_prompt(self, prompt: str, duration: int) -> str:
+        """Rewrite an over-budget motion prompt down to the clip's word budget.
+
+        Falls back to the original prompt if the rewrite call fails or comes
+        back no shorter — an overloaded prompt still renders (badly), so this
+        must never hard-stop planning.
+        """
+        limit = _motion_word_limit(duration)
+        logger.info(
+            "Motion prompt is %d words for a %ds clip (budget %d); condensing",
+            len(prompt.split()), duration, limit,
+        )
+        try:
+            client = self._ensure_client()
+            resp = client.chat.completions.create(
+                model=self.config.openai_text_model,
+                messages=[
+                    {"role": "system", "content": _CONDENSE_MOTION_SYSTEM},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Clip length: {duration} seconds. "
+                            f"Word limit: {limit}.\n\n{prompt}"
+                        ),
+                    },
+                ],
+            )
+            condensed = (resp.choices[0].message.content or "").strip()
+            if condensed and len(condensed.split()) < len(prompt.split()):
+                return condensed
+        except Exception as exc:  # noqa: BLE001 - keep planning alive
+            logger.warning(
+                "Condensing motion prompt failed (%s); keeping the original",
+                exc,
+            )
+        return prompt
 
     def _select_long_clips(self, items: list[Any], count: int) -> set[int]:
         """Pick which pairs get the long duration from their difficulty ratings.

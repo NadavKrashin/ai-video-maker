@@ -199,7 +199,11 @@ clip interpolates from one styled frame to the next):
    consecutive pair — a tailored **motion prompt**, a **per-clip duration**
    (5 or 10s, leaning 5s; 10s is reserved for genuinely hard transitions),
    and a **sound prompt**, and writes
-   `storyboard/storyboard.json` + `storyboard.md`.
+   `storyboard/storyboard.json` + `storyboard.md`. Motion prompts are
+   budgeted to the clip length (5s ≈ one action, ≤35 words; 10s ≤60 words) —
+   an over-budget prompt is automatically condensed, because the video model
+   fakes beats it can't fit (whip-pan blurs, swapped people). Keep hand-edited
+   prompts inside the same budget.
 
 `--no-analyze` skips step 3's vision call and uses the single global motion
 prompt with one duration for every clip. `--duration 5|10` forces one length
