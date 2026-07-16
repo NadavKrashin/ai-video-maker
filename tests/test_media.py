@@ -20,6 +20,7 @@ from ai_video_maker.media.images import (
     list_input_images,
     natural_sort_key,
     normalize_image,
+    prepare_image_for_upload,
     slugify_stem,
     verify_dimensions,
 )
@@ -79,6 +80,49 @@ class TestEncodeDataUrl:
         raw = base64.b64decode(url.split(",", 1)[1])
         with Image.open(io.BytesIO(raw)) as im:
             assert im.size == (200, 100)
+
+
+class TestPrepareImageForUpload:
+    """Style-input normalisation: phone originals must never go up as-is.
+
+    A real paid order failed en masse because iPhone HDR photos are MPO
+    containers (JPEG + embedded gain-map image) that OpenAI's image API
+    rejects with `invalid_image_file`.
+    """
+
+    @staticmethod
+    def _open(raw: bytes) -> Image.Image:
+        import io
+        return Image.open(io.BytesIO(raw))
+
+    def test_mpo_container_becomes_plain_png(self, tmp_path):
+        src = tmp_path / "hdr.jpg"
+        main = Image.new("RGB", (64, 48), "red")
+        gain_map = Image.new("RGB", (64, 48), "gray")
+        main.save(src, format="MPO", save_all=True, append_images=[gain_map])
+        with Image.open(src) as im:
+            assert im.format == "MPO"  # fixture really is the failing shape
+        with self._open(prepare_image_for_upload(src)) as out:
+            assert out.format == "PNG"
+            assert out.size == (64, 48)
+
+    def test_exif_orientation_is_baked_into_pixels(self, tmp_path):
+        src = tmp_path / "rotated.jpg"
+        exif = Image.Exif()
+        exif[274] = 6  # "rotate 90 CW to display" — common for portrait shots
+        Image.new("RGB", (100, 60), "blue").save(src, exif=exif)
+        with self._open(prepare_image_for_upload(src)) as out:
+            assert out.size == (60, 100)
+
+    def test_oversized_image_capped_to_max_edge(self, tmp_path):
+        src = _img(tmp_path / "huge.png", (3000, 2000))
+        with self._open(prepare_image_for_upload(src, max_edge=2048)) as out:
+            assert out.size == (2048, 1365)
+
+    def test_small_image_kept_at_native_size(self, tmp_path):
+        src = _img(tmp_path / "small.png", (200, 100))
+        with self._open(prepare_image_for_upload(src)) as out:
+            assert out.size == (200, 100)
 
 
 class TestSlugifyStem:

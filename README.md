@@ -246,7 +246,10 @@ clip interpolates from one styled frame to the next):
 ### `storyboard` (from images — the main flow)
 
 1. Put source images in `input_images/` (`.jpg`, `.jpeg`, `.png`, `.webp`;
-   ordered by natural filename order, so `img2` before `img10`).
+   ordered by natural filename order, so `img2` before `img10`). Phone
+   originals are fine as-is: each image is normalised before upload (EXIF
+   rotation baked in, iPhone HDR/MPO containers unwrapped to a plain image,
+   oversized photos downscaled) — the file on disk is never modified.
 2. Every image is styled into a consistent 1920×1080 look
    (`styled_images/001_styled.png`, …). Already-styled images are skipped on
    re-runs.

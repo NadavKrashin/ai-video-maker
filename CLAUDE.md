@@ -206,6 +206,18 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
   using the generic `SAFE_FALLBACK_MOTION_PROMPT` (clients/video.py) so a
   false positive degrades the prompt, not the render. Expected behaviour,
   not a bug to "fix".
+- Customer phone photos must NEVER be uploaded to OpenAI as-is: iPhone HDR
+  shots are MPO containers (JPEG + embedded gain-map image; `file` still says
+  "JPEG", PIL says format MPO) and the image API rejects them wholesale with
+  400 `invalid_image_file` — a real paid order lost 21/30 frames this way.
+  `prepare_image_for_upload` (media/images.py) round-trips every style input
+  through Pillow (primary frame only, EXIF orientation baked, long side
+  capped) before upload; keep it in the path.
+- The org's OpenAI image quota is 5 input-images/min, so a whole-order
+  styling batch WILL 429 on the tail. Rate limits get their own patient
+  retry budget in `with_retries` (separate from `max_retries`, honours the
+  server's "try again in Xs" hint) — don't collapse it back into the
+  exponential-backoff attempt count.
 - fal Kling durations are the string enum "5"/"10" (`fal_duration_as_string`);
   valid clip durations live in `constants.VALID_DURATIONS`.
 - Clips are named `<startid>_to_<endid>.mp4`; bridged clips (a missing middle

@@ -5,7 +5,9 @@ import pytest
 
 from ai_video_maker.retry import (
     is_moderation_error,
+    is_rate_limit_error,
     is_retryable_error,
+    with_retries,
     with_reword_recovery,
 )
 
@@ -33,6 +35,87 @@ class TestIsModerationError:
     def test_moderation_is_never_plain_retried(self):
         # Reword recovery owns these; the backoff loop must fail fast.
         assert not is_retryable_error(RuntimeError(_FAL_MODERATION))
+
+
+class _FakeAPIError(Exception):
+    def __init__(self, message: str, status_code: int):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+# The real OpenAI 429 recorded from a failed styling batch (5 images/min).
+_OPENAI_RATE_LIMIT = _FakeAPIError(
+    "Error code: 429 - {'error': {'message': 'Rate limit reached for "
+    "gpt-image-2 (for limit gpt-image) ... on input-images per min: Limit 5, "
+    "Used 5, Requested 1. Please try again in 12s.', "
+    "'code': 'rate_limit_exceeded'}}",
+    429,
+)
+
+
+class TestWithRetriesRateLimits:
+    """429s get a patient budget: a parallel batch against a per-minute quota
+    legitimately waits minutes, which max_retries' backoff can't cover (a real
+    order lost images to exhausted retries while merely rate-limited)."""
+
+    @pytest.fixture
+    def sleeps(self, monkeypatch):
+        recorded: list[float] = []
+        monkeypatch.setattr("ai_video_maker.retry.time.sleep", recorded.append)
+        return recorded
+
+    def test_rate_limit_classification(self):
+        assert is_rate_limit_error(_OPENAI_RATE_LIMIT)
+        assert is_retryable_error(_OPENAI_RATE_LIMIT)
+        assert not is_rate_limit_error(RuntimeError("500 internal server error"))
+
+    def test_429_survives_beyond_max_retries(self, sleeps):
+        calls = []
+
+        def func():
+            calls.append(1)
+            if len(calls) < 8:  # more failures than max_retries allows
+                raise _OPENAI_RATE_LIMIT
+            return "ok"
+
+        result = with_retries(
+            func, max_retries=3, base_delay=2.0, description="t"
+        )
+        assert result == "ok" and len(calls) == 8
+
+    def test_429_waits_at_least_the_server_suggested_time(self, sleeps):
+        calls = []
+
+        def func():
+            calls.append(1)
+            if len(calls) == 1:
+                raise _OPENAI_RATE_LIMIT  # says "try again in 12s"
+            return "ok"
+
+        with_retries(func, max_retries=3, base_delay=2.0, description="t")
+        assert sleeps[0] >= 13.0  # suggested 12s + 1, not the 2s backoff
+
+    def test_429_budget_is_finite(self, sleeps):
+        def func():
+            raise _OPENAI_RATE_LIMIT
+
+        with pytest.raises(_FakeAPIError):
+            with_retries(func, max_retries=3, base_delay=0.0, description="t")
+        assert len(sleeps) < 20  # gives up eventually, doesn't spin forever
+
+    def test_permanent_400_still_fails_fast(self, sleeps):
+        invalid = _FakeAPIError(
+            "Error code: 400 - {'error': {'code': 'invalid_image_file'}}", 400
+        )
+        calls = []
+
+        def func():
+            calls.append(1)
+            raise invalid
+
+        with pytest.raises(_FakeAPIError):
+            with_retries(func, max_retries=5, base_delay=0.0, description="t")
+        assert len(calls) == 1 and sleeps == []
 
 
 class TestWithRewordRecovery:

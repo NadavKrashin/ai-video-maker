@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import math
 import os
@@ -10,7 +11,11 @@ from typing import Any, Callable, Optional, TypeVar
 
 from ..config import Config
 from ..constants import VALID_DURATIONS
-from ..media.images import encode_image_data_url, normalize_image
+from ..media.images import (
+    encode_image_data_url,
+    normalize_image,
+    prepare_image_for_upload,
+)
 from ..logging_setup import logger
 from ..models import Frame, Storyboard, Transition
 from ..retry import with_retries, with_reword_recovery
@@ -481,15 +486,20 @@ class OpenAIClient:
     def style_image(self, src: Path, style_prompt: str, dst: Path) -> None:
         """Edit `src` into the styled look and write a normalised PNG to `dst`."""
         client = self._ensure_client()
+        # Never upload the customer's file as-is: phone originals (iPhone MPO
+        # HDR containers, unbaked EXIF rotation, 24MP frames) get rejected by
+        # the image API as invalid_image_file. Decode once, send clean PNG.
+        upload = prepare_image_for_upload(src)
 
         def _call(prompt: str) -> bytes:
-            with src.open("rb") as fh:
-                resp = client.images.edit(
-                    model=self.config.openai_image_model,
-                    image=fh,
-                    prompt=prompt,
-                    size=self._IMAGE_API_SIZE,
-                )
+            image = io.BytesIO(upload)
+            image.name = f"{src.stem}.png"  # the SDK infers the mime type from this
+            resp = client.images.edit(
+                model=self.config.openai_image_model,
+                image=image,
+                prompt=prompt,
+                size=self._IMAGE_API_SIZE,
+            )
             return base64.b64decode(resp.data[0].b64_json)
 
         raw = self._image_with_moderation_recovery(

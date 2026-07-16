@@ -1,12 +1,21 @@
 """Retry helper with exponential backoff and retryability classification."""
 from __future__ import annotations
 
+import random
+import re
 import time
 from typing import Callable, Optional, TypeVar
 
 from .logging_setup import logger
 
 T = TypeVar("T")
+
+# Rate limits get their own, more patient retry budget: the OpenAI image API
+# allows only 5 input-images/min while styling submits a whole order's photos
+# in parallel, so the tail of the batch legitimately needs minutes of waiting
+# — far beyond what max_retries' exponential backoff (~30s total) covers.
+_RATE_LIMIT_MAX_RETRIES = 10
+_RATE_LIMIT_MAX_DELAY = 60.0
 
 
 def _http_status(exc: BaseException) -> Optional[int]:
@@ -38,6 +47,20 @@ def is_moderation_error(exc: BaseException) -> bool:
         or "content checker" in text
         or "content policy" in text
     )
+
+
+def is_rate_limit_error(exc: BaseException) -> bool:
+    """True when an error is a 429 / rate-limit rejection."""
+    if _http_status(exc) == 429:
+        return True
+    text = str(exc).lower()
+    return "rate_limit_exceeded" in text or "rate limit" in text
+
+
+def _suggested_wait_seconds(exc: BaseException) -> Optional[float]:
+    """The server's own 'Please try again in Xs' hint, when present."""
+    match = re.search(r"try again in (\d+(?:\.\d+)?)\s*s", str(exc), re.IGNORECASE)
+    return float(match.group(1)) if match else None
 
 
 def is_retryable_error(exc: BaseException) -> bool:
@@ -154,9 +177,17 @@ def with_retries(
 
     Stops immediately (no further attempts) on permanent errors as judged by
     `retryable`, so e.g. a content-moderation rejection isn't retried 5 times.
+
+    Rate limits (429) are counted against their own larger budget
+    (`_RATE_LIMIT_MAX_RETRIES`) instead of `max_retries`: with per-minute
+    quotas and a parallel batch, waiting several minutes is normal, not a
+    failure. The wait honours the server's "try again in Xs" hint and adds
+    jitter so parallel workers don't stampede the quota in lockstep.
     """
     last_exc: Optional[BaseException] = None
-    for attempt in range(1, max_retries + 1):
+    attempt = 0
+    rate_limit_attempt = 0
+    while True:
         try:
             return func()
         except Exception as exc:  # noqa: BLE001 - we want to retry broadly
@@ -168,6 +199,26 @@ def with_retries(
                     exc,
                 )
                 break
+            if is_rate_limit_error(exc):
+                rate_limit_attempt += 1
+                if rate_limit_attempt >= _RATE_LIMIT_MAX_RETRIES:
+                    break
+                delay = base_delay * (2 ** (rate_limit_attempt - 1))
+                suggested = _suggested_wait_seconds(exc)
+                if suggested is not None:
+                    delay = max(delay, suggested + 1.0)
+                delay = min(delay, _RATE_LIMIT_MAX_DELAY)
+                delay *= 1.0 + random.random() * 0.25
+                logger.warning(
+                    "%s hit a rate limit (retry %d/%d) — waiting %.1fs",
+                    description,
+                    rate_limit_attempt,
+                    _RATE_LIMIT_MAX_RETRIES,
+                    delay,
+                )
+                time.sleep(delay)
+                continue
+            attempt += 1
             if attempt >= max_retries:
                 break
             delay = base_delay * (2 ** (attempt - 1))

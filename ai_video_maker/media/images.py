@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 from ..logging_setup import logger
 
@@ -36,13 +36,33 @@ def encode_image_data_url(path: Path, max_edge: Optional[int] = None) -> str:
         return f"data:{mime};base64,{b64}"
 
     with Image.open(path) as im:
-        im = im.convert("RGB")
+        im = ImageOps.exif_transpose(im).convert("RGB")
         if max(im.size) > max_edge:
             im.thumbnail((max_edge, max_edge), Image.LANCZOS)
         buf = io.BytesIO()
         im.save(buf, format="JPEG", quality=85)
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
     return f"data:image/jpeg;base64,{b64}"
+
+
+def prepare_image_for_upload(src: Path, max_edge: int = 2048) -> bytes:
+    """Decode `src` and re-encode it as clean PNG bytes for an image-input API.
+
+    Customer photos arrive as whatever the phone produced. iPhone HDR shots
+    are MPO containers (a JPEG with an embedded gain-map second image) that
+    OpenAI's decoder rejects wholesale as `invalid_image_file`; EXIF
+    orientation is often unbaked; 24MP originals are pointless upload weight
+    when the edit output is ~1.5MP. Round-tripping through Pillow keeps only
+    the primary frame, bakes the orientation into the pixels, caps the long
+    side at `max_edge`, and drops metadata — a plain PNG no decoder objects to.
+    """
+    with Image.open(src) as im:
+        im = ImageOps.exif_transpose(im).convert("RGB")
+        if max(im.size) > max_edge:
+            im.thumbnail((max_edge, max_edge), Image.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 def natural_sort_key(path: Path) -> list[Any]:
