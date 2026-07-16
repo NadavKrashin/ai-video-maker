@@ -98,6 +98,25 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
+    sp = sub.add_parser(
+        "serve",
+        help="Run the admin API server (+ order watcher) for the web admin "
+             "panel.",
+        description="Run the admin API server: order intake, project status, "
+                    "storyboard editing, media serving, and background "
+                    "execution of the pipeline steps — everything the "
+                    "animoments admin panel talks to. Also starts the "
+                    "Cloudinary order watcher (config: watch_*) unless "
+                    "--no-watch. Requires ADMIN_API_TOKEN in .env.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sp.add_argument("--host", default="127.0.0.1",
+                    help="Bind address (default 127.0.0.1; use 0.0.0.0 or a "
+                         "tunnel to reach it from elsewhere).")
+    sp.add_argument("--port", type=int, default=8300, help="Port (default 8300).")
+    sp.add_argument("--no-watch", action="store_true",
+                    help="Don't start the Cloudinary order watcher.")
+
     command("init",
             "Create the project workspace (input_images/, clips/, output/, ...) "
             "and exit. Drop your source images into the printed input_images/ "
@@ -263,16 +282,20 @@ def _make_confirm(assume_yes: bool):
     return confirm
 
 
+def _shared_config_path(args: argparse.Namespace) -> Path:
+    path = Path(args.config)
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
 def _cmd_orders(args: argparse.Namespace) -> int:
     """Project-less listing of the paid web orders waiting in Cloudinary."""
     from .clients.cloudinary_client import CloudinaryClient
+    from .intake import ingested_orders
+    from .workspace import PROJECTS_DIR
 
     load_dotenv(PROJECT_ROOT / ".env")
-    config_path = Path(args.config)
-    if not config_path.is_absolute():
-        config_path = PROJECT_ROOT / config_path
     try:
-        config = Config.load(config_path)
+        config = Config.load(_shared_config_path(args))
         folders = CloudinaryClient.from_config(config).list_order_folders()
     except PipelineError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -280,11 +303,30 @@ def _cmd_orders(args: argparse.Namespace) -> int:
     if not folders:
         print("No order folders found in Cloudinary.")
         return 0
+    ingested = ingested_orders(PROJECTS_DIR)
     print(f"{len(folders)} order folder(s) in Cloudinary (newest first):")
     for name in folders:
-        print(f"  {name}")
-    print("\nDownload one into a new project with:")
-    print("  python pipeline.py ingest <project> <order-id>")
+        note = f"  -> ingested as projects/{ingested[name]}" if name in ingested else ""
+        print(f"  {name}{note}")
+    if len(ingested) < len(folders):
+        print("\nDownload one into a new project with:")
+        print("  python pipeline.py ingest <project> <order-id>")
+    return 0
+
+
+def _cmd_serve(args: argparse.Namespace) -> int:
+    """Run the admin API server (uvicorn) with the order watcher."""
+    load_dotenv(PROJECT_ROOT / ".env")
+    try:
+        from .server import create_app
+
+        app = create_app(_shared_config_path(args), watch=not args.no_watch)
+    except PipelineError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    import uvicorn
+
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
 
 
@@ -292,10 +334,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    # `orders` inspects Cloudinary, not a project workspace — handle it before
-    # any project resolution (it has no `project` argument at all).
+    # `orders` and `serve` are project-less (they span all projects) — handle
+    # them before any project resolution (they have no `project` argument).
     if args.command == "orders":
         return _cmd_orders(args)
+    if args.command == "serve":
+        return _cmd_serve(args)
 
     # Every movie lives in its own workspace under projects/<name>/.
     try:

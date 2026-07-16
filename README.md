@@ -59,6 +59,32 @@ Setup: `config.json` carries the (public) `cloudinary_cloud_name` and
 `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` (Cloudinary console →
 Settings → API Keys).
 
+### The admin server (`serve`) — run the whole flow from a browser
+
+```bash
+python pipeline.py serve            # admin API on 127.0.0.1:8300 + order watcher
+```
+
+One process gives the animoments **admin panel** everything it needs:
+
+- **API**: order list, per-project status, storyboard read/edit, photos and
+  clip playback, and actions (ingest / storyboard / render / redo one clip /
+  audio / combine) that run as **background jobs** — one at a time, with
+  their logs available at `/api/jobs/<id>`. Every route (except
+  `/api/health`) requires the `ADMIN_API_TOKEN` from `.env`, passed as
+  `Authorization: Bearer <token>` (or `?token=` for media tags).
+- **Order watcher**: polls Cloudinary every `watch_poll_seconds` and
+  auto-ingests a new order once its upload has been quiet for
+  `watch_quiet_minutes` (payment confirms *before* photos finish uploading,
+  so folder-exists ≠ order-complete). With `watch_auto_storyboard` (default
+  on) it also runs `storyboard` right away — **this spends OpenAI styling
+  credits automatically per paid order** — so the storyboard is waiting for
+  review by the time you open the panel. Disable with `--no-watch` or
+  `watch_enabled: false`.
+
+To reach the panel away from home, expose the port with a tunnel
+(Cloudflare Tunnel / Tailscale) — don't bind `0.0.0.0` on an open network.
+
 ### Editing cookbook
 
 Styled frames and clips are **keyed by your input filenames** (input
@@ -314,6 +340,7 @@ project name as its first argument (except `orders`, which is project-less).
 | Command | Flags |
 |---------|-------|
 | `orders` | — (no project argument; lists Cloudinary order folders) |
+| `serve` | — (no project argument) `--host`, `--port`, `--no-watch` |
 | `ingest` | `<order>` (id / folder / unique fragment), `--force`, `--dry-run` |
 | `init` | — |
 | `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |

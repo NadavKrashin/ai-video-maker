@@ -127,6 +127,21 @@ class Config(BaseModel):
     cloudinary_cloud_name: str = ""
     cloudinary_orders_folder: str = "video-orders"
 
+    # --- Admin server & order watcher (`pipeline.py serve`) ---------------- #
+    # The watcher polls Cloudinary and auto-ingests a new order once its
+    # upload has gone quiet (the frontend confirms payment BEFORE photos
+    # finish uploading, so "folder exists" != "order complete").
+    watch_enabled: bool = True
+    watch_poll_seconds: int = 300
+    watch_quiet_minutes: float = 10.0
+    # Also run `storyboard` right after auto-ingest (spends OpenAI credits —
+    # styling ~8-30 images per order — so the storyboard is ready for review
+    # by the time you open the admin panel).
+    watch_auto_storyboard: bool = True
+    # Origins allowed to call the admin API from a browser (the admin panel's
+    # URL). ["*"] = any origin; the token still gates every request.
+    admin_cors_origins: list[str] = Field(default_factory=lambda: ["*"])
+
     # How many image/clip/SFX API jobs to run at once. These steps are I/O-bound
     # (waiting on the provider), so a small thread pool runs them in parallel.
     # Raise for speed; lower to 1 if you hit rate limits (transient 429s are

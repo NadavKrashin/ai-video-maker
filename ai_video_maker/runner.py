@@ -34,6 +34,7 @@ from .clients.openai_client import OpenAIClient
 from .clients.video import VideoClient
 from .config import Config
 from .errors import PipelineError, StoryboardError
+from .intake import write_order_record
 from .logging_setup import logger
 from .media.ffmpeg import (
     apply_edge_fades,
@@ -302,6 +303,13 @@ class Pipeline:
                 base_delay=self.config.retry_base_delay_seconds,
                 description=f"download {asset.public_id}",
             )
+        # Tie the project to its order (order.json): the `orders` listing, the
+        # watcher, and the admin API all use this to know the folder is handled.
+        write_order_record(
+            self.workspace.order_file,
+            order_folder=folder,
+            photo_count=len(targets),
+        )
         logger.info(
             "Ingested %d photo(s) into %s", len(pending),
             self.workspace.input_images_dir,
@@ -1654,92 +1662,139 @@ class Pipeline:
             self.failed.record(job_id, "music", str(exc))
 
     # ------------------------------ status step --------------------------- #
-    def cmd_status(self) -> None:
-        """Print where this project stands and what to run next."""
+    def snapshot(self) -> dict[str, Any]:
+        """Structured project status: what exists, what's missing, what's next.
+
+        The one source of truth for "where does this project stand" —
+        ``cmd_status`` prints it, the admin API returns it as JSON.
+        """
         ws = self.workspace
-        line = "=" * 60
-        print(f"\n{line}\nPROJECT STATUS: {ws.root.name}\n{line}")
+
+        def _pngs(directory: Path) -> list[Path]:
+            if not directory.exists():
+                return []
+            return sorted(
+                (p for p in directory.iterdir()
+                 if p.is_file() and p.suffix.lower() == ".png"),
+                key=natural_sort_key,
+            )
 
         inputs = list_input_images(ws.input_images_dir)
-        styled = sorted(
-            (p for p in ws.styled_images_dir.iterdir()
-             if p.is_file() and p.suffix.lower() == ".png"),
-            key=natural_sort_key,
-        ) if ws.styled_images_dir.exists() else []
-        generated = sorted(
-            (p for p in ws.generated_frames_dir.iterdir()
-             if p.is_file() and p.suffix.lower() == ".png"),
-            key=natural_sort_key,
-        ) if ws.generated_frames_dir.exists() else []
-        print(f"  Input images     : {len(inputs)}")
-        print(f"  Styled images    : {len(styled)}")
-        if generated:
-            print(f"  Generated frames : {len(generated)}")
+        styled = _pngs(ws.styled_images_dir)
+        generated = _pngs(ws.generated_frames_dir)
 
         sb_path = ws.default_storyboard_json
         storyboard: Optional[Storyboard] = None
+        storyboard_error = ""
         if sb_path.exists():
             try:
                 storyboard = Storyboard.load(sb_path)
-                mode = "from idea" if any(
-                    f.image_prompt.strip() for f in storyboard.frames
-                ) else "from images"
-                print(
-                    f"  Storyboard       : {len(storyboard.frames)} frame(s), "
-                    f"{len(storyboard.transitions)} transition(s) ({mode})"
-                )
             except StoryboardError as exc:
-                print(f"  Storyboard       : UNREADABLE ({exc})")
-        else:
-            print("  Storyboard       : none")
+                storyboard_error = str(exc)
 
+        changed_frames: list[str] = []
+        clips: list[dict[str, Any]] = []
+        stray: list[str] = []
+        missing = 0
         if storyboard is not None:
             sb_mtime = sb_path.stat().st_mtime
-            changed = [
+            changed_frames = [
                 Path(f.output_path).name
                 for f in storyboard.frames
                 if (ws.root / f.output_path).exists()
                 and (ws.root / f.output_path).stat().st_mtime > sb_mtime
             ]
-            if changed:
-                print(
-                    "  Changed frames   : " + ", ".join(changed)
-                    + "  (newer than the storyboard - run storyboard to re-plan)"
-                )
-
-        rendered = missing = 0
-        if storyboard is not None:
             frames = [ws.root / f.output_path for f in storyboard.frames]
             expected = [self._clip_name(a, b) for a, b in self._bridge_pairs(frames)]
             for clip in expected:
-                if clip.exists():
-                    rendered += 1
-                    sfx = "sfx ✓" if self.state.is_done(f"sfx:{clip.name}") else "silent"
-                    print(f"    clip {clip.stem:<12} rendered  ({sfx})")
-                else:
-                    missing += 1
-                    print(f"    clip {clip.stem:<12} MISSING")
-            stray = sorted(
-                set(find_generated_clips(ws.clips_dir)) - set(expected)
+                exists = clip.exists()
+                missing += 0 if exists else 1
+                clips.append({
+                    "id": clip.stem,
+                    "file": clip.name,
+                    "rendered": exists,
+                    "sfx": exists and self.state.is_done(f"sfx:{clip.name}"),
+                })
+            stray = [
+                p.name for p in sorted(
+                    set(find_generated_clips(ws.clips_dir)) - set(expected)
+                )
+            ]
+
+        if storyboard is None and not storyboard_error:
+            next_step = "storyboard"
+        elif storyboard is not None and missing:
+            next_step = "render"
+        elif storyboard is not None and not ws.final_video.exists():
+            next_step = "combine"
+        else:
+            next_step = ""
+
+        return {
+            "project": ws.root.name,
+            "input_images": [p.name for p in inputs],
+            "styled_images": [p.name for p in styled],
+            "generated_frames": [p.name for p in generated],
+            "storyboard": None if storyboard is None else {
+                "frames": len(storyboard.frames),
+                "transitions": len(storyboard.transitions),
+                "from_idea": any(f.image_prompt.strip() for f in storyboard.frames),
+            },
+            "storyboard_error": storyboard_error,
+            "changed_frames": changed_frames,
+            "clips": clips,
+            "stray_clips": stray,
+            "final_video": ws.final_video.exists(),
+            "has_failed_jobs": self.failed.path.exists(),
+            "next_step": next_step,
+        }
+
+    def cmd_status(self) -> None:
+        """Print where this project stands and what to run next."""
+        snap = self.snapshot()
+        ws = self.workspace
+        line = "=" * 60
+        print(f"\n{line}\nPROJECT STATUS: {ws.root.name}\n{line}")
+
+        print(f"  Input images     : {len(snap['input_images'])}")
+        print(f"  Styled images    : {len(snap['styled_images'])}")
+        if snap["generated_frames"]:
+            print(f"  Generated frames : {len(snap['generated_frames'])}")
+
+        if snap["storyboard_error"]:
+            print(f"  Storyboard       : UNREADABLE ({snap['storyboard_error']})")
+        elif snap["storyboard"] is None:
+            print("  Storyboard       : none")
+        else:
+            sb = snap["storyboard"]
+            mode = "from idea" if sb["from_idea"] else "from images"
+            print(
+                f"  Storyboard       : {sb['frames']} frame(s), "
+                f"{sb['transitions']} transition(s) ({mode})"
             )
-            if stray:
-                print(f"  Stray clips      : {', '.join(p.name for p in stray)}")
+
+        if snap["changed_frames"]:
+            print(
+                "  Changed frames   : " + ", ".join(snap["changed_frames"])
+                + "  (newer than the storyboard - run storyboard to re-plan)"
+            )
+
+        for clip in snap["clips"]:
+            if clip["rendered"]:
+                sfx = "sfx ✓" if clip["sfx"] else "silent"
+                print(f"    clip {clip['id']:<12} rendered  ({sfx})")
+            else:
+                print(f"    clip {clip['id']:<12} MISSING")
+        if snap["stray_clips"]:
+            print(f"  Stray clips      : {', '.join(snap['stray_clips'])}")
 
         final = ws.final_video
         print(f"  Final video      : {'ready — ' + str(final) if final.exists() else 'not built'}")
-        if self.failed.path.exists():
+        if snap["has_failed_jobs"]:
             print(f"  Failed jobs      : see {self.failed.path}")
 
-        if storyboard is None:
-            hint = self._next_command("storyboard")
-        elif missing:
-            hint = self._next_command("render")
-        elif not final.exists():
-            hint = self._next_command("combine")
-        else:
-            hint = None
-        if hint:
-            print(f"\n  Next step:\n    {hint}")
+        if snap["next_step"]:
+            print(f"\n  Next step:\n    {self._next_command(snap['next_step'])}")
         print(line)
 
     # ------------------------------- one-shot ----------------------------- #

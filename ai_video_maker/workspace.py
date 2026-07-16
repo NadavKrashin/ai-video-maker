@@ -96,6 +96,12 @@ class Workspace:
         return self.root / "letter.txt"
 
     @property
+    def order_file(self) -> Path:
+        """Which Cloudinary web order this project came from (written by
+        `ingest`); absent for hand-made projects."""
+        return self.root / "order.json"
+
+    @property
     def default_storyboard_json(self) -> Path:
         return self.storyboard_dir / "storyboard.json"
 

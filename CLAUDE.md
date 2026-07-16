@@ -162,11 +162,27 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
   in both Cloudinary folder modes), public_id-prefix as fallback. `orders`
   is the one project-less CLI command — special-cased in cli.py before
   workspace resolution.
-- Long-term direction (agreed 2026-07-16): evolve this into an order queue —
-  payment webhook → auto-ingest + storyboard → review-from-anywhere dashboard
-  (FastAPI wrapper around `Pipeline`, confirm callback becomes a pending
-  "approve" action) → upload final + notify customer. Keep review gates
-  human; automate only the plumbing.
+- `pipeline.py serve` (`server.py`) is the admin API + order watcher: FastAPI,
+  token auth via ADMIN_API_TOKEN in .env (Bearer header or `?token=` for
+  media tags), serial background JobRunner (one pipeline command at a time,
+  whitelisted commands/options), and a watcher thread that auto-ingests a
+  new order once uploads have been quiet `watch_quiet_minutes` (the frontend
+  confirms payment BEFORE photos finish uploading — never ingest on folder
+  existence alone). `watch_auto_storyboard` (default on) spends OpenAI
+  credits automatically per paid order — deliberate, user-approved. The
+  review surface is the animoments admin panel (frontend repo), which polls
+  this API; the user explicitly chose the panel over Telegram notifications.
+- `Pipeline.snapshot()` is the single source of truth for project status
+  (cmd_status prints it, the API returns it). `projects/<name>/order.json`
+  (written by ingest) ties a project to its Cloudinary order folder; the
+  watcher/`orders` listing use it to know what's already handled.
+- The user's `.venv` is a split install: `.venv/bin/python` → an anaconda
+  python3.12 with its own site-packages, `.venv/bin/pip` → python3.11.
+  Install packages with `.venv/bin/python -m pip`, never `.venv/bin/pip`.
+- Long-term direction (agreed 2026-07-16): remaining phases — payment
+  webhook from the frontend (exact photo_count completeness), delivery step
+  (upload final + customer email), later move off the Mac to a VPS behind a
+  tunnel. Keep review gates human; automate only the plumbing.
 
 ## Gotchas / facts sessions keep rediscovering
 
