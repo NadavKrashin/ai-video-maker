@@ -33,7 +33,7 @@ from .clients.download import download_file
 from .clients.openai_client import OpenAIClient
 from .clients.video import VideoClient
 from .config import Config
-from .errors import PipelineError, StoryboardError
+from .errors import PipelineCancelled, PipelineError, StoryboardError
 from .intake import write_order_record
 from .logging_setup import logger
 from .media.ffmpeg import (
@@ -141,11 +141,15 @@ class Pipeline:
         workspace: Workspace,
         options: RunOptions,
         confirm: Optional[ConfirmFn] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> None:
         self.config = config
         self.workspace = workspace
         self.options = options
         self.confirm: ConfirmFn = confirm or (lambda lines, question: True)
+        # Cooperative cancellation (set by the admin API's job runner; the CLI
+        # just uses Ctrl-C). Checked between work items, never mid-API-call.
+        self.cancel_event = cancel_event or threading.Event()
         self.dry_run: bool = options.dry_run
         self.force: bool = options.force
         self.duration: int = options.duration or config.duration
@@ -217,22 +221,42 @@ class Pipeline:
         """
         if not items:
             return
+        self._raise_if_cancelled()
+
+        def guarded(item: Any) -> None:
+            # In-flight items finish (their output is paid for and useful);
+            # items that haven't started yet are skipped after a cancel.
+            if not self.cancel_event.is_set():
+                worker(item)
+
         workers = 1 if self.dry_run else self.concurrency
         if workers <= 1:
             for item in tqdm(items, desc=desc, unit=unit):
-                worker(item)
-            return
+                guarded(item)
+        else:
+            logger.info("%s: %d job(s), %d in parallel", desc, len(items), workers)
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = [pool.submit(guarded, item) for item in items]
+                for fut in tqdm(
+                    as_completed(futures), total=len(futures), desc=desc, unit=unit
+                ):
+                    try:
+                        fut.result()
+                    except Exception as exc:  # noqa: BLE001 - workers self-report
+                        logger.error("Unexpected worker error: %s", exc)
+        self._raise_if_cancelled()
 
-        logger.info("%s: %d job(s), %d in parallel", desc, len(items), workers)
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(worker, item) for item in items]
-            for fut in tqdm(
-                as_completed(futures), total=len(futures), desc=desc, unit=unit
-            ):
-                try:
-                    fut.result()
-                except Exception as exc:  # noqa: BLE001 - workers self-report
-                    logger.error("Unexpected worker error: %s", exc)
+    def _raise_if_cancelled(self) -> None:
+        """Abort the command cleanly once a cancel has been requested.
+
+        Completed items stay on disk, so the resume logic (existence-based
+        skips) makes a later re-run continue from where the cancel landed.
+        """
+        if self.cancel_event.is_set():
+            raise PipelineCancelled(
+                "Cancelled by request — finished items are kept; re-run the "
+                "command to resume from here."
+            )
 
     def _ask(self, lines: list[str], question: str, decline_log: str) -> bool:
         """Gate on the injected confirm callback; True means proceed.
@@ -241,6 +265,7 @@ class Pipeline:
         `decline_log` — which should name the command that resumes from here —
         and returns False.
         """
+        self._raise_if_cancelled()
         if self.dry_run:
             return True
         if self.confirm(lines, question):

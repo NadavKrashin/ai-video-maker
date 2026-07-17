@@ -70,9 +70,13 @@ One process gives the animoments **admin panel** everything it needs:
 - **API**: order list, per-project status, storyboard read/edit, photos and
   clip playback, and actions (ingest / storyboard / render / redo one clip /
   audio / combine) that run as **background jobs** — one at a time, with
-  their logs available at `/api/jobs/<id>`. Every route (except
-  `/api/health`) requires the `ADMIN_API_TOKEN` from `.env`, passed as
-  `Authorization: Bearer <token>` (or `?token=` for media tags).
+  their logs available at `/api/jobs/<id>`. `POST /api/jobs/<id>/cancel`
+  cancels a job: a queued job is dropped immediately; a running one shows
+  `cancelling` and stops between work items — whatever is mid-generation
+  finishes and is kept (already-submitted API work bills either way), so
+  re-running the same action later resumes instead of re-paying. Every route
+  (except `/api/health`) requires the `ADMIN_API_TOKEN` from `.env`, passed
+  as `Authorization: Bearer <token>` (or `?token=` for media tags).
 - **Order watcher**: polls Cloudinary every `watch_poll_seconds` and
   auto-ingests a new order once its upload has been quiet for
   `watch_quiet_minutes` (payment confirms *before* photos finish uploading,

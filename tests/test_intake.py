@@ -126,3 +126,34 @@ class TestJobRunnerQueueing:
         runner = self._runner(tmp_path)
         runner.enqueue("liat", "ingest", {"order": "folder-x"})
         assert runner.active_ingest_orders() == {"folder-x"}
+
+    def test_cancel_queued_job_never_runs(self, tmp_path):
+        runner = self._runner(tmp_path)
+        job = runner.enqueue("liat", "render", {})
+        cancelled = runner.cancel(job.id)
+        assert cancelled is job and job.state == "cancelled"
+        assert job.finished_at
+        runner._run_job(job)  # worker reaches it in the queue later
+        assert job.state == "cancelled" and job.started_at == ""
+
+    def test_cancel_running_job_flags_the_pipeline(self, tmp_path):
+        runner = self._runner(tmp_path)
+        job = runner.enqueue("liat", "render", {})
+        job.state = "running"  # as the worker would set it
+        runner.cancel(job.id)
+        assert job.state == "cancelling"
+        assert job.cancel_event.is_set()  # what the Pipeline polls
+        # still counts as active: a cancelling ingest must block the watcher
+        ingest = runner.enqueue("liat", "ingest", {"order": "f"})
+        ingest.state = "cancelling"
+        assert "f" in runner.active_ingest_orders()
+
+    def test_cancel_finished_job_is_a_noop(self, tmp_path):
+        runner = self._runner(tmp_path)
+        job = runner.enqueue("liat", "render", {})
+        job.state = "done"
+        runner.cancel(job.id)
+        assert job.state == "done" and not job.cancel_event.is_set()
+
+    def test_cancel_unknown_job_returns_none(self, tmp_path):
+        assert self._runner(tmp_path).cancel("nope") is None

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from ai_video_maker.errors import PipelineError
+from ai_video_maker.errors import PipelineCancelled, PipelineError
 from ai_video_maker.models import Frame, Storyboard, Transition
 
 
@@ -72,6 +72,37 @@ class TestBridgePairs:
         p = make_pipeline(dry_run=True)
         frames = [workspace.styled_images_dir / f"{i:03d}_styled.png" for i in (1, 2)]
         assert len(p._bridge_pairs(frames)) == 1
+
+
+class TestCancellation:
+    """Cooperative cancel: finish the in-flight item, skip the rest, raise."""
+
+    def test_cancel_mid_batch_skips_the_rest_and_raises(self, pipeline):
+        done = []
+
+        def worker(i):
+            done.append(i)
+            if i == 2:
+                pipeline.cancel_event.set()  # as the API's cancel would
+
+        with pytest.raises(PipelineCancelled):
+            pipeline._map_parallel([1, 2, 3, 4], worker, "t")
+        assert done == [1, 2]  # item 3 and 4 never start
+
+    def test_cancel_before_batch_runs_nothing(self, pipeline):
+        pipeline.cancel_event.set()
+        with pytest.raises(PipelineCancelled):
+            pipeline._map_parallel([1, 2], lambda i: pytest.fail("must not run"), "t")
+
+    def test_cancel_blocks_confirm_gates(self, pipeline):
+        pipeline.cancel_event.set()
+        with pytest.raises(PipelineCancelled):
+            pipeline._ask(["info"], "spend money?", "declined")
+
+    def test_no_cancel_no_change(self, pipeline):
+        done = []
+        pipeline._map_parallel([1, 2], done.append, "t")
+        assert done == [1, 2]
 
 
 class TestPairsFromStoryboard:

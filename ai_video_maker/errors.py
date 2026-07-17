@@ -16,6 +16,15 @@ class ConfigError(PipelineError):
     """config.json is missing or fails validation."""
 
 
+class PipelineCancelled(PipelineError):
+    """A cancel was requested mid-command; completed work is kept.
+
+    Raised cooperatively (between work items / at confirm gates), never
+    mid-API-call — an in-flight generation finishes and its output is saved,
+    so re-running the command later resumes instead of redoing paid work.
+    """
+
+
 class StoryboardError(PipelineError):
     """A storyboard file is missing or fails validation."""
 

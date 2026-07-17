@@ -37,7 +37,7 @@ from fastapi.responses import FileResponse
 
 from .clients.cloudinary_client import CloudinaryClient
 from .config import Config
-from .errors import InvalidProjectName, PipelineError
+from .errors import InvalidProjectName, PipelineCancelled, PipelineError
 from .intake import (
     derive_project_name,
     ingested_orders,
@@ -74,7 +74,7 @@ class Job:
     project: str
     command: str
     options: dict[str, Any]
-    state: str = "queued"          # queued | running | done | failed
+    state: str = "queued"  # queued | running | cancelling | done | failed | cancelled
     error: str = ""
     log: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=_now)
@@ -82,6 +82,10 @@ class Job:
     finished_at: str = ""
     # Enqueued on success — how "ingest then storyboard" chains.
     then: Optional[dict[str, Any]] = None
+    # Cooperative cancel flag, shared with the Pipeline while running: set ->
+    # the pipeline stops between work items (in-flight API calls finish and
+    # their outputs are kept, so a later re-run resumes instead of re-paying).
+    cancel_event: threading.Event = field(default_factory=threading.Event)
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -148,6 +152,28 @@ class JobRunner:
         with self._lock:
             return self._jobs.get(job_id)
 
+    def cancel(self, job_id: str) -> Optional[Job]:
+        """Request cancellation; returns the job, or None if unknown.
+
+        A queued job is cancelled immediately (the worker skips it when it
+        reaches the queue). A running job flips to "cancelling" and its
+        cancel_event tells the pipeline to stop between work items — the item
+        currently generating finishes and is kept. Finished jobs are left
+        untouched (cancelling them is meaningless).
+        """
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            if job.state == "queued":
+                job.cancel_event.set()
+                job.state = "cancelled"
+                job.finished_at = _now()
+            elif job.state == "running":
+                job.cancel_event.set()
+                job.state = "cancelling"
+            return job
+
     def list(self, project: Optional[str] = None, limit: int = 50) -> list[Job]:
         with self._lock:
             jobs = [
@@ -162,42 +188,55 @@ class JobRunner:
             return {
                 j.options.get("order", "")
                 for j in self._jobs.values()
-                if j.command == "ingest" and j.state in ("queued", "running")
+                # "cancelling" is still running — the watcher must not
+                # re-queue its order until the worker actually lets go.
+                if j.command == "ingest"
+                and j.state in ("queued", "running", "cancelling")
             }
 
     def _loop(self) -> None:
         while True:
-            job = self._queue.get()
+            self._run_job(self._queue.get())
+
+    def _run_job(self, job: Job) -> None:
+        with self._lock:
+            if job.state != "queued":  # cancelled while waiting in the queue
+                return
             job.state, job.started_at = "running", _now()
-            handler = _JobLogHandler(job)
-            handler.setFormatter(logging.Formatter("%(asctime)s | %(message)s"))
-            try:
-                workspace = Workspace.for_project(job.project)
-                workspace.mkdirs()  # ingest bootstraps new projects
-                setup_logging(workspace)
-                logger.addHandler(handler)
-                config = Config.load(
-                    self._config_path,
-                    override_path=workspace.root / "config.json",
-                )
-                pipeline = Pipeline(
-                    config, workspace, RunOptions(**job.options)
-                )  # default confirm: always proceed
-                pipeline.execute(job.command)
-                job.state = "done"
-            except Exception as exc:  # noqa: BLE001 - jobs must never kill the worker
-                job.state, job.error = "failed", str(exc)
-                logger.error("Job %s (%s %s) failed: %s",
-                             job.id, job.command, job.project, exc)
-            finally:
-                job.finished_at = _now()
-                logger.removeHandler(handler)
-            if job.state == "done" and job.then:
-                self.enqueue(
-                    job.then.get("project", job.project),
-                    job.then["command"],
-                    job.then.get("options", {}),
-                )
+        handler = _JobLogHandler(job)
+        handler.setFormatter(logging.Formatter("%(asctime)s | %(message)s"))
+        try:
+            workspace = Workspace.for_project(job.project)
+            workspace.mkdirs()  # ingest bootstraps new projects
+            setup_logging(workspace)
+            logger.addHandler(handler)
+            config = Config.load(
+                self._config_path,
+                override_path=workspace.root / "config.json",
+            )
+            pipeline = Pipeline(
+                config, workspace, RunOptions(**job.options),
+                cancel_event=job.cancel_event,
+            )  # default confirm: always proceed
+            pipeline.execute(job.command)
+            job.state = "done"
+        except PipelineCancelled as exc:
+            job.state, job.error = "cancelled", str(exc)
+            logger.info("Job %s (%s %s) cancelled.",
+                        job.id, job.command, job.project)
+        except Exception as exc:  # noqa: BLE001 - jobs must never kill the worker
+            job.state, job.error = "failed", str(exc)
+            logger.error("Job %s (%s %s) failed: %s",
+                         job.id, job.command, job.project, exc)
+        finally:
+            job.finished_at = _now()
+            logger.removeHandler(handler)
+        if job.state == "done" and job.then and not job.cancel_event.is_set():
+            self.enqueue(
+                job.then.get("project", job.project),
+                job.then["command"],
+                job.then.get("options", {}),
+            )
 
 
 # -------------------------------- watcher ----------------------------------- #
@@ -412,6 +451,19 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         data = job.summary()
         data["log"] = job.log[-200:]
         return data
+
+    @app.post("/api/jobs/{job_id}/cancel", dependencies=guarded)
+    async def cancel_job(job_id: str) -> dict[str, Any]:
+        """Cancel a queued job now, or ask a running one to stop.
+
+        A running job stops between work items ("cancelling" until the worker
+        confirms); whatever is mid-generation finishes and is kept, so
+        re-running the command later resumes rather than re-paying.
+        """
+        job = jobs.cancel(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="No such job")
+        return {"job": job.summary()}
 
     _FILE_KINDS = {
         "input": lambda ws: ws.input_images_dir,
