@@ -111,8 +111,8 @@ insertions, number in tens (`10.jpg, 20.jpg, 30.jpg`).
 | Change one clip's sound (edit its `sound_prompt` first) | `python pipeline.py audio myfilm --clip 2_to_3` | ~1¢ |
 | Add an image between 2 and 3 | copy it in as `input_images/2a.jpg`, then:<br>`python pipeline.py storyboard myfilm`<br>`python pipeline.py render myfilm` | 1 styling + 2 clips |
 | Remove image 2 | `rm projects/myfilm/input_images/2.jpg projects/myfilm/styled_images/2.png`, then:<br>`python pipeline.py storyboard myfilm`<br>`python pipeline.py render myfilm` | 1 clip |
-| Swap image 2 for a different photo | overwrite `input_images/2.jpg` with the new file, then:<br>`python pipeline.py storyboard myfilm` (asks before re-styling)<br>`python pipeline.py render myfilm` | 1 styling + 2 clips |
-| Re-style one image (new roll of the styling dice) | `rm projects/myfilm/styled_images/2.png`, then:<br>`python pipeline.py storyboard myfilm`<br>`python pipeline.py render myfilm` | 1 styling + 2 clips |
+| Swap image 2 for a different photo | overwrite `input_images/2.jpg` with the new file, then:<br>`python pipeline.py storyboard myfilm` (asks before re-styling)<br>`python pipeline.py render myfilm --clip 1_to_2 --clip 2_to_3` | 1 styling + 2 clips |
+| Re-style one image (new roll of the styling dice) | `rm projects/myfilm/styled_images/2.png`, then:<br>`python pipeline.py storyboard myfilm`<br>`python pipeline.py render myfilm --clip 1_to_2 --clip 2_to_3` | 1 styling + 2 clips |
 | Rebuild the movie after any of the above | `python pipeline.py combine myfilm --force` | free (local) |
 | Redo all clips (e.g. after big storyboard edits) | `python pipeline.py render myfilm --force -y` | all clips |
 | Redo styling + analysis from scratch | `python pipeline.py storyboard myfilm --force` | all stylings + 1 analysis |
@@ -123,10 +123,13 @@ Notes:
   *regenerates* the named clips, resetting their SFX/fade state so redone
   clips get fresh audio.
 - After add/remove/swap, `storyboard` re-plans **only the affected
-  transitions** (a small vision call with just those frames), keeps everything
-  else verbatim, and deletes clips whose frames changed so `render` redoes
-  exactly those. Old clips that no longer match the storyboard become
-  "strays" — `combine` ignores them and `status` lists them for deletion.
+  transitions** (a small vision call with just those frames) and keeps
+  everything else verbatim. **Existing clips are never deleted or redone
+  automatically**: a rendered clip whose transition changed is only marked
+  OUTDATED (`status` and the admin panel flag it) — regenerate it yourself
+  with `render --clip ID` when you're ready to spend the credits. Old clips
+  whose pair no longer exists at all become "strays" — `combine` ignores
+  them and `status` lists them for deletion.
 - **Preview before spending:** `render` prints a per-clip plan (render vs
   skip, durations, motion prompts) and asks before spending clip credits;
   `--dry-run` on any command prints the plan and spends nothing;
@@ -275,8 +278,10 @@ If a planning call fails (rate limit, out of OpenAI quota), the affected
 transitions get the generic `motion_prompt` from config as a **placeholder**
 so the run isn't sunk — `status` (and the admin API) flag them, and re-running
 `storyboard` re-plans exactly those until a real plan lands. When a re-plan
-replaces a placeholder that already has a rendered clip, that clip is offered
-for deletion (confirm-gated) so `render` redoes it with the real prompt.
+replaces a placeholder (or a frame change re-plans a pair) that already has a
+rendered clip, the clip is kept and marked OUTDATED — nothing is deleted or
+re-rendered until you regenerate that clip yourself (`render --clip ID` / the
+panel's regenerate button).
 
 **Whole-movie guidance — `global_motion_prompt`:** the storyboard has a
 top-level `global_motion_prompt` field (empty by default, hand-edit it like

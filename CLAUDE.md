@@ -30,12 +30,15 @@ Core design rules:
   positional mode — auto-detected in `_styled_targets`; don't break it.
 - A styled image is re-styled when its source is newer or when
   `Frame.source_path` shows it came from a different file — gated on a
-  confirmation because it spends credits. When a frame changes, its adjacent
-  clips are deleted (stale) so `render` redoes them — but staleness is
-  decided by CONTENT HASH (`Frame.styled_hash`), never by mtime, and the
-  deletion is confirm-gated: a cloud-sync client once bumped every styled
-  image's mtime and the old mtime heuristic silently wiped a project's
-  rendered clips (real money). Keep both protections.
+  confirmation because it spends credits. When a frame changes (decided by
+  CONTENT HASH `Frame.styled_hash`, never mtime — a cloud-sync client once
+  bumped every mtime and the old heuristic wiped a project's clips), the
+  adjacent rendered clips are only MARKED outdated (state `stale:<clip>`,
+  shown by status/snapshot/panel). **Clips are NEVER auto-deleted or
+  auto-re-rendered**: confirm gates don't protect server jobs (the admin
+  API's confirm auto-answers yes — that combination deleted 26 rendered
+  clips on a real order), so redoing a clip is always an explicit per-clip
+  action (`render --clip ID`), which also clears the stale mark.
 - **No `input()` or other stdin use inside `ai_video_maker/`** — all
   interactivity lives in `cli.py` via the injected `confirm` callback.
 - Resume is existence-based for files (styled images, clips) and
@@ -225,10 +228,10 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
   config `motion_prompt` as a PLACEHOLDER ("a planning hiccup never sinks
   the run"). Reconcile treats `motion_prompt == config.motion_prompt` as
   never-planned and re-plans it on every storyboard run; when a real plan
-  replaces a placeholder, the pair's rendered clip goes into the
-  confirm-gated stale list. `snapshot()["storyboard"]
-  ["placeholder_transitions"]` surfaces them. A real order rendered 26/29
-  clips with the generic prompt before these guards existed.
+  replaces a placeholder, the pair's rendered clip is marked outdated
+  (never deleted). `snapshot()["storyboard"]["placeholder_transitions"]`
+  surfaces them. A real order rendered 26/29 clips with the generic prompt
+  before these guards existed.
 - fal Kling durations are the string enum "5"/"10" (`fal_duration_as_string`);
   valid clip durations live in `constants.VALID_DURATIONS`.
 - Clips are named `<startid>_to_<endid>.mp4`; bridged clips (a missing middle

@@ -427,7 +427,7 @@ class Pipeline:
                 "--force to redo styling + analysis from scratch.",
                 self.workspace.default_storyboard_json,
             )
-        self._invalidate_stale_clips(stale_tids)
+        self._mark_stale_clips(stale_tids)
         if not self.dry_run:
             self._save_storyboard(storyboard)
         return storyboard
@@ -575,10 +575,12 @@ class Pipeline:
         removed next to it) or when one of its styled frames changed after
         the storyboard was written; every other transition is carried over
         verbatim, so hand edits survive. ``stale ids`` are the re-planned
-        pairs whose already-rendered clips are invalid: their frame CONTENT
-        changed, or a real plan replaced a placeholder (fallback) prompt the
-        clip was rendered with. (A merely new pairing keeps any existing
-        clip: its frames are unchanged, only the plan around them is new.)
+        pairs whose already-rendered clips no longer match the storyboard:
+        their frame CONTENT changed, or a real plan replaced a placeholder
+        (fallback) prompt the clip was rendered with. Stale clips are only
+        MARKED outdated (state ``stale:<clip>``) — never deleted or
+        auto-regenerated. (A merely new pairing keeps any existing clip: its
+        frames are unchanged, only the plan around them is new.)
         """
         root = self.workspace.root
         hashes = {dst: _file_sha1(dst) for _, dst in frame_pairs}
@@ -661,8 +663,8 @@ class Pipeline:
                     and motion != prior.motion_prompt
                 ):
                     # A real plan just replaced a placeholder: any clip already
-                    # rendered from the placeholder should be redone (the
-                    # deletion is still confirm-gated downstream).
+                    # rendered from the placeholder gets flagged outdated
+                    # downstream (marking only — regeneration stays manual).
                     stale_tids.append(tid)
                 transitions.append(
                     Transition(
@@ -742,47 +744,38 @@ class Pipeline:
                     plans[i] = fallback
         return plans
 
-    def _invalidate_stale_clips(self, stale_tids: list[str]) -> None:
-        """Delete rendered clips whose frames changed, so `render` redoes them.
+    def _mark_stale_clips(self, stale_tids: list[str]) -> None:
+        """Flag rendered clips that no longer match the updated storyboard.
 
-        Rendered clips cost real credits to recreate, so the deletion is
-        listed and gated on confirmation — a broad re-style must not silently
-        wipe a whole project's clips. Declining keeps the files (render will
-        then skip them as done, even though they no longer match the frames).
-
-        Also clears the deleted clips' clip/SFX/fade state; without this a
-        re-rendered clip would skip its audio as "done" from the previous
-        file.
+        NEVER deletes and never triggers regeneration: rendered clips cost
+        real credits, and any automatic deletion is one auto-confirming
+        caller away from a wipeout (the admin API's always-yes confirm once
+        deleted 26 rendered clips on a storyboard re-run). Staleness is
+        recorded in state (``stale:<clip>``), surfaced by status/snapshot,
+        and cleared when the clip is regenerated — redoing a clip is always
+        a manual, per-clip decision (``render --clip ID`` / the panel's
+        regenerate button).
         """
-        clips = [self.workspace.clips_dir / f"{tid}.mp4" for tid in stale_tids]
-        clips = [c for c in clips if c.exists()]
-        if not clips:
+        stale = [
+            clip for tid in stale_tids
+            if (clip := self.workspace.clips_dir / f"{tid}.mp4").exists()
+        ]
+        if not stale:
             return
         if self.dry_run:
-            for clip in clips:
-                logger.info("[dry-run] would invalidate stale clip %s", clip.name)
+            for clip in stale:
+                logger.info("[dry-run] would mark clip %s outdated", clip.name)
             return
-        lines = [
-            f"{len(clips)} already-rendered clip(s) are STALE (a frame next to "
-            "them was re-styled) and no longer match the styled images:"
-        ] + [f"  {c.name}" for c in clips]
-        if not self._ask(
-            lines,
-            f"Delete {len(clips)} stale clip(s) so `render` regenerates them "
-            "(spends video credits)? [y/N] ",
-            "Keeping the stale clips; `render` will treat them as done. "
-            "Delete the files under clips/ yourself when you want them redone.",
-        ):
-            return
-        for clip in clips:
-            clip.unlink()
-            self.state.clear(
-                f"clip:{clip.name}", f"sfx:{clip.name}", f"fade:{clip.name}"
-            )
-            logger.info(
-                "Removed stale clip %s (its frames changed); the next render "
-                "will regenerate it.", clip.name,
-            )
+        for clip in stale:
+            self.state.set(f"stale:{clip.name}", "outdated")
+        logger.info(
+            "%d rendered clip(s) no longer match the updated storyboard: %s — "
+            "they are KEPT and render will not redo them by itself. "
+            "Regenerate one with `render %s --clip <ID>` (or the admin "
+            "panel's regenerate button) when you want the new plan applied.",
+            len(stale), ", ".join(c.name for c in stale),
+            self.workspace.root.name,
+        )
 
     # ------------------- storyboard from an idea (Mode B) ----------------- #
     def _resolve_idea(self) -> str:
@@ -1128,7 +1121,12 @@ class Pipeline:
                         # A fresh clip file invalidates its per-clip audio work:
                         # without this, a regenerated clip would skip SFX/fade
                         # ("done" from the previous file) and come out silent.
-                        self.state.clear(f"sfx:{dst.name}", f"fade:{dst.name}")
+                        # It also matches the current storyboard again, so any
+                        # "outdated" flag from a re-plan is lifted.
+                        self.state.clear(
+                            f"sfx:{dst.name}", f"fade:{dst.name}",
+                            f"stale:{dst.name}",
+                        )
                         self.state.set(job_id, "done", output=str(dst))
                         self.summary.videos_created += 1
                     logger.info("Clip ready: %s", dst.name)
@@ -1801,6 +1799,10 @@ class Pipeline:
                     "file": clip.name,
                     "rendered": exists,
                     "sfx": exists and self.state.is_done(f"sfx:{clip.name}"),
+                    # Rendered before its transition was re-planned; kept
+                    # as-is until someone regenerates it deliberately.
+                    "stale": exists
+                    and self.state.status(f"stale:{clip.name}") is not None,
                 })
             found = (
                 find_generated_clips(ws.clips_dir)
@@ -1882,7 +1884,11 @@ class Pipeline:
         for clip in snap["clips"]:
             if clip["rendered"]:
                 sfx = "sfx ✓" if clip["sfx"] else "silent"
-                print(f"    clip {clip['id']:<12} rendered  ({sfx})")
+                outdated = (
+                    "  !! OUTDATED (storyboard changed - redo with --clip)"
+                    if clip.get("stale") else ""
+                )
+                print(f"    clip {clip['id']:<12} rendered  ({sfx}){outdated}")
             else:
                 print(f"    clip {clip['id']:<12} MISSING")
         if snap["stray_clips"]:

@@ -400,49 +400,42 @@ class TestReconcileStoryboard:
         assert replanned == ["a_to_b", "b_to_c"] and stale == []
         assert all(t.motion_prompt == p.config.motion_prompt for t in sb.transitions)
 
-    def test_invalidate_stale_clips_deletes_and_clears_state(
-        self, make_pipeline, workspace
-    ):
+    def test_stale_clips_are_marked_never_deleted(self, make_pipeline, workspace):
+        # The admin API's confirm callback auto-answers yes, so any deletion
+        # behind a confirm gate is a wipeout waiting to happen (26 rendered
+        # clips died this way on a real order). Staleness only marks state.
         p = self._pipeline(make_pipeline)
         clip = _touch(workspace.clips_dir / "a_to_b.mp4")
         p.state.set("sfx:a_to_b.mp4", "done")
-        p.state.set("fade:a_to_b.mp4", "done")
-        p._invalidate_stale_clips(["a_to_b", "b_to_c"])  # b_to_c has no file
-        assert not clip.exists()
-        assert not p.state.is_done("sfx:a_to_b.mp4")
-        assert not p.state.is_done("fade:a_to_b.mp4")
-
-    def test_invalidate_stale_clips_declined_keeps_clips_and_state(
-        self, config, workspace
-    ):
-        from ai_video_maker.options import RunOptions
-        from ai_video_maker.runner import Pipeline
-
-        asked = []
-
-        def deny(lines, question):
-            asked.append(question)
-            return False
-
-        p = Pipeline(config, workspace, RunOptions(), confirm=deny)
-        clip = _touch(workspace.clips_dir / "a_to_b.mp4")
-        p.state.set("sfx:a_to_b.mp4", "done")
-        p._invalidate_stale_clips(["a_to_b"])
+        p._mark_stale_clips(["a_to_b", "b_to_c"])  # b_to_c has no file
         assert clip.exists()
-        assert p.state.is_done("sfx:a_to_b.mp4")
-        assert len(asked) == 1  # rendered clips are never deleted silently
+        assert p.state.is_done("sfx:a_to_b.mp4")  # audio state untouched too
+        assert p.state.status("stale:a_to_b.mp4") == "outdated"
+        assert p.state.status("stale:b_to_c.mp4") is None  # nothing to outdate
 
-    def test_invalidate_stale_clips_no_files_never_asks(
-        self, config, workspace
-    ):
-        from ai_video_maker.options import RunOptions
-        from ai_video_maker.runner import Pipeline
+    def test_stale_mark_survives_until_regeneration(self, make_pipeline, workspace):
+        # render must keep skipping an existing stale clip; only an explicit
+        # per-clip regeneration (render --clip / panel button) clears the flag.
+        p = self._pipeline(make_pipeline)
+        _touch(workspace.clips_dir / "a_to_b.mp4")
+        p._mark_stale_clips(["a_to_b"])
 
-        def fail_ask(lines, question):  # pragma: no cover - must not be hit
-            raise AssertionError("should not ask when nothing exists")
+        rendered = []
+        p.video_client = type("Stub", (), {
+            "generate_clip": lambda self, s, e, m, d, dst, reword=None:
+                rendered.append(dst.name) or _touch(dst)
+        })()
+        start = _touch(workspace.styled_images_dir / "a.png")
+        end = _touch(workspace.styled_images_dir / "b.png")
+        pair = (start, end, "motion", 5, "")
 
-        p = Pipeline(config, workspace, RunOptions(), confirm=fail_ask)
-        p._invalidate_stale_clips(["a_to_b", "b_to_c"])  # no clip files
+        p._generate_clips([pair], forced=set())  # exists + not forced -> skip
+        assert rendered == []
+        assert p.state.status("stale:a_to_b.mp4") == "outdated"
+
+        p._generate_clips([pair], forced={"a_to_b"})  # explicit regenerate
+        assert rendered == ["a_to_b.mp4"]
+        assert p.state.status("stale:a_to_b.mp4") is None
 
 
 class TestStyledTargets:
