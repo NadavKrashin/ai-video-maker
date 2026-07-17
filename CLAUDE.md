@@ -184,12 +184,16 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
   in both Cloudinary folder modes), public_id-prefix as fallback. `orders`
   is the one project-less CLI command — special-cased in cli.py before
   workspace resolution.
-- `pipeline.py serve` (`server.py`) is the admin panel + API + order watcher:
+- `pipeline.py serve` (`server.py`) is the admin panel + API + order intake:
   FastAPI, token auth via ADMIN_API_TOKEN in .env (Bearer header or `?token=`
   for media tags), serial background JobRunner (one pipeline command at a
-  time, whitelisted commands/options), a watcher thread, and the panel's
-  static build mounted at `/`. `watch_auto_storyboard` (default on) spends
-  OpenAI credits automatically per paid order — deliberate, user-approved.
+  time, whitelisted commands/options), and the panel's static build mounted
+  at `/`. Orders are fetched LIVE on request (/api/orders); the background
+  watcher thread is OPT-IN (`watch_enabled`, default False — the user
+  explicitly rejected background polling 2026-07-18: "a simple refresh to
+  the UI should just fetch the new orders"; intake is a button click in the
+  panel). Only when the watcher is enabled does `watch_auto_storyboard`
+  spend OpenAI credits automatically per paid order.
 - The **admin panel lives in THIS repo** (`admin_ui/`, React + Vite; decided
   2026-07-18 — it's the pipeline's own UI, deliberately decoupled from the
   animoments storefront; the frontend repo's `admin-panel` branch is

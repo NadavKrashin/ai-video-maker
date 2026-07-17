@@ -88,20 +88,25 @@ the `ADMIN_API_TOKEN` from `.env`:
   re-running the same action later resumes instead of re-paying. Every route
   (except `/api/health`) requires the `ADMIN_API_TOKEN` from `.env`, passed
   as `Authorization: Bearer <token>` (or `?token=` for media tags).
-- **Order watcher**: tracks new paid orders every `watch_poll_seconds` and
-  auto-ingests an order once its upload is complete (payment confirms
-  *before* photos finish uploading, so folder-exists ≠ order-complete).
-  With the **Firebase order ledger** configured (below) the watcher reads
-  the Firestore `orders` collection — the authoritative "someone paid"
-  record with the customer's details — checks the photos in Cloudinary
-  (exact `photoCount` when the doc has one, else a `watch_quiet_minutes`
-  quiet period), and writes progress back into each order doc's `status`
-  (`new → ingesting → ingested`). Without Firebase it falls back to pure
-  Cloudinary folder polling with the quiet-period rule. With
-  `watch_auto_storyboard` (default on) it also runs `storyboard` right away
-  — **this spends OpenAI styling credits automatically per paid order** —
-  so the storyboard is waiting for review by the time you open the panel.
-  Disable with `--no-watch` or `watch_enabled: false`.
+- **Orders, fetched live**: opening the panel's Orders tab (or `GET
+  /api/orders`) reads the sources *at that moment* — no background process
+  involved. With the **Firebase order ledger** configured (below) that
+  means the Firestore `orders` collection — the authoritative "someone
+  paid" record with the customer's details and `status`; without it, the
+  Cloudinary folder listing. Ingesting is one click ("Ingest + storyboard"),
+  and the pipeline writes progress back into the order doc's `status`
+  (`new → ingesting → ingested`).
+- **Optional background watcher** (off by default): set
+  `watch_enabled: true` to also have the server re-check every
+  `watch_poll_seconds` and auto-ingest a new order once its upload is
+  complete (exact `photoCount` when the order doc has one, else quiet for
+  `watch_quiet_minutes` — payment confirms *before* photos finish
+  uploading, so folder-exists ≠ order-complete). With
+  `watch_auto_storyboard` (default on) it also runs `storyboard` right
+  away — **this spends OpenAI styling credits automatically per paid
+  order** — so the storyboard is waiting for review by the time you open
+  the panel. Use it when you want orders handled while you're away from
+  the panel; `--no-watch` force-disables it for one run.
 
 To reach the panel away from home, expose the port with a tunnel
 (Cloudflare Tunnel / Tailscale) — don't bind `0.0.0.0` on an open network.

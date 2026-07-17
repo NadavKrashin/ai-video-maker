@@ -142,15 +142,20 @@ class Config(BaseModel):
     firebase_orders_collection: str = "orders"
 
     # --- Admin server & order watcher (`pipeline.py serve`) ---------------- #
-    # The watcher polls Cloudinary and auto-ingests a new order once its
-    # upload has gone quiet (the frontend confirms payment BEFORE photos
-    # finish uploading, so "folder exists" != "order complete").
-    watch_enabled: bool = True
+    # Orders are fetched LIVE whenever the panel asks (/api/orders reads
+    # Firestore/Cloudinary on demand), so no background process is needed to
+    # see or ingest them — that's the default, manual flow. watch_enabled
+    # turns on the optional background watcher, which re-checks every
+    # watch_poll_seconds and auto-ingests a new order once its upload is
+    # complete (quiet for watch_quiet_minutes — the frontend confirms payment
+    # BEFORE photos finish uploading, so "folder exists" != "order
+    # complete"), acting while nobody is looking at the panel.
+    watch_enabled: bool = False
     watch_poll_seconds: int = 300
     watch_quiet_minutes: float = 10.0
-    # Also run `storyboard` right after auto-ingest (spends OpenAI credits —
-    # styling ~8-30 images per order — so the storyboard is ready for review
-    # by the time you open the admin panel).
+    # With the watcher on, also run `storyboard` right after auto-ingest
+    # (spends OpenAI credits — styling ~8-30 images per order — so the
+    # storyboard is ready for review by the time you open the admin panel).
     watch_auto_storyboard: bool = True
     # Origins allowed to call the admin API from a browser (the admin panel's
     # URL). ["*"] = any origin; the token still gates every request.
