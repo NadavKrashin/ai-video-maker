@@ -1,21 +1,20 @@
 // AI Video Maker admin panel — a browser UI over the pipeline's admin API
 // (`pipeline.py serve`), which also serves this app's build at /.
 import React, { useCallback, useRef, useState } from 'react';
-import { api, getBase, getToken, hasSettings, saveSettings } from './api.js';
+import { api, getToken, hasSettings, saveSettings } from './api.js';
 import { Btn, C, S } from './ui.jsx';
 import OrdersTab from './OrdersTab.jsx';
 import ProjectsTab from './ProjectsTab.jsx';
 import ProjectDetail from './ProjectDetail.jsx';
 
 function Settings({ onConnected }) {
-  const [base, setBase] = useState(getBase());
   const [token, setToken] = useState(getToken());
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
   const connect = async () => {
     setBusy(true); setError('');
-    saveSettings(base, token);
+    saveSettings(token);
     try {
       await api.health();
       await api.projects(); // exercises auth, not just reachability
@@ -29,16 +28,13 @@ function Settings({ onConnected }) {
     <div style={{ ...S.card, maxWidth: 520, margin: '10vh auto' }}>
       <h2 style={{ marginTop: 0 }}>Connect to the pipeline</h2>
       <p style={{ color: C.muted, fontSize: 13 }}>
-        Only the admin token is needed when this page is served by
-        <code> pipeline.py serve</code> itself. Set an API URL only if the
-        panel is hosted elsewhere (e.g. a tunnel to the pipeline machine).
+        The <code>ADMIN_API_TOKEN</code> value from the pipeline's
+        <code> .env</code> — it authenticates every request from this panel.
       </p>
       <label style={S.label}>Admin token</label>
       <input style={S.input} value={token} onChange={(e) => setToken(e.target.value)}
-        type="password" placeholder="ADMIN_API_TOKEN from .env" />
-      <label style={{ ...S.label, marginTop: 10 }}>API URL (optional)</label>
-      <input style={S.input} value={base} onChange={(e) => setBase(e.target.value)}
-        placeholder="(same origin)" />
+        type="password" placeholder="ADMIN_API_TOKEN from .env"
+        onKeyDown={(e) => e.key === 'Enter' && connect()} />
       {error && <p style={S.err}>{error}</p>}
       <div style={{ marginTop: 14 }}>
         <Btn busy={busy} onClick={connect}>Connect</Btn>

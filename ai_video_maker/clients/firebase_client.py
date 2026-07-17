@@ -315,12 +315,18 @@ class FirebaseClient:
         return sorted(orders, key=lambda o: o.created_at, reverse=True)
 
     def update_order(self, order_id: str, fields: dict[str, Any]) -> None:
-        """Merge ``fields`` into one order doc (other fields untouched)."""
+        """Merge ``fields`` into one order doc (other fields untouched).
+
+        Fails (409/404 from the precondition) rather than upserting when the
+        doc doesn't exist — a pre-Firestore order ingested from Cloudinary
+        must not leave a stray skeleton doc in the ledger.
+        """
         self._request(
             "PATCH",
             f"{self.collection}/{order_id}",
             # A repeated query key — requests takes a list of pairs.
-            params=[("updateMask.fieldPaths", name) for name in fields],
+            params=[("updateMask.fieldPaths", name) for name in fields]
+            + [("currentDocument.exists", "true")],
             body={"fields": encode_fields(fields)},
             description=f"update Firestore order {order_id}",
         )

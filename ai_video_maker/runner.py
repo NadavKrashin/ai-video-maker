@@ -34,7 +34,7 @@ from .clients.openai_client import OpenAIClient
 from .clients.video import VideoClient
 from .config import Config
 from .errors import PipelineCancelled, PipelineError, StoryboardError
-from .intake import write_order_record
+from .intake import parse_order_folder, write_order_record
 from .logging_setup import logger
 from .media.ffmpeg import (
     apply_edge_fades,
@@ -353,11 +353,36 @@ class Pipeline:
             order_folder=folder,
             photo_count=len(targets),
         )
+        self._sync_order_status(folder)
         logger.info(
             "Ingested %d photo(s) into %s", len(pending),
             self.workspace.input_images_dir,
         )
         logger.info("Next step:  %s", self._next_command("storyboard"))
+
+    def _sync_order_status(self, folder: str) -> None:
+        """Best-effort Firestore write-back after an ingest: status "ingested".
+
+        Every ingest path lands here (CLI, panel button, watcher job), so the
+        order ledger reflects progress without any background polling. The
+        doc id is the AM-... order id embedded in the folder leaf. A ledger
+        hiccup must never fail the ingest itself.
+        """
+        from .clients.firebase_client import STATUS_INGESTED, FirebaseClient
+
+        if not FirebaseClient.configured(self.config):
+            return
+        order_id = parse_order_folder(folder)["order_id"]
+        try:
+            FirebaseClient.from_config(self.config).update_order(
+                order_id,
+                {"status": STATUS_INGESTED, "project": self.workspace.root.name},
+            )
+            logger.info("Order %s marked '%s' in Firestore.", order_id, STATUS_INGESTED)
+        except Exception as exc:  # noqa: BLE001 - the ledger never sinks an ingest
+            logger.warning(
+                "Could not update Firestore order %s: %s", order_id, exc
+            )
 
     # --------------------------- storyboard step -------------------------- #
     def cmd_storyboard(self) -> None:
