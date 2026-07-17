@@ -253,6 +253,16 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
   before these guards existed.
 - fal Kling durations are the string enum "5"/"10" (`fal_duration_as_string`);
   valid clip durations live in `constants.VALID_DURATIONS`.
+- Clip renders use fal's QUEUE API (`FalSession.submit` + `wait_for_result`),
+  never `subscribe`: subscribe holds a connection for the whole render, and a
+  drop mid-wait made `with_retries` resubmit the entire job — the first one
+  keeps rendering (and billing) server-side with no handle to it. The
+  request_id is persisted as state `falreq:<clip>` before waiting and reused
+  on the next run when the fingerprint (frames+prompt+duration+model) still
+  matches, so interruptions recover the paid output instead of re-buying it.
+  Keep the entry on transient failures; clear it only on moderation
+  rejection, fingerprint mismatch, or successful download. `subscribe` is
+  still fine for the cheap audio jobs.
 - Clips are named `<startid>_to_<endid>.mp4`; bridged clips (a missing middle
   frame) get non-consecutive names like `003_to_005.mp4` and become "stray"
   once the frame is restored — `combine` ignores strays by design.

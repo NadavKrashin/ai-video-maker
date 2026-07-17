@@ -31,6 +31,16 @@ class StateStore:
             entry = self._data["jobs"].get(job_id)
             return entry.get("status") if entry else None
 
+    def get(self, job_id: str) -> Optional[dict[str, Any]]:
+        """The full entry for a job (a copy), or None.
+
+        Used where the extra fields matter — e.g. the fal request_id stored
+        with a pending clip render so an interrupted job can be resumed.
+        """
+        with self._lock:
+            entry = self._data["jobs"].get(job_id)
+            return dict(entry) if entry else None
+
     def is_done(self, job_id: str) -> bool:
         return self.status(job_id) == "done"
 

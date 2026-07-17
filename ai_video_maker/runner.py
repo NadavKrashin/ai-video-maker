@@ -157,7 +157,9 @@ class Pipeline:
         self.failed = FailedJobStore(workspace.failed_jobs_file)
         self.summary = RunSummary()
         self.openai = OpenAIClient(config)
-        self.video_client = VideoClient(config)
+        # The state store lets interrupted fal renders resume by request_id
+        # instead of re-billing (falreq:<clip> entries).
+        self.video_client = VideoClient(config, state=self.state)
         self.audio_client = AudioClient(config)
         # Audio is on when config.audio_mode == "post", unless overridden by
         # --add-audio / --no-audio for a single run (the `audio` command

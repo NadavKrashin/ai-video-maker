@@ -7,11 +7,20 @@ imported lazily so --dry-run / --help work without `fal-client` or `FAL_KEY`.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Any, Optional
 
 from ..config import Config
+from ..logging_setup import logger
 from ..retry import with_retries
+
+# Queue polling cadence for submitted jobs. A Kling clip takes single-digit
+# minutes; 10s polls are frequent enough without hammering the API, and the
+# timeout is generous because a queued job that eventually finishes is money
+# already spent — better to wait than to abandon and pay again.
+_POLL_INTERVAL_SECONDS = 10.0
+_POLL_TIMEOUT_SECONDS = 30 * 60.0
 
 
 def extract_media_url(result: Optional[dict[str, Any]], keys: tuple[str, ...]) -> str:
@@ -72,6 +81,68 @@ class FalSession:
     def subscribe(
         self, model_id: str, arguments: dict[str, Any], *, description: str
     ) -> dict[str, Any]:
-        """Submit a job and block until it finishes, returning the result dict."""
+        """Submit a job and block until it finishes, returning the result dict.
+
+        WARNING: only suitable for cheap jobs (audio). If the connection drops
+        mid-wait, the retry wrapper resubmits the WHOLE job — the first one
+        keeps running (and billing) server-side with no handle left to it.
+        Expensive jobs (video clips) must use submit() + wait_for_result()
+        so a disruption never re-buys work that is already underway.
+        """
         sdk = self._ensure_sdk()
         return self._retry(lambda: sdk.subscribe(model_id, arguments) or {}, description)
+
+    def submit(
+        self, model_id: str, arguments: dict[str, Any], *, description: str
+    ) -> str:
+        """Enqueue a job and return its request_id immediately.
+
+        The request_id is the receipt for money being spent: persist it before
+        waiting, so a crash or dropped connection can recover the finished
+        output later instead of paying for the render again.
+        """
+        sdk = self._ensure_sdk()
+        handle = self._retry(
+            lambda: sdk.submit(model_id, arguments), f"{description} (submit)"
+        )
+        return handle.request_id
+
+    def wait_for_result(
+        self, model_id: str, request_id: str, *, description: str
+    ) -> dict[str, Any]:
+        """Poll a queued job until it finishes and return its result dict.
+
+        Unlike subscribe(), a connection error here only retries the *poll* —
+        the job itself is never resubmitted. A failed job surfaces when
+        result() raises (e.g. fal's content checker), which the retry wrapper
+        classifies as permanent, so moderation errors propagate to the
+        reword-recovery layer exactly as before.
+        """
+        sdk = self._ensure_sdk()
+        deadline = time.monotonic() + _POLL_TIMEOUT_SECONDS
+        logged_running = False
+        while True:
+            status = self._retry(
+                lambda: sdk.status(model_id, request_id, with_logs=False),
+                f"{description} (status)",
+            )
+            if isinstance(status, sdk.Completed):
+                return self._retry(
+                    lambda: sdk.result(model_id, request_id) or {},
+                    f"{description} (result)",
+                )
+            if not logged_running:
+                logger.info(
+                    "%s: request %s is %s — polling every %.0fs",
+                    description, request_id, type(status).__name__,
+                    _POLL_INTERVAL_SECONDS,
+                )
+                logged_running = True
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"{description}: fal request {request_id} still "
+                    f"{type(status).__name__} after "
+                    f"{int(_POLL_TIMEOUT_SECONDS)}s — the request_id is "
+                    "persisted, so re-running render will try to recover it."
+                )
+            time.sleep(_POLL_INTERVAL_SECONDS)

@@ -414,6 +414,14 @@ number. Dry-runs always run sequentially so the planned-work log stays ordered.
 - Job status is stored in `logs/state.json`. Completed images and clips are
   **skipped automatically** on the next run — just re-run the same command to
   resume where it stopped.
+- **A clip render interrupted mid-flight is not money lost.** Clip jobs go
+  through fal's queue: the request id is saved to `logs/state.json`
+  (`falreq:<clip>`) the moment the job is submitted, so if the connection
+  drops or the run crashes while waiting, the job keeps rendering on fal's
+  side and the next `render` **fetches the already-paid result instead of
+  submitting (and billing) a new one**. The saved request is only reused
+  while the clip's frames, prompt, and duration are unchanged; if you edit
+  the storyboard in between, a fresh job is submitted as expected.
 - Use `--force` to ignore saved state and redo everything, or
   `render --clip ID` to redo specific clips.
 - Anything that failed is written to `failed_jobs/failed_jobs.json` with the
