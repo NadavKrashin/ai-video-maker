@@ -78,6 +78,25 @@ Core design rules:
   "the scene shifts to a toddler ...". Both made Kling swap in a
   different-looking kid mid-story on a real project. Enforced in
   `_MODE_A_SYSTEM` ("SAME PERSON, ONE PROTAGONIST").
+- REFER TO PEOPLE BY APPEARANCE ONLY in motion prompts: never names or
+  relationship/role words ("the son", "the dad", "the couple") — the video
+  model sees only pixels and guesses who is who (a real clip prompted "the
+  son splashes the water" with two men in frame). Every person gets a short
+  visible-appearance epithet ("the bald man", "the younger brown-haired
+  man"), reused consistently; an action belonging to one person names that
+  person, never a bare collective "they". Enforced in `_MODE_A_SYSTEM`,
+  `_CONDENSE_MOTION_SYSTEM` (condense swaps relationship words for
+  epithets), and `_REWORD_MOTION_SYSTEM` (identity anchors are not "risky
+  detail" to drop); pinned by TestIdentityPromptRules.
+- ARRANGEMENT SWAP: when the same people appear in both frames but trade
+  left-right positions, hold-steady/world-morphs staging is FORBIDDEN — the
+  interpolator maps left onto left, so pinned-in-place swapped people morph
+  into each other (real clip 03_to_04 on order am-160726-bd2c grew hair on
+  the bald man mid-shot). Stage explicit motion instead: exit past the
+  camera + re-enter one at a time (preferred when the setting also
+  changes), or one person visibly crossing in front of/behind the other.
+  A swap rates difficulty ≥4; swap + setting change = 5. Enforced in
+  `_MODE_A_SYSTEM` and the difficulty rubric.
 - Clip durations must LEAN SHORT, and prompt-side bias alone cannot deliver
   it: real plans came back all-5s under "prefer 5" and all-10s under a
   hard-transition checklist (in a photo-album movie nearly every pair

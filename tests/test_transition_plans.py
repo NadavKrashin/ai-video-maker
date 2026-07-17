@@ -159,3 +159,32 @@ class TestRealignByPairIndex:
         assert _realign_by_pair_index(dup, 2) is dup
         oob = [{"pair_index": 0}, {"pair_index": 5}]
         assert _realign_by_pair_index(oob, 2) is oob
+
+
+class TestIdentityPromptRules:
+    """The planner/condense/reword prompts carry hard-won identity rules
+    (appearance-only references, arrangement-swap staging). These strings are
+    easy to lose in a prompt rewrite; a real order rendered morphing people
+    before they existed, so their presence is pinned here."""
+
+    def test_planner_bans_relationship_words(self):
+        from ai_video_maker.clients import openai_client as oc
+        s = oc._MODE_A_SYSTEM
+        assert "REFER TO PEOPLE BY APPEARANCE ONLY" in s
+        assert "'the son'" in s and "'the father'" in s
+
+    def test_planner_has_arrangement_swap_staging(self):
+        from ai_video_maker.clients import openai_client as oc
+        s = oc._MODE_A_SYSTEM
+        assert "ARRANGEMENT SWAP" in s
+        assert "left-right arrangement" in s
+
+    def test_condense_preserves_and_fixes_identity_phrasing(self):
+        from ai_video_maker.clients import openai_client as oc
+        s = oc._CONDENSE_MOTION_SYSTEM
+        assert "epithet" in s
+        assert "relationship words" in s
+
+    def test_reword_keeps_identity_anchors(self):
+        from ai_video_maker.clients import openai_client as oc
+        assert "Identity anchors" in oc._REWORD_MOTION_SYSTEM
