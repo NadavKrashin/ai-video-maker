@@ -626,6 +626,17 @@ class Pipeline:
             for t in (saved.transitions if saved else [])
         }
         pairs = list(zip(frames, frames[1:]))
+        # Explicitly requested re-plans (--replan-clip / the panel's
+        # "re-plan prompt" button): planned fresh even though nothing
+        # changed. A typo must fail loudly, not silently keep the old plan.
+        requested = set(self.options.replan_clips or [])
+        all_tids = {f"{a.id}_to_{b.id}" for a, b in pairs}
+        unknown = requested - all_tids
+        if unknown:
+            raise PipelineError(
+                f"No such transition(s) to re-plan: {', '.join(sorted(unknown))}.\n"
+                "Valid ids: " + ", ".join(f"{a.id}_to_{b.id}" for a, b in pairs)
+            )
         dirty: list[int] = []
         stale_tids: list[str] = []
         for i, (a, b) in enumerate(pairs):
@@ -642,7 +653,8 @@ class Pipeline:
                 prior is not None
                 and prior.motion_prompt == self.config.motion_prompt
             )
-            if saved is None or changed or prior is None or placeholder:
+            if (saved is None or changed or prior is None or placeholder
+                    or f"{a.id}_to_{b.id}" in requested):
                 dirty.append(i)
             if changed:
                 stale_tids.append(f"{a.id}_to_{b.id}")
@@ -661,11 +673,13 @@ class Pipeline:
                 prior = saved_tr.get((a.output_path, b.output_path))
                 if (
                     prior is not None
-                    and prior.motion_prompt == self.config.motion_prompt
                     and motion != prior.motion_prompt
+                    and (prior.motion_prompt == self.config.motion_prompt
+                         or tid in requested)
                 ):
-                    # A real plan just replaced a placeholder: any clip already
-                    # rendered from the placeholder gets flagged outdated
+                    # A genuinely new prompt landed where a clip may already
+                    # exist — a real plan replacing a placeholder, or an
+                    # explicitly requested re-plan. Flag the clip outdated
                     # downstream (marking only — regeneration stays manual).
                     stale_tids.append(tid)
                 transitions.append(

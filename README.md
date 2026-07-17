@@ -150,6 +150,7 @@ insertions, number in tens (`10.jpg, 20.jpg, 30.jpg`).
 | Edit | Commands | Cost |
 |------|----------|------|
 | Regenerate one clip (e.g. after tweaking its `motion_prompt` in `storyboard.json`) | `python pipeline.py render myfilm --clip 2_to_3` | 1 clip |
+| Ask the planner for a fresh motion prompt for one pair (don't like its plan) | `python pipeline.py storyboard myfilm --replan-clip 2_to_3` — its rendered clip (if any) is marked outdated, not redone | 1 small vision call |
 | Change one clip's sound (edit its `sound_prompt` first) | `python pipeline.py audio myfilm --clip 2_to_3` | ~1¢ |
 | Add an image between 2 and 3 | copy it in as `input_images/2a.jpg`, then:<br>`python pipeline.py storyboard myfilm`<br>`python pipeline.py render myfilm` | 1 styling + 2 clips |
 | Remove image 2 | `rm projects/myfilm/input_images/2.jpg projects/myfilm/styled_images/2.png`, then:<br>`python pipeline.py storyboard myfilm`<br>`python pipeline.py render myfilm` | 1 clip |
@@ -423,7 +424,7 @@ project name as its first argument (except `orders`, which is project-less).
 | `serve` | — (no project argument) `--host`, `--port`, `--no-watch` |
 | `ingest` | `<order>` (id / folder / unique fragment), `--force`, `--dry-run` |
 | `init` | — |
-| `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
+| `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--replan-clip ID` (repeatable; fresh motion prompt for that pair), `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
 | `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 5\|10`, `--add-audio`, `--no-audio` |
 | `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-prompt`, `--music-file PATH` |
 | `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--add-audio`, `--no-audio`, `--final`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter` |

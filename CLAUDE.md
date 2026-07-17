@@ -201,8 +201,12 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
   install && npm run build`; `serve` serves `admin_ui/dist` at `/` (API
   routes win). `npm run dev` proxies `/api` to 127.0.0.1:8300. The panel
   covers the full CLI surface (init/photo upload, storyboard incl. --idea
-  options, per-clip render/audio, combine toggles, run) — keep that parity
-  when adding CLI features.
+  options, per-clip render/audio/re-plan, combine toggles, run) — keep that
+  parity when adding CLI features. The layout is a numbered pipeline stepper
+  (Storyboard → Render → Audio → Combine + a dashed "Run everything" tile),
+  and EVERY mutating action goes through a confirmation modal that lists
+  exactly what will change and whether money is spent (user requirement,
+  2026-07-18) — put new actions behind `ask({...})`, never a bare run.
 - The **Firestore order ledger** (`clients/firebase_client.py`, REST +
   google-auth, NOT the heavy firebase-admin SDK) is the watcher's order
   source when a service-account key exists (FIREBASE_SERVICE_ACCOUNT in

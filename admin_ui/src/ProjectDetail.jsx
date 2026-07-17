@@ -1,8 +1,11 @@
-// One project's workspace: photos, storyboard review/edit, per-clip render,
-// audio, finalize — every pipeline subcommand with its CLI options.
+// One project's workspace, laid out as the pipeline it is:
+//   1 Storyboard → 2 Render → 3 Audio → 4 Combine
+// Each step is a tile showing its status; clicking it opens that step's
+// options + an explanation. Every action that changes files or spends money
+// goes through a confirmation modal that says exactly what will happen.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api, fileUrl } from './api.js';
-import { Btn, C, Field, S, Toggle, stepChip } from './ui.jsx';
+import { Btn, C, ConfirmModal, Field, S, Toggle, stepChip } from './ui.jsx';
 
 // A transition's start_frame/end_frame is the styled image path in practice
 // ("styled_images/img1.png"), but may also be a frame id — handle both.
@@ -11,6 +14,8 @@ function frameName(framesById, frameRef) {
   const f = framesById[frameRef];
   return f ? f.output_path.split('/').pop() : '';
 }
+
+const CLIP_PRICE = '≈ $0.35 (5s) – $0.70 (10s) per clip';
 
 function JobRow({ job, onShowLog, onCancel, cancelBusy }) {
   const color = job.state === 'done' ? C.ok
@@ -40,7 +45,7 @@ function JobRow({ job, onShowLog, onCancel, cancelBusy }) {
   );
 }
 
-function TransitionCard({ project, tr, framesById, clip, edited, placeholder, onEdit, onRegenerate, onRedoAudio, busy, audioBusy }) {
+function TransitionCard({ project, tr, framesById, clip, edited, placeholder, onEdit, onRegenerate, onReplan, onRedoAudio, busy, replanBusy, audioBusy }) {
   const startImg = frameName(framesById, tr.start_frame);
   const endImg = frameName(framesById, tr.end_frame);
   const clipFile = tr.output_path.split('/').pop();
@@ -93,6 +98,10 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, on
           <input style={S.input} value={tr.sound_prompt || ''}
             onChange={(e) => onEdit({ ...tr, sound_prompt: e.target.value })} />
         </Field>
+        <Btn ghost busy={replanBusy} onClick={() => onReplan(tr.id)}
+          title="Ask the AI planner to write a fresh motion prompt for this pair (small OpenAI call; the clip is not re-rendered)">
+          Re-plan prompt
+        </Btn>
         {clip?.rendered && (
           <Btn ghost busy={audioBusy} onClick={() => onRedoAudio(tr.id)}
             title="Redo just this clip's SFX (use after editing its sound prompt)">
@@ -108,35 +117,63 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, on
   );
 }
 
-// ----------------------- per-command option panels ------------------------- #
-// Each panel mirrors that subcommand's CLI flags; empty/indeterminate fields
-// are simply not sent, so the pipeline/config defaults still apply.
+// ----------------------- per-step option panels ----------------------------- #
+// Each panel = a plain-words explanation of the step, its CLI options, and a
+// primary button that opens the confirmation modal (nothing runs directly).
 
-function StoryboardOptions({ run, busy }) {
+function PanelIntro({ children }) {
+  return <p style={{ color: C.muted, fontSize: 13, margin: '0 0 12px', lineHeight: 1.5 }}>{children}</p>;
+}
+
+function StoryboardPanel({ ask, locked, info }) {
   const [idea, setIdea] = useState('');
   const [frameCount, setFrameCount] = useState('');
   const [stylePrompt, setStylePrompt] = useState('');
   const [duration, setDuration] = useState('');
   const [analyze, setAnalyze] = useState(true);
   const [force, setForce] = useState(false);
+  const fromIdea = Boolean(idea.trim());
   const start = () => {
     const o = {};
-    if (idea.trim()) o.idea = idea.trim();
-    if (idea.trim() && frameCount !== '') o.frame_count = Number(frameCount);
+    if (fromIdea) o.idea = idea.trim();
+    if (fromIdea && frameCount !== '') o.frame_count = Number(frameCount);
     if (stylePrompt.trim()) o.style_prompt = stylePrompt.trim();
     if (duration) o.duration = Number(duration);
     if (!analyze) o.analyze_frames = false;
     if (force) o.force = true;
-    run('storyboard', o);
+    ask({
+      title: 'Run storyboard?',
+      lines: fromIdea ? [
+        'Invents the whole storyboard from your idea: the AI writes the frames and generates an image for each one.',
+        'Then plans a motion prompt for every pair of frames.'
+      ] : [
+        force
+          ? `Re-styles ALL ${info.photoCount} photo(s) from scratch (force).`
+          : info.unstyledCount > 0
+            ? `Styles ${info.unstyledCount} new/changed photo(s) into the cartoon look (${info.photoCount - info.unstyledCount} already styled are reused).`
+            : 'All photos are already styled — they are reused as-is.',
+        'Plans motion prompts only for new/changed pairs — existing prompts and your hand edits are kept.',
+        'Nothing is deleted: if a re-plan affects an already-rendered clip, that clip is only marked "outdated".'
+      ],
+      cost: 'openai',
+      label: 'Run storyboard',
+      command: 'storyboard', options: o
+    });
   };
   return (
     <div>
-      <Field label="Idea (leave empty to storyboard from the project's photos; fill to invent frames from text — like --idea)">
+      <PanelIntro>
+        Turns the photos into styled cartoon frames and writes a motion plan
+        for each consecutive pair. It re-runs only what changed, so running it
+        again after edits is safe. The result stops here for your review —
+        nothing renders until you say so.
+      </PanelIntro>
+      <Field label="Idea (leave empty to storyboard from the project's photos; fill to invent frames from text)">
         <textarea style={{ ...S.input, minHeight: 48, resize: 'vertical' }} value={idea}
           placeholder="(from photos)" onChange={(e) => setIdea(e.target.value)} />
       </Field>
       <div style={{ display: 'flex', gap: 10, marginTop: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-        {idea.trim() && (
+        {fromIdea && (
           <Field label="Frames (0 = model decides)">
             <input style={{ ...S.input, width: 110 }} type="number" min="0" value={frameCount}
               placeholder="config" onChange={(e) => setFrameCount(e.target.value)} />
@@ -156,17 +193,17 @@ function StoryboardOptions({ run, busy }) {
       </div>
       <div style={{ display: 'flex', gap: 16, marginTop: 10, alignItems: 'center', flexWrap: 'wrap' }}>
         <Toggle label="Analyze frames (per-clip motion plans)" checked={analyze} onChange={setAnalyze}
-          title="Off = --no-analyze: one generic motion prompt for every clip" />
-        <Toggle label="Force re-style" checked={force} onChange={setForce}
-          title="--force: re-style images that already exist (spends OpenAI credits)" />
+          title="Off: skip the vision analysis and give every clip the one generic motion prompt" />
+        <Toggle label="Force re-style all photos" checked={force} onChange={setForce}
+          title="Re-style photos that are already styled (spends OpenAI credits on every photo again)" />
         <span style={{ flex: 1 }} />
-        <Btn busy={busy} onClick={start}>Run storyboard</Btn>
+        <Btn disabled={locked} onClick={start}>Run storyboard…</Btn>
       </div>
     </div>
   );
 }
 
-function RenderOptions({ run, busy }) {
+function RenderPanel({ ask, locked, info }) {
   const [motionPrompt, setMotionPrompt] = useState('');
   const [duration, setDuration] = useState('');
   const [dryRun, setDryRun] = useState(false);
@@ -175,98 +212,171 @@ function RenderOptions({ run, busy }) {
     if (motionPrompt.trim()) o.motion_prompt = motionPrompt.trim();
     if (duration) o.duration = Number(duration);
     if (dryRun) o.dry_run = true;
-    run('render', o);
+    ask(dryRun ? {
+      title: 'Dry-run render?',
+      lines: ['Shows what would be rendered in the job log. No clips are generated, nothing changes.'],
+      cost: 'free', label: 'Dry run', command: 'render', options: o
+    } : {
+      title: `Render ${info.missing} missing clip(s)?`,
+      lines: info.missing > 0 ? [
+        `Generates the ${info.missing} clip(s) that don't exist yet with the video model (${info.rendered} already rendered are untouched).`,
+        CLIP_PRICE,
+        'Existing clips are never replaced by this — regenerating a specific clip is a per-clip action.'
+      ] : [
+        'Every clip already exists — nothing will be rendered (use a clip\'s own "Regenerate" button to redo one).'
+      ],
+      cost: info.missing > 0 ? 'fal' : 'free',
+      label: 'Render', command: 'render', options: o
+    });
   };
   return (
-    <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-      <Field label="Motion prompt override for this run (optional)" style={{ flex: 1, minWidth: 240 }}>
-        <input style={S.input} value={motionPrompt} placeholder="(per-clip storyboard prompts)"
-          onChange={(e) => setMotionPrompt(e.target.value)} />
-      </Field>
-      <Field label="Force duration" style={{ width: 120 }}>
-        <select style={S.input} value={duration} onChange={(e) => setDuration(e.target.value)}>
-          <option value="">storyboard</option>
-          <option value="5">5s</option>
-          <option value="10">10s</option>
-        </select>
-      </Field>
-      <Toggle label="Dry run" checked={dryRun} onChange={setDryRun}
-        title="--dry-run: show what would be rendered without spending credits" />
-      <Btn busy={busy} onClick={start}>Render missing clips</Btn>
+    <div>
+      <PanelIntro>
+        Generates a video clip for every transition in the storyboard that
+        doesn't have one yet. Review the storyboard first — each clip is paid
+        the moment it renders.
+      </PanelIntro>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <Field label="Motion prompt override for this run (optional)" style={{ flex: 1, minWidth: 240 }}>
+          <input style={S.input} value={motionPrompt} placeholder="(per-clip storyboard prompts)"
+            onChange={(e) => setMotionPrompt(e.target.value)} />
+        </Field>
+        <Field label="Force duration" style={{ width: 120 }}>
+          <select style={S.input} value={duration} onChange={(e) => setDuration(e.target.value)}>
+            <option value="">storyboard</option>
+            <option value="5">5s</option>
+            <option value="10">10s</option>
+          </select>
+        </Field>
+        <Toggle label="Dry run" checked={dryRun} onChange={setDryRun}
+          title="Show what would be rendered without spending credits" />
+        <Btn disabled={locked} onClick={start}>
+          {`Render ${info.missing || 'missing'} clip(s)…`}
+        </Btn>
+      </div>
     </div>
   );
 }
 
-function AudioOptions({ run, busy }) {
+function AudioPanel({ ask, locked, info }) {
   const [musicPrompt, setMusicPrompt] = useState('');
   const start = () => {
     const o = {};
     if (musicPrompt.trim()) o.music_prompt = musicPrompt.trim();
-    run('audio', o);
+    ask({
+      title: 'Run audio?',
+      lines: [
+        info.silentRendered > 0
+          ? `Adds synced sound effects to ${info.silentRendered} silent clip(s) (clips that already have SFX are skipped).`
+          : 'All rendered clips already have SFX — they are skipped.',
+        'Generates the background music track if it doesn\'t exist yet, then rebuilds the final video with everything mixed.',
+        'Audio jobs are much cheaper than clip renders.'
+      ],
+      cost: 'fal', label: 'Run audio', command: 'audio', options: o
+    });
   };
   return (
-    <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-      <Field label="Music prompt override (optional)" style={{ flex: 1, minWidth: 240 }}>
-        <input style={S.input} value={musicPrompt} placeholder="(config music_prompt)"
-          onChange={(e) => setMusicPrompt(e.target.value)} />
-      </Field>
-      <Btn busy={busy} onClick={start}
-        title="Per-clip SFX + music bed, then rebuild the final video">Run audio</Btn>
+    <div>
+      <PanelIntro>
+        Two layers of sound: per-clip effects synced to the action, and one
+        background music track mixed over the whole movie. Optional — skip it
+        for a silent film.
+      </PanelIntro>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <Field label="Music prompt override (optional)" style={{ flex: 1, minWidth: 240 }}>
+          <input style={S.input} value={musicPrompt} placeholder="(config music_prompt)"
+            onChange={(e) => setMusicPrompt(e.target.value)} />
+        </Field>
+        <Btn disabled={locked} onClick={start}>Run audio…</Btn>
+      </div>
     </div>
   );
 }
 
-function CombineOptions({ run, busy }) {
-  // null = follow config; the toggles below are explicitly sent either way
-  // once touched, mirroring --intro/--no-intro etc.
+function CombinePanel({ ask, locked, info }) {
+  // null = follow config; cycling the toggle: config → on → off → config.
   const [intro, setIntro] = useState(null);
   const [credits, setCredits] = useState(null);
   const [letter, setLetter] = useState(null);
-  const [force, setForce] = useState(true);
   const tri = (value, set, label, title) => (
     <Toggle label={label + (value === null ? ' (config)' : value ? ' (on)' : ' (off)')}
       checked={value === true} indeterminate={value === null} title={title}
       onChange={() => set(value === null ? true : value === true ? false : null)} />
   );
-  const start = () => {
-    const o = {};
-    if (intro !== null) o.intro_clip = intro;
-    if (credits !== null) o.credits_photos = credits;
-    if (letter !== null) o.closing_letter = letter;
-    if (force) o.force = true;
-    run('combine', o);
+  const start = (finalize) => {
+    const o = finalize
+      ? { intro_clip: true, credits_photos: true, force: true }
+      : { force: true };
+    if (!finalize) {
+      if (intro !== null) o.intro_clip = intro;
+      if (credits !== null) o.credits_photos = credits;
+      if (letter !== null) o.closing_letter = letter;
+    }
+    const extras = [
+      o.intro_clip && 'intro', o.credits_photos && 'photo credits',
+      o.closing_letter && 'closing letter'
+    ].filter(Boolean);
+    ask({
+      title: finalize ? 'Finalize the movie?' : 'Combine the clips?',
+      lines: [
+        `Concatenates the ${info.rendered} rendered clip(s) into output/final_video.mp4` +
+          (info.finalExists ? ', replacing the existing final video.' : '.'),
+        extras.length ? `Extras: ${extras.join(' + ')}.` : 'No extras (intro/credits/letter follow the config).',
+        'Pure ffmpeg on your machine — nothing is sent to any API.'
+      ],
+      cost: 'free',
+      danger: info.finalExists,
+      label: finalize ? 'Finalize' : 'Combine',
+      command: 'combine', options: o
+    });
   };
   return (
-    <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
-      {tri(intro, setIntro, 'Intro clip', 'Prepend the shared intro.mp4')}
-      {tri(credits, setCredits, 'Credits photos', 'End-credits montage of the original photos')}
-      {tri(letter, setLetter, 'Closing letter', "Scroll the project's letter.txt at the end")}
-      <Toggle label="Rebuild existing final" checked={force} onChange={setForce} title="--force" />
-      <span style={{ flex: 1 }} />
-      <Btn busy={busy} onClick={start}>Combine</Btn>
+    <div>
+      <PanelIntro>
+        Stitches the rendered clips (in storyboard order) into the final
+        1920×1080 movie, with the music bed when audio is on. Free and
+        repeatable — rerun it any time a clip changes.
+      </PanelIntro>
+      <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+        {tri(intro, setIntro, 'Intro clip', 'Prepend the shared intro.mp4')}
+        {tri(credits, setCredits, 'Credits photos', 'End-credits montage of the original photos')}
+        {tri(letter, setLetter, 'Closing letter', "Scroll the project's letter.txt at the end")}
+        <span style={{ flex: 1 }} />
+        <Btn ghost disabled={locked} onClick={() => start(true)}
+          title="The delivery preset: intro + photo credits + rebuild">Finalize…</Btn>
+        <Btn disabled={locked} onClick={() => start(false)}>Combine…</Btn>
+      </div>
     </div>
   );
 }
 
-function RunOptions({ run, busy }) {
+function RunAllPanel({ ask, locked, info }) {
   const [noCombine, setNoCombine] = useState(false);
   const start = () => {
-    if (!window.confirm(
-      'Run the whole flow (storyboard if missing → render ALL missing clips → '
-      + 'final video) without further confirmation? This spends real credits.'
-    )) return;
-    const o = {};
-    if (noCombine) o.no_combine = true;
-    run('run', o);
+    const o = noCombine ? { no_combine: true } : {};
+    ask({
+      title: 'Run the whole pipeline?',
+      lines: [
+        'Storyboard (if missing) → render ALL missing clips → audio (if enabled) → final video, as one unattended job.',
+        `Right now that means up to ${info.missing || info.total || 'all'} clip render(s). ${CLIP_PRICE}.`,
+        'The usual review stops are skipped — confirmation gates auto-proceed on the server. Use the steps above when you want to check the storyboard first.'
+      ],
+      cost: 'both', danger: true,
+      label: 'Run everything', command: 'run', options: o
+    });
   };
   return (
-    <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
-      <span style={{ color: C.muted, fontSize: 13, flex: 1 }}>
-        The whole flow in one job — the CLI's <code>run</code>. Confirmation gates
-        auto-proceed on the server, so this renders every missing clip.
-      </span>
-      <Toggle label="Stop after clips (no final video)" checked={noCombine} onChange={setNoCombine} />
-      <Btn busy={busy} style={{ background: C.err }} onClick={start}>Run everything</Btn>
+    <div>
+      <PanelIntro>
+        The hands-off mode: every remaining step in one job, no review stops.
+        Best for a project whose storyboard you've already checked — or when
+        you trust the plan blindly.
+      </PanelIntro>
+      <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+        <Toggle label="Stop after clips (no final video)" checked={noCombine} onChange={setNoCombine} />
+        <span style={{ flex: 1 }} />
+        <Btn disabled={locked} style={{ background: C.err }} onClick={start}>Run everything…</Btn>
+      </div>
     </div>
   );
 }
@@ -277,6 +387,13 @@ function RunOptions({ run, busy }) {
 // prompt (transition ids never collide with it).
 const GLOBAL_EDIT = '__global_motion__';
 
+const STEPS = [
+  { id: 'storyboard', n: 1, name: 'Storyboard', caption: 'Style photos & plan each clip' },
+  { id: 'render', n: 2, name: 'Render', caption: 'Generate the video clips' },
+  { id: 'audio', n: 3, name: 'Audio', caption: 'Sound effects + music' },
+  { id: 'combine', n: 4, name: 'Combine', caption: 'Build the final movie' }
+];
+
 export default function ProjectDetail({ name, onBack, notify }) {
   const [snap, setSnap] = useState(null);
   const [storyboard, setStoryboard] = useState(null); // parsed, editable copy
@@ -286,6 +403,7 @@ export default function ProjectDetail({ name, onBack, notify }) {
   const [showPhotos, setShowPhotos] = useState(false);
   const [openPanel, setOpenPanel] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [confirm, setConfirm] = useState(null);
   const pollRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -334,6 +452,36 @@ export default function ProjectDetail({ name, onBack, notify }) {
   const placeholderIds = new Set(snap.storyboard?.placeholder_transitions || []);
   const [stepText, stepColor] = stepChip(snap.next_step);
   const activeJob = (snap.jobs || []).find((j) => ['running', 'queued', 'cancelling'].includes(j.state));
+  const locked = Boolean(activeJob);
+
+  // Facts every confirmation modal builds on.
+  const inputImages = snap.input_images || [];
+  const styledImages = snap.styled_images || [];
+  const total = (snap.clips || []).length;
+  const rendered = (snap.clips || []).filter((c) => c.rendered).length;
+  const info = {
+    photoCount: inputImages.length,
+    unstyledCount: inputImages.filter(
+      (img) => !styledImages.includes(img.replace(/\.[^.]+$/, '.png'))
+    ).length,
+    total,
+    rendered,
+    missing: total - rendered,
+    silentRendered: (snap.clips || []).filter((c) => c.rendered && !c.sfx).length,
+    finalExists: Boolean(snap.final_video)
+  };
+
+  const stepStatus = (id) => {
+    const done = {
+      storyboard: Boolean(storyboard),
+      render: total > 0 && rendered === total,
+      audio: rendered > 0 && info.silentRendered === 0,
+      combine: info.finalExists
+    }[id];
+    if (done) return 'done';
+    if (snap.next_step === id) return 'next';
+    return id === 'audio' ? 'optional' : 'todo';
+  };
 
   const run = async (command, options = {}, label = command) => {
     setBusyAction(label);
@@ -344,6 +492,15 @@ export default function ProjectDetail({ name, onBack, notify }) {
       await load();
     } catch (e) { notify(`${label} failed: ${e.message}`); }
     finally { setBusyAction(''); }
+  };
+
+  // The verification step: every mutating action lands here first.
+  const ask = (cfg) => setConfirm(cfg);
+  const confirmed = async () => {
+    const { command, options = {}, label, action } = confirm;
+    setConfirm(null);
+    if (action) return action();
+    return run(command, options, label || command);
   };
 
   const saveEdits = async () => {
@@ -369,14 +526,56 @@ export default function ProjectDetail({ name, onBack, notify }) {
     setDirty((d) => new Set(d).add(GLOBAL_EDIT));
   };
 
-  const regenerate = async (clipId) => {
-    if (dirty.size) { notify('Save your storyboard edits first.'); return; }
-    await run('render', { clips: [clipId] }, `render ${clipId}`);
+  const needsSave = () => {
+    if (dirty.size) { notify('Save your storyboard edits first.'); return true; }
+    return false;
   };
 
-  const redoAudio = async (clipId) => {
-    if (dirty.size) { notify('Save your storyboard edits first.'); return; }
-    await run('audio', { clips: [clipId] }, `audio ${clipId}`);
+  const regenerate = (clipId) => {
+    if (needsSave()) return;
+    const exists = clipsById[clipId]?.rendered;
+    ask({
+      title: exists ? `Regenerate clip ${clipId}?` : `Render clip ${clipId}?`,
+      lines: [
+        exists
+          ? `Re-renders this one clip with its current motion prompt and REPLACES clips/${clipId}.mp4.`
+          : 'Renders this one clip with its current motion prompt.',
+        CLIP_PRICE,
+        exists ? 'Its "outdated" mark (if any) is cleared; its SFX will need redoing afterwards.' : 'No other clip is touched.'
+      ],
+      cost: 'fal', danger: exists,
+      label: exists ? 'Regenerate' : 'Render',
+      action: () => run('render', { clips: [clipId] }, `render ${clipId}`)
+    });
+  };
+
+  const replanPrompt = (clipId) => {
+    if (needsSave()) return;
+    ask({
+      title: `Re-plan the prompt for ${clipId}?`,
+      lines: [
+        'Asks the AI planner to look at this pair of frames again and write a fresh motion prompt (one small vision call).',
+        'Only this transition changes — every other prompt and edit is kept.',
+        'The clip itself is NOT re-rendered; if it already exists it gets marked "outdated" so you can regenerate it when the new prompt looks right.'
+      ],
+      cost: 'openai',
+      label: 'Re-plan prompt',
+      action: () => run('storyboard', { replan_clips: [clipId] }, `re-plan ${clipId}`)
+    });
+  };
+
+  const redoAudio = (clipId) => {
+    if (needsSave()) return;
+    ask({
+      title: `Redo audio for ${clipId}?`,
+      lines: [
+        'Regenerates this clip\'s sound effects from its sound prompt and muxes them in.',
+        'Audio jobs are much cheaper than clip renders. The final video needs a Combine afterwards to pick the new sound up.'
+      ],
+      cost: 'fal',
+      label: 'Redo audio',
+      action: () => run('audio', { clips: [clipId] }, `audio ${clipId}`)
+    });
   };
 
   const upload = async (files) => {
@@ -391,13 +590,23 @@ export default function ProjectDetail({ name, onBack, notify }) {
     finally { setUploading(false); if (fileInputRef.current) fileInputRef.current.value = ''; }
   };
 
-  const deletePhoto = async (filename) => {
-    if (!window.confirm(`Delete input photo ${filename}? (Styled frames and clips are kept.)`)) return;
-    try {
-      await api.deletePhoto(name, filename);
-      notify(`Deleted ${filename}`);
-      await load();
-    } catch (e) { notify(`Delete failed: ${e.message}`); }
+  const deletePhoto = (filename) => {
+    ask({
+      title: `Delete photo ${filename}?`,
+      lines: [
+        'Removes this photo from the movie: the input file is deleted from input_images/.',
+        'Its styled frame and any rendered clips stay on disk; the next Storyboard run re-plans the pairs around the gap.'
+      ],
+      cost: 'free', danger: true,
+      label: 'Delete',
+      action: async () => {
+        try {
+          await api.deletePhoto(name, filename);
+          notify(`Deleted ${filename}`);
+          await load();
+        } catch (e) { notify(`Delete failed: ${e.message}`); }
+      }
+    });
   };
 
   const showLog = async (jobId) => {
@@ -417,24 +626,24 @@ export default function ProjectDetail({ name, onBack, notify }) {
     finally { setBusyAction(''); }
   };
 
-  const panelBtn = (id, label, primary) => (
-    <Btn ghost={!primary} busy={busyAction === id} disabled={Boolean(activeJob)}
-      style={openPanel === id ? { borderColor: C.accent, color: C.accentSoft } : {}}
-      onClick={() => setOpenPanel(openPanel === id ? '' : id)}>
-      {label} {openPanel === id ? '▴' : '▾'}
-    </Btn>
-  );
+  const statusChipFor = (status) =>
+    status === 'done' ? <span style={S.chip(C.ok)}>✓ done</span>
+      : status === 'next' ? <span style={S.chip(C.accent)}>next step</span>
+        : status === 'optional' ? <span style={{ color: C.muted, fontSize: 11 }}>optional</span>
+          : null;
 
   const panels = {
-    storyboard: <StoryboardOptions run={run} busy={busyAction === 'storyboard'} />,
-    render: <RenderOptions run={run} busy={busyAction === 'render'} />,
-    audio: <AudioOptions run={run} busy={busyAction === 'audio'} />,
-    combine: <CombineOptions run={run} busy={busyAction === 'combine'} />,
-    run: <RunOptions run={run} busy={busyAction === 'run'} />
+    storyboard: <StoryboardPanel ask={ask} locked={locked} info={info} />,
+    render: <RenderPanel ask={ask} locked={locked} info={info} />,
+    audio: <AudioPanel ask={ask} locked={locked} info={info} />,
+    combine: <CombinePanel ask={ask} locked={locked} info={info} />,
+    runall: <RunAllPanel ask={ask} locked={locked} info={info} />
   };
 
   return (
     <div>
+      <ConfirmModal confirm={confirm} onCancel={() => setConfirm(null)} onConfirm={confirmed} />
+
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
         <Btn ghost onClick={onBack}>← back</Btn>
         <h2 style={{ margin: 0, fontSize: 18 }}>{name}</h2>
@@ -445,22 +654,49 @@ export default function ProjectDetail({ name, onBack, notify }) {
           {activeJob.command} {activeJob.state}…</span>}
       </div>
 
-      <div style={{ ...S.card, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        {panelBtn('storyboard', 'Storyboard')}
-        {panelBtn('render', 'Render', true)}
-        {panelBtn('audio', 'Audio')}
-        {panelBtn('combine', 'Combine')}
-        <Btn ghost busy={busyAction === 'finalize'} disabled={Boolean(activeJob)}
-          onClick={() => run('combine', { intro_clip: true, credits_photos: true, force: true }, 'finalize')}>
-          Finalize (intro + credits)
-        </Btn>
-        {panelBtn('run', 'Run everything')}
-        <span style={{ flex: 1 }} />
-        <Btn ghost onClick={() => setShowPhotos((v) => !v)}>
-          {showPhotos ? 'Hide photos' : `Photos (${(snap.input_images || []).length})`}
-        </Btn>
+      <div style={{ ...S.card, padding: 10 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {STEPS.map((step) => {
+            const status = stepStatus(step.id);
+            const selected = openPanel === step.id;
+            return (
+              <div key={step.id} role="button" tabIndex={0}
+                onClick={() => setOpenPanel(selected ? '' : step.id)}
+                onKeyDown={(e) => e.key === 'Enter' && setOpenPanel(selected ? '' : step.id)}
+                style={{
+                  flex: '1 1 150px', minWidth: 150, cursor: 'pointer',
+                  background: C.panel, borderRadius: 8, padding: '10px 12px',
+                  border: `1px solid ${selected ? C.accent : status === 'next' ? `${C.accent}88` : C.border}`
+                }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between' }}>
+                  <strong style={{ fontSize: 14 }}>
+                    <span style={{ color: C.muted, fontWeight: 400 }}>{step.n} · </span>{step.name}
+                  </strong>
+                  {statusChipFor(status)}
+                </div>
+                <div style={{ color: C.muted, fontSize: 12, marginTop: 3 }}>{step.caption}</div>
+              </div>
+            );
+          })}
+          <div role="button" tabIndex={0}
+            onClick={() => setOpenPanel(openPanel === 'runall' ? '' : 'runall')}
+            onKeyDown={(e) => e.key === 'Enter' && setOpenPanel(openPanel === 'runall' ? '' : 'runall')}
+            title="All remaining steps as one unattended job"
+            style={{
+              flex: '0 1 150px', minWidth: 130, cursor: 'pointer',
+              background: 'transparent', borderRadius: 8, padding: '10px 12px',
+              border: `1px dashed ${openPanel === 'runall' ? C.err : C.border}`
+            }}>
+            <strong style={{ fontSize: 14, color: C.muted }}>⚡ Run everything</strong>
+            <div style={{ color: C.muted, fontSize: 12, marginTop: 3 }}>All steps, no stops</div>
+          </div>
+        </div>
+        {openPanel && (
+          <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 10, paddingTop: 12 }}>
+            {panels[openPanel]}
+          </div>
+        )}
       </div>
-      {openPanel && <div style={S.card}>{panels[openPanel]}</div>}
 
       {snap.final_video && (
         <div style={S.card}>
@@ -474,24 +710,24 @@ export default function ProjectDetail({ name, onBack, notify }) {
         </div>
       )}
 
-      {showPhotos && (
-        <div style={S.card}>
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 8 }}>
-            <strong>Photos</strong>
-            <span style={{ color: C.muted, fontSize: 12 }}>
-              Movie order follows the filenames (sorted). Styled versions shown when available.
-            </span>
-            <span style={{ flex: 1 }} />
-            <input ref={fileInputRef} type="file" accept="image/*" multiple style={{ display: 'none' }}
-              onChange={(e) => upload(e.target.files)} />
-            <Btn ghost busy={uploading} onClick={() => fileInputRef.current?.click()}>Add photos</Btn>
-          </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {(snap.input_images || []).map((img) => {
+      <div style={S.card}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <strong>Photos ({inputImages.length})</strong>
+          <span style={{ color: C.muted, fontSize: 12, flex: 1 }}>
+            Movie order follows the filenames (sorted). Styled versions shown when available.
+          </span>
+          <input ref={fileInputRef} type="file" accept="image/*" multiple style={{ display: 'none' }}
+            onChange={(e) => upload(e.target.files)} />
+          <Btn ghost busy={uploading} onClick={() => fileInputRef.current?.click()}>Add photos</Btn>
+          <Btn ghost onClick={() => setShowPhotos((v) => !v)}>{showPhotos ? 'Hide' : 'Show'}</Btn>
+        </div>
+        {showPhotos && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+            {inputImages.map((img) => {
               const styledName = img.replace(/\.[^.]+$/, '.png');
-              const styled = (snap.styled_images || []).includes(styledName);
+              const styled = styledImages.includes(styledName);
               return (
-                <div key={img} style={{ position: 'relative' }}>
+                <div key={img}>
                   <img style={{ width: 120, borderRadius: 6 }} alt={img}
                     src={fileUrl(name, styled ? 'styled' : 'input', styled ? styledName : img)} />
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -504,14 +740,14 @@ export default function ProjectDetail({ name, onBack, notify }) {
                 </div>
               );
             })}
-            {(snap.input_images || []).length === 0 && (
+            {inputImages.length === 0 && (
               <p style={{ color: C.muted, fontSize: 13 }}>
                 No photos yet — add some above, or run Storyboard with an idea instead.
               </p>
             )}
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {(snap.jobs || []).length > 0 && (
         <div style={S.card}>
@@ -575,8 +811,10 @@ export default function ProjectDetail({ name, onBack, notify }) {
               clip={clipsById[tr.output_path.split('/').pop()?.replace(/\.mp4$/, '')]}
               edited={dirty.has(tr.id)} placeholder={placeholderIds.has(tr.id)}
               onEdit={editTransition}
-              onRegenerate={regenerate} onRedoAudio={redoAudio}
-              busy={busyAction === `render ${tr.id}`} audioBusy={busyAction === `audio ${tr.id}`} />
+              onRegenerate={regenerate} onReplan={replanPrompt} onRedoAudio={redoAudio}
+              busy={busyAction === `render ${tr.id}`}
+              replanBusy={busyAction === `re-plan ${tr.id}`}
+              audioBusy={busyAction === `audio ${tr.id}`} />
           ))}
         </>
       )}

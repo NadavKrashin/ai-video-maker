@@ -36,6 +36,10 @@ class RunOptions:
     frame_count: Optional[int] = None
     # render: limit to (and force-redo) these clips, e.g. ["003_to_004"].
     clips: Optional[list[str]] = None
+    # storyboard: force a fresh vision plan for these transitions even though
+    # their frames didn't change (e.g. ["003_to_004"]) — the per-clip "write
+    # me a new motion prompt" knob. Hand edits elsewhere stay untouched.
+    replan_clips: Optional[list[str]] = None
     # ingest: which Cloudinary order to download (order id / folder name /
     # any unique fragment of it).
     order: Optional[str] = None
@@ -80,6 +84,7 @@ class RunOptions:
             idea_file=get("idea_file"),
             frame_count=get("frame_count"),
             clips=get("clip"),
+            replan_clips=get("replan_clip"),
             order=get("order"),
             add_audio=bool(get("add_audio")),
             no_audio=bool(get("no_audio")),

@@ -339,6 +339,47 @@ class TestReconcileStoryboard:
         kept = {t.id: t.motion_prompt for t in sb.transitions}
         assert kept["b_to_c"] == "motion b"  # hand-editable transition survived
 
+    def test_requested_replan_forces_fresh_plan_and_marks_stale(
+        self, make_pipeline, workspace
+    ):
+        # The panel's per-clip "re-plan prompt": frames unchanged, but the
+        # user wants a new plan for exactly this pair. --motion-prompt stands
+        # in for a successful vision plan; the old clip goes stale (marked,
+        # never deleted), the neighbour's hand-written prompt survives.
+        p = make_pipeline(
+            analyze_frames=False, motion_prompt="a fresh plan",
+            replan_clips=["a_to_b"],
+        )
+        pairs = _make_frame_pairs(workspace, ["a", "b", "c"])
+        saved = _save_slug_storyboard(workspace, ["a", "b", "c"])
+        sb, replanned, stale = p._reconcile_storyboard(saved, pairs)
+        assert replanned == ["a_to_b"] and stale == ["a_to_b"]
+        assert sb.transitions[0].motion_prompt == "a fresh plan"
+        assert sb.transitions[1].motion_prompt == "motion b"
+
+    def test_requested_replan_same_plan_is_not_stale(
+        self, make_pipeline, workspace
+    ):
+        # Re-plan came back identical (or fell back) -> the clip still
+        # matches its prompt; don't flag it outdated.
+        p = make_pipeline(
+            analyze_frames=False, motion_prompt="motion a",
+            replan_clips=["a_to_b"],
+        )
+        pairs = _make_frame_pairs(workspace, ["a", "b", "c"])
+        saved = _save_slug_storyboard(workspace, ["a", "b", "c"])
+        sb, replanned, stale = p._reconcile_storyboard(saved, pairs)
+        assert replanned == ["a_to_b"] and stale == []
+
+    def test_requested_replan_unknown_id_fails_loudly(
+        self, make_pipeline, workspace
+    ):
+        p = make_pipeline(analyze_frames=False, replan_clips=["nope_to_nada"])
+        pairs = _make_frame_pairs(workspace, ["a", "b", "c"])
+        saved = _save_slug_storyboard(workspace, ["a", "b", "c"])
+        with pytest.raises(PipelineError, match="nope_to_nada"):
+            p._reconcile_storyboard(saved, pairs)
+
     def test_removed_frame_replans_the_joined_pair(self, make_pipeline, workspace):
         p = self._pipeline(make_pipeline)
         saved = _save_slug_storyboard(workspace, ["a", "b", "c"])

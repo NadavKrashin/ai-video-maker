@@ -150,6 +150,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-analyze", action="store_true",
                     help="Skip the vision analysis; use the single global motion "
                          "prompt and one duration for every clip.")
+    sp.add_argument("--replan-clip", action="append", metavar="ID",
+                    help="Ask the planner for a fresh motion prompt for this "
+                         "transition (e.g. 003_to_004) even though its frames "
+                         "didn't change; everything else is kept. If its clip "
+                         "is already rendered it gets marked outdated. "
+                         "Repeatable.")
     sp.add_argument("--duration", type=int, choices=sorted(VALID_DURATIONS),
                     help="Force every clip to this length (5 or 10 seconds); "
                          "omit to let the planner mix lengths.")

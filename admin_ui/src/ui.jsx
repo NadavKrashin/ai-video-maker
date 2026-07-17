@@ -44,6 +44,63 @@ export function Field({ label, children, style }) {
   );
 }
 
+// What an action costs, shown in every confirmation dialog: money honesty
+// is the whole point of the modal.
+export const COST = {
+  free: { text: 'Free — no API credits', color: C.ok },
+  openai: { text: 'Spends OpenAI credits', color: C.accentSoft },
+  fal: { text: 'Spends fal.ai credits', color: C.accentSoft },
+  both: { text: 'Spends OpenAI + fal.ai credits', color: C.err }
+};
+
+export function Modal({ title, onClose, children }) {
+  return (
+    <div onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, background: '#000A', zIndex: 50,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16
+      }}>
+      <div onClick={(e) => e.stopPropagation()}
+        style={{
+          background: C.card, border: `1px solid ${C.border}`, borderRadius: 12,
+          padding: 18, width: 480, maxWidth: '100%', maxHeight: '85vh', overflowY: 'auto'
+        }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+          <h3 style={{ margin: 0, fontSize: 16 }}>{title}</h3>
+          <button onClick={onClose} aria-label="close"
+            style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 16 }}>
+            ✕
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// The verification step before anything that changes files or spends money:
+// says exactly what will happen and what it costs, then asks.
+export function ConfirmModal({ confirm, busy, onConfirm, onCancel }) {
+  if (!confirm) return null;
+  const cost = COST[confirm.cost || 'free'];
+  return (
+    <Modal title={confirm.title} onClose={onCancel}>
+      <ul style={{ margin: '0 0 12px', paddingLeft: 18, color: C.ink, fontSize: 14, lineHeight: 1.55 }}>
+        {confirm.lines.map((line, i) => <li key={i}>{line}</li>)}
+      </ul>
+      <div style={{ marginBottom: 14 }}>
+        <span style={S.chip(cost.color)}>{cost.text}</span>
+      </div>
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+        <Btn ghost onClick={onCancel}>Cancel</Btn>
+        <Btn busy={busy} style={confirm.danger ? { background: C.err } : {}} onClick={onConfirm}>
+          {confirm.label || 'Confirm'}
+        </Btn>
+      </div>
+    </Modal>
+  );
+}
+
 export function Toggle({ label, checked, indeterminate, onChange, title }) {
   // Tri-state when `indeterminate` is allowed: null = use config default.
   return (
