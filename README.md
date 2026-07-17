@@ -62,32 +62,69 @@ Settings → API Keys).
 ### The admin server (`serve`) — run the whole flow from a browser
 
 ```bash
-python pipeline.py serve            # admin API on 127.0.0.1:8300 + order watcher
+cd admin_ui && npm install && npm run build && cd ..   # once (and after UI changes)
+python pipeline.py serve            # panel + API on 127.0.0.1:8300 + order watcher
 ```
 
-One process gives the animoments **admin panel** everything it needs:
+One process serves the whole thing — open http://127.0.0.1:8300/ and enter
+the `ADMIN_API_TOKEN` from `.env`:
 
+- **Admin panel** (`admin_ui/`, a small React app served from its `dist/`
+  build): everything the CLI can do, from a browser — order intake, creating
+  a project from scratch and uploading/removing photos (`init`), storyboards
+  from photos or from a typed idea (with style prompt / duration /
+  no-analyze / frame-count options), reviewing and editing every transition
+  (motion prompt, duration, sound prompt, global motion prompt), rendering
+  all clips or regenerating one, per-clip audio redo, combine/finalize with
+  intro/credits/letter toggles, and `run` for the whole chain. Jobs stream
+  their logs and can be cancelled from the panel.
 - **API**: order list, per-project status, storyboard read/edit, photos and
   clip playback, and actions (ingest / storyboard / render / redo one clip /
-  audio / combine) that run as **background jobs** — one at a time, with
-  their logs available at `/api/jobs/<id>`. `POST /api/jobs/<id>/cancel`
+  audio / combine / run) that run as **background jobs** — one at a time,
+  with their logs available at `/api/jobs/<id>`. `POST /api/jobs/<id>/cancel`
   cancels a job: a queued job is dropped immediately; a running one shows
   `cancelling` and stops between work items — whatever is mid-generation
   finishes and is kept (already-submitted API work bills either way), so
   re-running the same action later resumes instead of re-paying. Every route
   (except `/api/health`) requires the `ADMIN_API_TOKEN` from `.env`, passed
   as `Authorization: Bearer <token>` (or `?token=` for media tags).
-- **Order watcher**: polls Cloudinary every `watch_poll_seconds` and
-  auto-ingests a new order once its upload has been quiet for
-  `watch_quiet_minutes` (payment confirms *before* photos finish uploading,
-  so folder-exists ≠ order-complete). With `watch_auto_storyboard` (default
-  on) it also runs `storyboard` right away — **this spends OpenAI styling
-  credits automatically per paid order** — so the storyboard is waiting for
-  review by the time you open the panel. Disable with `--no-watch` or
-  `watch_enabled: false`.
+- **Order watcher**: tracks new paid orders every `watch_poll_seconds` and
+  auto-ingests an order once its upload is complete (payment confirms
+  *before* photos finish uploading, so folder-exists ≠ order-complete).
+  With the **Firebase order ledger** configured (below) the watcher reads
+  the Firestore `orders` collection — the authoritative "someone paid"
+  record with the customer's details — checks the photos in Cloudinary
+  (exact `photoCount` when the doc has one, else a `watch_quiet_minutes`
+  quiet period), and writes progress back into each order doc's `status`
+  (`new → ingesting → ingested`). Without Firebase it falls back to pure
+  Cloudinary folder polling with the quiet-period rule. With
+  `watch_auto_storyboard` (default on) it also runs `storyboard` right away
+  — **this spends OpenAI styling credits automatically per paid order** —
+  so the storyboard is waiting for review by the time you open the panel.
+  Disable with `--no-watch` or `watch_enabled: false`.
 
 To reach the panel away from home, expose the port with a tunnel
 (Cloudflare Tunnel / Tailscale) — don't bind `0.0.0.0` on an open network.
+For UI development, `cd admin_ui && npm run dev` serves the panel with hot
+reload, proxying `/api` to a locally running `pipeline.py serve`.
+
+### The Firebase order ledger (optional, recommended)
+
+The web frontend writes every paid order to Firestore (collection `orders`:
+customer name/phone/email, package, music mood, blessing, the Cloudinary
+photo folder, and a `status` starting at `"new"`). To let the pipeline use
+and update that ledger:
+
+1. Firebase console → Project settings → Service accounts → **Generate new
+   private key** (this is a secret — it's gitignored).
+2. Save it as `firebase-service-account.json` at the repo root, or point
+   `FIREBASE_SERVICE_ACCOUNT` in `.env` at its path.
+
+That's all — the project id is read from the key file itself
+(`firebase_project_id` / `firebase_orders_collection` /
+`firebase_credentials_file` in `config.json` override when needed). The
+`orders` API/panel then shows the full customer context per order, and the
+watcher stops guessing completeness from folder timestamps alone.
 
 ### Editing cookbook
 
@@ -169,6 +206,7 @@ python pipeline.py render robots          # generates the key frames, then the c
   `apt install ffmpeg` (Linux), then open a new terminal.
 - An OpenAI API key
 - A **fal.ai** key (image-to-video + audio) — from https://fal.ai/dashboard/keys
+- **Node.js 18+** (only for the admin panel — `admin_ui/` builds with Vite)
 
 ## Setup
 
@@ -199,6 +237,13 @@ FAL_KEY=your-fal-key
 # intake) — from the Cloudinary console, Settings -> API Keys:
 CLOUDINARY_API_KEY=...
 CLOUDINARY_API_SECRET=...
+
+# Admin server (`serve`) — any long random string; the panel logs in with it:
+ADMIN_API_TOKEN=...
+
+# Firebase order ledger (optional) — path to a Firestore service-account key;
+# defaults to firebase-service-account.json at the repo root when present:
+FIREBASE_SERVICE_ACCOUNT=firebase-service-account.json
 ```
 
 > **Auth:** OpenAI generates/edits the images and plans the storyboard; fal.ai
@@ -587,12 +632,17 @@ ai_video_maker/
   media/
     images.py        # Pillow normalisation + image listing
     ffmpeg.py        # concat, ffprobe, edge fades, music mux
+  server.py          # FastAPI admin API + job runner + order watcher (`serve`)
+  intake.py          # web-order intake logic shared by orders/ingest/watcher
   clients/
     openai_client.py # image generation/editing + storyboard text (OpenAI)
     fal.py           # shared fal session: upload + subscribe + result parsing
     download.py      # shared atomic streaming download
     video.py         # VideoClient — image-to-video (fal)
     audio.py         # AudioClient — SFX + music (fal)
+    cloudinary_client.py # order photo listing/download (Cloudinary Admin API)
+    firebase_client.py   # Firestore order ledger (list orders, status write-back)
+admin_ui/            # the admin panel (React + Vite); dist/ is served at / by `serve`
 pipeline.py          # entry-point shim
 pyproject.toml       # package metadata, deps, `ai-video-maker` console script
 ```

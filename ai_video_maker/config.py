@@ -127,6 +127,20 @@ class Config(BaseModel):
     cloudinary_cloud_name: str = ""
     cloudinary_orders_folder: str = "video-orders"
 
+    # --- Firebase order ledger (Firestore) ---------------------------------- #
+    # The frontend also writes each paid order to Firestore (collection
+    # "orders": customer details, package, Cloudinary folder, status "new").
+    # When a service-account key is available (FIREBASE_SERVICE_ACCOUNT in
+    # .env, or firebase-service-account.json at the repo root) the watcher
+    # tracks orders THERE — the authoritative "someone paid" signal — and
+    # writes pipeline progress back into each doc's status; Cloudinary is then
+    # only the photo store. Without a key everything falls back to pure
+    # Cloudinary folder polling. project id defaults to the key file's own
+    # project_id, so these usually stay empty.
+    firebase_project_id: str = ""
+    firebase_credentials_file: str = ""
+    firebase_orders_collection: str = "orders"
+
     # --- Admin server & order watcher (`pipeline.py serve`) ---------------- #
     # The watcher polls Cloudinary and auto-ingests a new order once its
     # upload has gone quiet (the frontend confirms payment BEFORE photos

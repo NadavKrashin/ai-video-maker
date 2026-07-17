@@ -1,16 +1,21 @@
-"""FastAPI admin server: drive the pipeline remotely (the animoments admin panel).
+"""FastAPI admin server: drive the pipeline remotely (the admin panel).
 
-One process serves three things:
+One process serves four things:
 
+* the **admin panel** — the browser UI in ``admin_ui/`` (its ``dist/`` build
+  is mounted at ``/`` when present, so http://host:8300/ is the panel);
 * the **admin API** — orders, per-project status (``Pipeline.snapshot()``),
-  storyboard read/edit, media files, and actions (ingest/storyboard/render/
-  audio/combine) that run as background jobs;
+  storyboard read/edit, media files, photo upload, and actions (ingest/
+  storyboard/render/audio/combine/run) that run as background jobs;
 * the **job runner** — a single worker thread executing one pipeline command
   at a time (an order's steps take minutes and the volume is orders-per-day,
   so serial keeps things simple and safe);
-* the **watcher** — polls Cloudinary for new paid orders and auto-ingests
-  (+ optionally storyboards) the ones whose upload has gone quiet, so a new
-  order needs no PC interaction at all.
+* the **watcher** — tracks new paid orders and auto-ingests (+ optionally
+  storyboards) the complete ones, so a new order needs no PC interaction at
+  all. With Firebase configured (service-account key, see
+  ``clients/firebase_client.py``) the Firestore ``orders`` collection is the
+  source of truth and pipeline progress is written back into each order's
+  ``status``; otherwise it falls back to polling Cloudinary folders.
 
 Interactivity: pipeline confirm gates auto-proceed here (the API caller made
 the decision by pressing the button); nothing blocks on stdin.
@@ -21,6 +26,7 @@ query form exists because ``<img>``/``<video>`` tags can't send headers.
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import queue
@@ -31,11 +37,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from .clients.cloudinary_client import CloudinaryClient
+from .clients.firebase_client import (
+    PENDING_STATUSES,
+    STATUS_INGESTED,
+    STATUS_INGESTING,
+    FirebaseClient,
+)
 from .config import Config
 from .errors import InvalidProjectName, PipelineCancelled, PipelineError
 from .intake import (
@@ -49,17 +62,17 @@ from .logging_setup import logger, setup_logging
 from .models import Storyboard
 from .options import RunOptions
 from .runner import Pipeline
-from .workspace import PROJECTS_DIR, Workspace
+from .workspace import PROJECT_ROOT, PROJECTS_DIR, Workspace
 
-# Pipeline commands the API may enqueue, and the RunOptions fields a request
-# body may set — an explicit whitelist so a request can't reach for
+# Pipeline commands the API may enqueue ("ingest" only via /api/orders/ingest),
+# and the RunOptions fields a request body may set — every per-run knob the
+# CLI has, but still an explicit whitelist so a request can't reach for
 # constructor internals.
-_ALLOWED_COMMANDS = {"ingest", "storyboard", "render", "audio", "combine"}
-_ALLOWED_OPTIONS = {
-    "force", "dry_run", "duration", "motion_prompt", "style_prompt",
-    "music_prompt", "music_file", "analyze_frames", "clips", "order",
-    "add_audio", "no_audio", "credits_photos", "closing_letter", "intro_clip",
-}
+_ALLOWED_COMMANDS = {"ingest", "storyboard", "render", "audio", "combine", "run"}
+_ALLOWED_OPTIONS = {f.name for f in dataclasses.fields(RunOptions)}
+
+# Uploads into input_images/ — the same formats a user would drop there.
+_PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".bmp", ".tif", ".tiff"}
 
 
 def _now() -> str:
@@ -242,12 +255,31 @@ class JobRunner:
 # -------------------------------- watcher ----------------------------------- #
 
 class OrderWatcher:
-    """Poll Cloudinary; auto-ingest (+ storyboard) complete new orders."""
+    """Track paid orders; auto-ingest (+ storyboard) the complete new ones.
 
-    def __init__(self, config: Config, config_path: Path, jobs: JobRunner) -> None:
+    Firestore is the order source when a service-account key is configured
+    (the doc is written the moment the customer pays — the authoritative
+    signal), with Cloudinary consulted only to check the photos' upload
+    progress; pipeline progress is written back into each order doc's
+    ``status``. Without Firebase the legacy pure-Cloudinary folder poll runs.
+
+    The client factories are injectable for tests.
+    """
+
+    def __init__(
+        self,
+        config: Config,
+        config_path: Path,
+        jobs: JobRunner,
+        *,
+        cloudinary_factory=CloudinaryClient.from_config,
+        firebase_factory=FirebaseClient.from_config,
+    ) -> None:
         self._config = config
         self._config_path = config_path
         self._jobs = jobs
+        self._cloudinary_factory = cloudinary_factory
+        self._firebase_factory = firebase_factory
         self._thread = threading.Thread(
             target=self._loop, name="order-watcher", daemon=True
         )
@@ -257,7 +289,8 @@ class OrderWatcher:
 
     def _loop(self) -> None:
         logger.info(
-            "Order watcher: polling Cloudinary every %ds (quiet period %.0f min).",
+            "Order watcher: polling %s every %ds (quiet period %.0f min).",
+            "Firestore" if FirebaseClient.configured(self._config) else "Cloudinary",
             self._config.watch_poll_seconds, self._config.watch_quiet_minutes,
         )
         while True:
@@ -269,16 +302,84 @@ class OrderWatcher:
 
     def poll_once(self) -> list[str]:
         """One poll; returns the order folders enqueued for ingestion."""
-        client = CloudinaryClient.from_config(self._config)
-        handled = set(ingested_orders(PROJECTS_DIR))
-        handled |= self._jobs.active_ingest_orders()
+        if FirebaseClient.configured(self._config):
+            return self._poll_firestore()
+        return self._poll_cloudinary()
+
+    # ------------------------- shared poll pieces -------------------------- #
+
+    def _handled_and_names(self) -> tuple[dict[str, str], set[str], set[str]]:
+        handled = ingested_orders(PROJECTS_DIR)  # folder leaf -> project
+        active = self._jobs.active_ingest_orders()
         existing_names = {
             p.name for p in PROJECTS_DIR.iterdir() if p.is_dir()
         } if PROJECTS_DIR.exists() else set()
+        return handled, active, existing_names
+
+    def _enqueue_ingest(self, folder: str, existing_names: set[str]) -> str:
+        project = derive_project_name(folder, existing_names)
+        existing_names.add(project)
+        then = (
+            {"command": "storyboard", "options": {}}
+            if self._config.watch_auto_storyboard else None
+        )
+        self._jobs.enqueue(project, "ingest", {"order": folder}, then=then)
+        logger.info(
+            "Order %s: complete — ingesting as project '%s'%s.",
+            folder, project, " + storyboard" if then else "",
+        )
+        return project
+
+    # ------------------------------ sources -------------------------------- #
+
+    def _poll_firestore(self) -> list[str]:
+        firebase = self._firebase_factory(self._config)
+        cloudinary = self._cloudinary_factory(self._config)
+        handled, active, existing_names = self._handled_and_names()
+
+        enqueued: list[str] = []
+        for order in firebase.list_orders():
+            leaf = order.folder_leaf
+            if not leaf:
+                continue  # no photo folder recorded — nothing to ingest yet
+            if leaf in handled:
+                # Ingested locally (by the watcher, the panel, or the CLI) —
+                # make sure the ledger says so. Only pending statuses are
+                # bumped: a later stage (e.g. a future "delivered") must
+                # never be downgraded back to "ingested".
+                if order.status in PENDING_STATUSES:
+                    self._update_status(
+                        firebase, order.order_id,
+                        {"status": STATUS_INGESTED, "project": handled[leaf]},
+                    )
+                continue
+            if order.status not in PENDING_STATUSES or leaf in active:
+                continue
+            assets = cloudinary.list_order_assets(leaf)
+            if not is_order_complete(
+                assets, self._config.watch_quiet_minutes,
+                expected_count=order.photo_count,
+            ):
+                logger.info(
+                    "Order %s: %d photo(s) but upload still fresh — waiting.",
+                    leaf, len(assets),
+                )
+                continue
+            self._enqueue_ingest(leaf, existing_names)
+            self._update_status(
+                firebase, order.order_id, {"status": STATUS_INGESTING}
+            )
+            enqueued.append(leaf)
+        return enqueued
+
+    def _poll_cloudinary(self) -> list[str]:
+        client = self._cloudinary_factory(self._config)
+        handled, active, existing_names = self._handled_and_names()
+        skip = set(handled) | active
 
         enqueued: list[str] = []
         for folder in client.list_order_folders():
-            if folder in handled:
+            if folder in skip:
                 continue
             assets = client.list_order_assets(folder)
             if not is_order_complete(assets, self._config.watch_quiet_minutes):
@@ -287,20 +388,17 @@ class OrderWatcher:
                     folder, len(assets),
                 )
                 continue
-            project = derive_project_name(folder, existing_names)
-            existing_names.add(project)
-            then = (
-                {"command": "storyboard", "options": {}}
-                if self._config.watch_auto_storyboard else None
-            )
-            self._jobs.enqueue(project, "ingest", {"order": folder}, then=then)
-            logger.info(
-                "Order %s: complete (%d photos) — ingesting as project '%s'%s.",
-                folder, len(assets), project,
-                " + storyboard" if then else "",
-            )
+            self._enqueue_ingest(folder, existing_names)
             enqueued.append(folder)
         return enqueued
+
+    @staticmethod
+    def _update_status(firebase, order_id: str, fields: dict[str, Any]) -> None:
+        # A ledger write-back must never break ingestion itself.
+        try:
+            firebase.update_order(order_id, fields)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not update Firestore order %s: %s", order_id, exc)
 
 
 # ---------------------------------- app ------------------------------------- #
@@ -354,20 +452,58 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
 
     @app.get("/api/orders", dependencies=guarded)
     async def list_orders() -> dict[str, Any]:
-        client = CloudinaryClient.from_config(config)
+        """Paid orders, newest first.
+
+        With Firebase configured the Firestore ledger drives the listing
+        (customer/package metadata + status), and Cloudinary folders that
+        predate the ledger are appended; otherwise it's the pure Cloudinary
+        folder listing.
+        """
         ingested = ingested_orders(PROJECTS_DIR)
         pending_ingest = jobs.active_ingest_orders()
-        out = []
-        for folder in client.list_order_folders():
+
+        def row(folder: str) -> dict[str, Any]:
             parsed = parse_order_folder(folder)
-            out.append({
+            return {
                 "folder": folder,
                 "order_id": parsed["order_id"],
                 "customer": parsed["customer"],
                 "uploaded_at": parsed["stamp"],
                 "project": ingested.get(folder, ""),
                 "ingesting": folder in pending_ingest,
-            })
+            }
+
+        out: list[dict[str, Any]] = []
+        seen_folders: set[str] = set()
+        if FirebaseClient.configured(config):
+            for order in FirebaseClient.from_config(config).list_orders():
+                leaf = order.folder_leaf
+                seen_folders.add(leaf)
+                entry = row(leaf) if leaf else {
+                    "folder": "", "order_id": order.order_id,
+                    "customer": order.customer, "uploaded_at": "",
+                    "project": "", "ingesting": False,
+                }
+                entry.update({
+                    "order_id": order.order_id,
+                    "customer": order.customer or entry["customer"],
+                    "status": order.status,
+                    "email": order.email,
+                    "phone": order.phone,
+                    "package_id": order.package_id,
+                    "music_mood": order.music_mood,
+                    "blessing": order.blessing,
+                    "photo_count": order.photo_count,
+                    "created_at": order.created_at,
+                    "source": "firestore",
+                })
+                out.append(entry)
+
+        client = CloudinaryClient.from_config(config)
+        for folder in client.list_order_folders():
+            if folder in seen_folders:
+                continue
+            out.append({**row(folder), "source": "cloudinary"})
         return {"orders": out}
 
     @app.post("/api/orders/ingest", dependencies=guarded)
@@ -387,6 +523,60 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         )
         job = jobs.enqueue(project, "ingest", {"order": folder}, then=then)
         return {"job": job.summary(), "project": project}
+
+    @app.post("/api/projects", dependencies=guarded)
+    async def create_project(body: dict[str, Any]) -> dict[str, Any]:
+        """The UI twin of `pipeline.py init`: create an empty workspace."""
+        name = str(body.get("name", "")).strip()
+        try:
+            ws = Workspace.for_project(name)
+        except InvalidProjectName as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if ws.root.exists():
+            raise HTTPException(
+                status_code=409, detail=f"Project '{ws.root.name}' already exists"
+            )
+        ws.mkdirs()
+        return {"ok": True, "project": ws.root.name}
+
+    @app.post("/api/projects/{name}/photos", dependencies=guarded)
+    async def upload_photos(
+        name: str, files: list[UploadFile] = File(...)
+    ) -> dict[str, Any]:
+        """Add photos to input_images/ (the UI twin of dropping files there).
+
+        Filenames are kept (movie order = sorted filenames, exactly like the
+        CLI workflow); an existing file of the same name is replaced.
+        """
+        ws = _workspace(name)
+        saved: list[str] = []
+        for upload in files:
+            filename = Path(upload.filename or "").name
+            if not filename or Path(filename).suffix.lower() not in _PHOTO_EXTENSIONS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Not an image file: {upload.filename!r} "
+                           f"(accepted: {', '.join(sorted(_PHOTO_EXTENSIONS))})",
+                )
+            (ws.input_images_dir / filename).write_bytes(await upload.read())
+            saved.append(filename)
+        return {"saved": saved}
+
+    @app.delete("/api/projects/{name}/photos/{filename}", dependencies=guarded)
+    async def delete_photo(name: str, filename: str) -> dict[str, Any]:
+        """Remove one INPUT photo (the UI twin of deleting the file).
+
+        Only input_images/ is touchable — styled frames and rendered clips
+        are never deleted through the API.
+        """
+        ws = _workspace(name)
+        if Path(filename).name != filename:
+            raise HTTPException(status_code=404, detail="Not found")
+        path = ws.input_images_dir / filename
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Not found")
+        path.unlink()
+        return {"ok": True}
 
     @app.get("/api/projects", dependencies=guarded)
     async def list_projects() -> dict[str, Any]:
@@ -493,5 +683,16 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
 
     if watch and config.watch_enabled:
         OrderWatcher(config, config_path, jobs).start()
+
+    # The admin panel itself: admin_ui/dist mounted at / (after the /api
+    # routes, so they win). Build it with `npm run build` in admin_ui/.
+    dist = PROJECT_ROOT / "admin_ui" / "dist"
+    if dist.is_dir():
+        app.mount("/", StaticFiles(directory=dist, html=True), name="admin-ui")
+    else:
+        logger.info(
+            "admin_ui/dist not found — serving the API only. Build the panel "
+            "with: cd admin_ui && npm install && npm run build"
+        )
 
     return app

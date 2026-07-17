@@ -184,16 +184,36 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
   in both Cloudinary folder modes), public_id-prefix as fallback. `orders`
   is the one project-less CLI command — special-cased in cli.py before
   workspace resolution.
-- `pipeline.py serve` (`server.py`) is the admin API + order watcher: FastAPI,
-  token auth via ADMIN_API_TOKEN in .env (Bearer header or `?token=` for
-  media tags), serial background JobRunner (one pipeline command at a time,
-  whitelisted commands/options), and a watcher thread that auto-ingests a
-  new order once uploads have been quiet `watch_quiet_minutes` (the frontend
-  confirms payment BEFORE photos finish uploading — never ingest on folder
-  existence alone). `watch_auto_storyboard` (default on) spends OpenAI
-  credits automatically per paid order — deliberate, user-approved. The
-  review surface is the animoments admin panel (frontend repo), which polls
-  this API; the user explicitly chose the panel over Telegram notifications.
+- `pipeline.py serve` (`server.py`) is the admin panel + API + order watcher:
+  FastAPI, token auth via ADMIN_API_TOKEN in .env (Bearer header or `?token=`
+  for media tags), serial background JobRunner (one pipeline command at a
+  time, whitelisted commands/options), a watcher thread, and the panel's
+  static build mounted at `/`. `watch_auto_storyboard` (default on) spends
+  OpenAI credits automatically per paid order — deliberate, user-approved.
+- The **admin panel lives in THIS repo** (`admin_ui/`, React + Vite; decided
+  2026-07-18 — it's the pipeline's own UI, deliberately decoupled from the
+  animoments storefront; the frontend repo's `admin-panel` branch is
+  superseded and should not be merged). Build with `cd admin_ui && npm
+  install && npm run build`; `serve` serves `admin_ui/dist` at `/` (API
+  routes win). `npm run dev` proxies `/api` to 127.0.0.1:8300. The panel
+  covers the full CLI surface (init/photo upload, storyboard incl. --idea
+  options, per-clip render/audio, combine toggles, run) — keep that parity
+  when adding CLI features.
+- The **Firestore order ledger** (`clients/firebase_client.py`, REST +
+  google-auth, NOT the heavy firebase-admin SDK) is the watcher's order
+  source when a service-account key exists (FIREBASE_SERVICE_ACCOUNT in
+  .env, or firebase-service-account.json at the repo root — gitignored,
+  never commit it). The frontend writes one doc per paid order (collection
+  `orders`, doc id = `AM-...`: name/phone/email/packageId/musicMood/
+  blessing/folder/status "new"). The watcher checks photo completeness in
+  Cloudinary (exact `photoCount` if the doc ever carries one — today's
+  frontend doesn't save it — else the quiet period) and writes status back:
+  new → ingesting → ingested (+ `project`). "ingesting" still counts as
+  pending so a crashed ingest self-heals; statuses PAST "ingested" (a
+  future "delivered") are never downgraded. No key → pure Cloudinary
+  polling fallback, exactly the old behaviour.
+- Newer frontend versions append the music mood to the order folder leaf
+  (`..._HH-MM_warm-piano`); `_FOLDER_RE` in intake.py tolerates the suffix.
 - `Pipeline.snapshot()` is the single source of truth for project status
   (cmd_status prints it, the API returns it). `projects/<name>/order.json`
   (written by ingest) ties a project to its Cloudinary order folder; the

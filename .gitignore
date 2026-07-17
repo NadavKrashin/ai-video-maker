@@ -20,3 +20,10 @@ env/
 # (input_images/, frames, clips, output, storyboard, logs, state). Each run uses
 # projects/<name>/, so the whole tree is ignored.
 projects/
+
+# Admin panel (React/Vite) build artifacts
+admin_ui/node_modules/
+admin_ui/dist/
+
+# Firebase service-account key (secret; FIREBASE_SERVICE_ACCOUNT in .env)
+firebase-service-account.json
