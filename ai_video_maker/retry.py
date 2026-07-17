@@ -49,8 +49,21 @@ def is_moderation_error(exc: BaseException) -> bool:
     )
 
 
+def is_quota_exhausted_error(exc: BaseException) -> bool:
+    """True when the account is out of credits/budget (OpenAI insufficient_quota).
+
+    Comes back as HTTP 429 like a rate limit, but waiting never fixes it —
+    only adding credit does. Must fail fast, not burn the patient rate-limit
+    retry budget (a real order spent ~6 minutes per planning call retrying
+    this before giving up).
+    """
+    return "insufficient_quota" in str(exc).lower()
+
+
 def is_rate_limit_error(exc: BaseException) -> bool:
-    """True when an error is a 429 / rate-limit rejection."""
+    """True when an error is a 429 / rate-limit rejection (worth waiting out)."""
+    if is_quota_exhausted_error(exc):
+        return False
     if _http_status(exc) == 429:
         return True
     text = str(exc).lower()
@@ -76,6 +89,8 @@ def is_retryable_error(exc: BaseException) -> bool:
     """
     if is_moderation_error(exc):
         return False
+    if is_quota_exhausted_error(exc):
+        return False  # out of credits: only a billing top-up fixes this
     code = _http_status(exc)
     if code is None:
         return True  # network/timeout/unknown -> retry

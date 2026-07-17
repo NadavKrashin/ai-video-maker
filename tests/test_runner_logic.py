@@ -282,6 +282,14 @@ class TestReconcileStoryboard:
         # analysis off -> deterministic fallback plans (config.motion_prompt)
         return make_pipeline(analyze_frames=False)
 
+    def _save_with_placeholder(self, workspace, p, names):
+        """A saved storyboard whose first transition still has the config
+        fallback prompt — i.e. planning failed for it on a previous run."""
+        sb = _save_slug_storyboard(workspace, names)
+        sb.transitions[0].motion_prompt = p.config.motion_prompt
+        sb.save(workspace.default_storyboard_json)
+        return Storyboard.load(workspace.default_storyboard_json)
+
     def test_unchanged_project_keeps_everything(self, make_pipeline, workspace):
         p = self._pipeline(make_pipeline)
         pairs = _make_frame_pairs(workspace, ["a", "b", "c"])
@@ -289,6 +297,33 @@ class TestReconcileStoryboard:
         sb, replanned, stale = p._reconcile_storyboard(saved, pairs)
         assert replanned == [] and stale == []
         assert [t.motion_prompt for t in sb.transitions] == ["motion a", "motion b"]
+
+    def test_placeholder_prompt_is_replanned_not_locked_in(
+        self, make_pipeline, workspace
+    ):
+        # A real order shipped 26/29 generic prompts because planning died on
+        # insufficient_quota; re-running storyboard must retry exactly those.
+        p = self._pipeline(make_pipeline)
+        pairs = _make_frame_pairs(workspace, ["a", "b", "c"])
+        saved = self._save_with_placeholder(workspace, p, ["a", "b", "c"])
+        sb, replanned, stale = p._reconcile_storyboard(saved, pairs)
+        assert replanned == ["a_to_b"]  # hand-written "motion b" untouched
+        # analysis off -> the re-plan fell back to the same placeholder:
+        # nothing improved, so the existing clip must NOT be invalidated
+        assert stale == []
+        assert sb.transitions[1].motion_prompt == "motion b"
+
+    def test_replanned_placeholder_marks_its_clip_stale(
+        self, make_pipeline, workspace
+    ):
+        # --motion-prompt stands in for a successful vision plan here: the
+        # placeholder gets a genuinely new prompt, so its old clip is stale.
+        p = make_pipeline(analyze_frames=False, motion_prompt="a real plan")
+        pairs = _make_frame_pairs(workspace, ["a", "b", "c"])
+        saved = self._save_with_placeholder(workspace, p, ["a", "b", "c"])
+        sb, replanned, stale = p._reconcile_storyboard(saved, pairs)
+        assert sb.transitions[0].motion_prompt == "a real plan"
+        assert stale == ["a_to_b"]  # confirm-gated deletion downstream
         # user-level fields carried over
         assert sb.music_prompt == "the tune"
         assert sb.global_motion_prompt == "two separate kids, never merged"
@@ -332,6 +367,8 @@ class TestReconcileStoryboard:
         p = self._pipeline(make_pipeline)
         pairs = _make_frame_pairs(workspace, ["a", "b", "c"])
         first, _, _ = p._reconcile_storyboard(None, pairs)  # records hashes
+        for t in first.transitions:  # as if planning had succeeded
+            t.motion_prompt = f"planned {t.id}"
         first.save(workspace.default_storyboard_json)
         saved = Storyboard.load(workspace.default_storyboard_json)
         future = time.time() + 50

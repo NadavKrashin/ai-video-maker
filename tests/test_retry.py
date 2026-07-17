@@ -5,6 +5,7 @@ import pytest
 
 from ai_video_maker.retry import (
     is_moderation_error,
+    is_quota_exhausted_error,
     is_rate_limit_error,
     is_retryable_error,
     with_retries,
@@ -102,6 +103,28 @@ class TestWithRetriesRateLimits:
         with pytest.raises(_FakeAPIError):
             with_retries(func, max_retries=3, base_delay=0.0, description="t")
         assert len(sleeps) < 20  # gives up eventually, doesn't spin forever
+
+    def test_insufficient_quota_fails_fast_despite_429(self, sleeps):
+        # Out-of-credits comes back as HTTP 429 like a rate limit, but waiting
+        # never fixes it — a real order burned ~6 min per planning call on it.
+        quota = _FakeAPIError(
+            "Error code: 429 - {'error': {'message': 'You exceeded your "
+            "current quota, please check your plan and billing details.', "
+            "'code': 'insufficient_quota'}}",
+            429,
+        )
+        assert is_quota_exhausted_error(quota)
+        assert not is_rate_limit_error(quota)
+        assert not is_retryable_error(quota)
+        calls = []
+
+        def func():
+            calls.append(1)
+            raise quota
+
+        with pytest.raises(_FakeAPIError):
+            with_retries(func, max_retries=5, base_delay=0.0, description="t")
+        assert len(calls) == 1 and sleeps == []
 
     def test_permanent_400_still_fails_fast(self, sleeps):
         invalid = _FakeAPIError(

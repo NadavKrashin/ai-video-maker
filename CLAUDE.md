@@ -217,7 +217,18 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
   styling batch WILL 429 on the tail. Rate limits get their own patient
   retry budget in `with_retries` (separate from `max_retries`, honours the
   server's "try again in Xs" hint) — don't collapse it back into the
-  exponential-backoff attempt count.
+  exponential-backoff attempt count. BUT `insufficient_quota` (account out
+  of credits) also arrives as HTTP 429 and waiting never fixes it —
+  `is_quota_exhausted_error` classifies it permanent; a real order burned
+  ~6 min per planning call retrying it before that guard existed.
+- When a storyboard planning call fails, the affected transitions get
+  config `motion_prompt` as a PLACEHOLDER ("a planning hiccup never sinks
+  the run"). Reconcile treats `motion_prompt == config.motion_prompt` as
+  never-planned and re-plans it on every storyboard run; when a real plan
+  replaces a placeholder, the pair's rendered clip goes into the
+  confirm-gated stale list. `snapshot()["storyboard"]
+  ["placeholder_transitions"]` surfaces them. A real order rendered 26/29
+  clips with the generic prompt before these guards existed.
 - fal Kling durations are the string enum "5"/"10" (`fal_duration_as_string`);
   valid clip durations live in `constants.VALID_DURATIONS`.
 - Clips are named `<startid>_to_<endid>.mp4`; bridged clips (a missing middle

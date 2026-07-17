@@ -575,9 +575,10 @@ class Pipeline:
         removed next to it) or when one of its styled frames changed after
         the storyboard was written; every other transition is carried over
         verbatim, so hand edits survive. ``stale ids`` are the re-planned
-        pairs whose frame CONTENT changed — their already-rendered clips are
-        invalid. (A merely new pairing keeps any existing clip: its frames
-        are unchanged, only the plan around them is new.)
+        pairs whose already-rendered clips are invalid: their frame CONTENT
+        changed, or a real plan replaced a placeholder (fallback) prompt the
+        clip was rendered with. (A merely new pairing keeps any existing
+        clip: its frames are unchanged, only the plan around them is new.)
         """
         root = self.workspace.root
         hashes = {dst: _file_sha1(dst) for _, dst in frame_pairs}
@@ -627,7 +628,17 @@ class Pipeline:
             changed = saved is not None and (
                 frame_changed(styled_paths[i]) or frame_changed(styled_paths[i + 1])
             )
-            if saved is None or changed or (a.output_path, b.output_path) not in saved_tr:
+            prior = saved_tr.get((a.output_path, b.output_path))
+            # A transition still carrying the config fallback prompt was never
+            # actually planned (the vision call failed — e.g. out of OpenAI
+            # quota — and "a planning hiccup never sinks the run" filled it
+            # in). It's a placeholder, not a hand edit: re-plan it on every
+            # storyboard run until a real plan lands.
+            placeholder = (
+                prior is not None
+                and prior.motion_prompt == self.config.motion_prompt
+            )
+            if saved is None or changed or prior is None or placeholder:
                 dirty.append(i)
             if changed:
                 stale_tids.append(f"{a.id}_to_{b.id}")
@@ -643,6 +654,16 @@ class Pipeline:
             tid = f"{a.id}_to_{b.id}"
             if i in plans:
                 motion, duration, sound = plans[i]
+                prior = saved_tr.get((a.output_path, b.output_path))
+                if (
+                    prior is not None
+                    and prior.motion_prompt == self.config.motion_prompt
+                    and motion != prior.motion_prompt
+                ):
+                    # A real plan just replaced a placeholder: any clip already
+                    # rendered from the placeholder should be redone (the
+                    # deletion is still confirm-gated downstream).
+                    stale_tids.append(tid)
                 transitions.append(
                     Transition(
                         id=tid,
@@ -1805,6 +1826,13 @@ class Pipeline:
                 "frames": len(storyboard.frames),
                 "transitions": len(storyboard.transitions),
                 "from_idea": any(f.image_prompt.strip() for f in storyboard.frames),
+                # Transitions still carrying the config fallback prompt: the
+                # planner never succeeded for them (quota/rate-limit failure).
+                # Re-running `storyboard` re-plans exactly these.
+                "placeholder_transitions": [
+                    t.id for t in storyboard.transitions
+                    if t.motion_prompt == self.config.motion_prompt
+                ],
             },
             "storyboard_error": storyboard_error,
             "changed_frames": changed_frames,
@@ -1838,6 +1866,12 @@ class Pipeline:
                 f"  Storyboard       : {sb['frames']} frame(s), "
                 f"{sb['transitions']} transition(s) ({mode})"
             )
+            if sb["placeholder_transitions"]:
+                print(
+                    f"  !! {len(sb['placeholder_transitions'])} transition(s) "
+                    "still have the generic fallback prompt (planning failed "
+                    "- quota/rate limit?). Re-run storyboard to re-plan them."
+                )
 
         if snap["changed_frames"]:
             print(

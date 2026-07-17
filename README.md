@@ -271,6 +271,13 @@ clip interpolates from one styled frame to the next):
 prompt with one duration for every clip. `--duration 5|10` forces one length
 for all clips even with analysis on.
 
+If a planning call fails (rate limit, out of OpenAI quota), the affected
+transitions get the generic `motion_prompt` from config as a **placeholder**
+so the run isn't sunk — `status` (and the admin API) flag them, and re-running
+`storyboard` re-plans exactly those until a real plan lands. When a re-plan
+replaces a placeholder that already has a rendered clip, that clip is offered
+for deletion (confirm-gated) so `render` redoes it with the real prompt.
+
 **Whole-movie guidance — `global_motion_prompt`:** the storyboard has a
 top-level `global_motion_prompt` field (empty by default, hand-edit it like
 `music_prompt`). Whatever you put there is prepended to *every* clip's motion
