@@ -649,6 +649,7 @@ class OpenAIClient:
         frames: list[Path],
         style_prompt: str,
         default_duration: Optional[int] = None,
+        global_context: str = "",
     ) -> list[tuple[str, int, str]]:
         """Vision-analyze consecutive frames and plan each clip between them.
 
@@ -691,6 +692,16 @@ class OpenAIClient:
         if default_duration:
             instruction += (
                 f" Override: use duration = {default_duration} for every clip."
+            )
+        if global_context.strip():
+            # The user's whole-movie guidance (storyboard.global_motion_prompt).
+            # It is prepended verbatim to every motion prompt at render time,
+            # so plans must not contradict it and must not repeat it.
+            instruction += (
+                "\n\nContext that holds for the WHOLE video (the renderer "
+                "already receives it with every clip, so respect it in every "
+                "plan but do not restate it in your motion prompts): "
+                f"{global_context.strip()}"
             )
 
         content: list[dict[str, Any]] = [{"type": "text", "text": instruction}]

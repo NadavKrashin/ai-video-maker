@@ -108,6 +108,37 @@ class TestPairsFromStoryboard:
         assert pairs[0][2] == "style"  # falls back to the storyboard style
         assert pairs[0][3] == sb.duration_per_clip
 
+    def test_global_motion_prompt_prepended_to_every_clip(
+        self, pipeline, workspace
+    ):
+        _write_frames(workspace, [1, 2, 3])
+        sb = _storyboard(workspace, 3)
+        sb.global_motion_prompt = "Two separate kids, never merged"
+        pairs = pipeline._pairs_from_storyboard(sb)
+        assert [m for _, _, m, _, _ in pairs] == [
+            "Two separate kids, never merged. motion 001",
+            "Two separate kids, never merged. motion 002",
+        ]
+
+    def test_global_motion_prompt_rides_along_with_cli_override(
+        self, make_pipeline, workspace
+    ):
+        # --motion-prompt replaces the per-clip action, but whole-movie facts
+        # (identities, "never merge them") must still reach the video model.
+        _write_frames(workspace, [1, 2])
+        p = make_pipeline(motion_prompt="override")
+        sb = _storyboard(workspace, 2)
+        sb.global_motion_prompt = "One boy throughout."
+        pairs = p._pairs_from_storyboard(sb)
+        assert pairs[0][2] == "One boy throughout. override"
+
+    def test_empty_global_motion_prompt_changes_nothing(
+        self, pipeline, workspace
+    ):
+        _write_frames(workspace, [1, 2])
+        pairs = pipeline._pairs_from_storyboard(_storyboard(workspace, 2))
+        assert pairs[0][2] == "motion 001"
+
 
 class TestSelectClips:
     def _pairs(self, pipeline, workspace, n=3):
@@ -207,6 +238,7 @@ def _save_slug_storyboard(workspace, names) -> Storyboard:
         for a, b in zip(names, names[1:])
     ]
     sb = Storyboard(project_title="t", style="style", music_prompt="the tune",
+                    global_motion_prompt="two separate kids, never merged",
                     frames=frames, transitions=transitions)
     sb.save(workspace.default_storyboard_json)
     return sb
@@ -226,7 +258,9 @@ class TestReconcileStoryboard:
         sb, replanned, stale = p._reconcile_storyboard(saved, pairs)
         assert replanned == [] and stale == []
         assert [t.motion_prompt for t in sb.transitions] == ["motion a", "motion b"]
-        assert sb.music_prompt == "the tune"  # user-level fields carried over
+        # user-level fields carried over
+        assert sb.music_prompt == "the tune"
+        assert sb.global_motion_prompt == "two separate kids, never merged"
 
     def test_inserted_frame_replans_only_its_two_pairs(self, make_pipeline, workspace):
         p = self._pipeline(make_pipeline)

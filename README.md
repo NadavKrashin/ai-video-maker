@@ -267,6 +267,17 @@ clip interpolates from one styled frame to the next):
 prompt with one duration for every clip. `--duration 5|10` forces one length
 for all clips even with analysis on.
 
+**Whole-movie guidance — `global_motion_prompt`:** the storyboard has a
+top-level `global_motion_prompt` field (empty by default, hand-edit it like
+`music_prompt`). Whatever you put there is prepended to *every* clip's motion
+prompt at render time and given to the planner as context, so facts that hold
+across the whole movie live in one place instead of being repeated per clip —
+e.g. `"Two different children appear throughout: an older boy with glasses
+and a younger girl; they are separate people, never blend one into the
+other."` Keep it to a sentence or two — it spends part of every clip's word
+budget. Editing it does **not** invalidate already-rendered clips; re-render
+with `--clip ID` (or `--force`) to apply it to existing ones.
+
 ### `render`
 
 Reads the storyboard, generates any missing key frames (idea-based projects

@@ -64,6 +64,11 @@ def write_storyboard_preview(storyboard: Storyboard, root: Path, path: Path) -> 
         parts.append(f"<br><b>Concept:</b> {html.escape(storyboard.concept)}")
     if storyboard.music_prompt:
         parts.append(f"<br><b>Music:</b> {html.escape(storyboard.music_prompt)}")
+    if storyboard.global_motion_prompt:
+        parts.append(
+            "<br><b>Global motion (every clip):</b> "
+            f"{html.escape(storyboard.global_motion_prompt)}"
+        )
     parts.append(
         f"<br><b>Output:</b> {storyboard.target_width}x{storyboard.target_height}, "
         f"{len(storyboard.transitions)} clip(s)</div>"

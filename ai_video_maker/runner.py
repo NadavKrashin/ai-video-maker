@@ -72,6 +72,22 @@ ConfirmFn = Callable[[list[str], str], bool]
 ClipPair = tuple[Path, Path, str, int, str]
 
 
+def _with_global_motion(global_prompt: str, motion: str) -> str:
+    """Prepend the storyboard's global motion guidance to one clip's prompt.
+
+    The global prompt carries whole-movie facts (e.g. "two separate people
+    appear throughout; never blend them") so the user doesn't have to repeat
+    them in every transition. It rides along verbatim ahead of the per-clip
+    action.
+    """
+    g = " ".join(global_prompt.split())
+    if not g:
+        return motion
+    if g[-1] not in ".!?":
+        g += "."
+    return f"{g} {motion}"
+
+
 def _file_sha1(path: Path) -> str:
     """Content hash of a file ("" if missing); used for staleness detection."""
     if not path.exists():
@@ -591,7 +607,10 @@ class Pipeline:
             if changed:
                 stale_tids.append(f"{a.id}_to_{b.id}")
 
-        plans = self._plan_pairs(styled_paths, dirty, style)
+        plans = self._plan_pairs(
+            styled_paths, dirty, style,
+            global_context=saved.global_motion_prompt if saved else "",
+        )
 
         transitions: list[Transition] = []
         replanned: list[str] = []
@@ -622,13 +641,18 @@ class Pipeline:
             target_width=self.config.target_width,
             target_height=self.config.target_height,
             music_prompt=saved.music_prompt if saved else "",
+            global_motion_prompt=saved.global_motion_prompt if saved else "",
             frames=frames,
             transitions=transitions,
         )
         return storyboard, replanned, stale_tids
 
     def _plan_pairs(
-        self, styled: list[Path], dirty: list[int], style: str
+        self,
+        styled: list[Path],
+        dirty: list[int],
+        style: str,
+        global_context: str = "",
     ) -> dict[int, tuple[str, int, str]]:
         """Vision-plan the dirty pairs only: {pair index: (motion, dur, sound)}.
 
@@ -657,7 +681,9 @@ class Pipeline:
             )
             try:
                 seg_plans = self.openai.analyze_frame_transitions(
-                    segment, style, default_duration=self.options.duration
+                    segment, style,
+                    default_duration=self.options.duration,
+                    global_context=global_context,
                 )
                 for offset, i in enumerate(run):
                     plans[i] = seg_plans[offset]
@@ -945,6 +971,16 @@ class Pipeline:
         }
         frames_ordered = [self.workspace.root / f.output_path for f in storyboard.frames]
 
+        global_motion = storyboard.global_motion_prompt.strip()
+        if len(global_motion.split()) > 25:
+            logger.warning(
+                "global_motion_prompt is %d words — it is prepended to EVERY "
+                "clip's motion prompt, and overlong prompts degrade renders "
+                "(word caps exist for a reason). Consider trimming it to a "
+                "sentence or two.",
+                len(global_motion.split()),
+            )
+
         pairs: list[ClipPair] = []
         for a, b in self._bridge_pairs(frames_ordered):
             tr = tr_by_start.get(a.name)
@@ -955,7 +991,7 @@ class Pipeline:
                 tr.duration if tr else storyboard.duration_per_clip
             )
             sound = tr.sound_prompt if tr else ""
-            pairs.append((a, b, motion, duration, sound))
+            pairs.append((a, b, _with_global_motion(global_motion, motion), duration, sound))
         return pairs
 
     @staticmethod
