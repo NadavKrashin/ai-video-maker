@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- launchd service for the admin server (`pipeline.py serve`).
+
+     Install (as the logged-in user, NOT root — a LaunchAgent, so the
+     pipeline runs with your files and keychain-free .env):
+
+       cp deploy/com.animoments.pipeline.plist ~/Library/LaunchAgents/
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.animoments.pipeline.plist
+
+     Restart after a deploy:  launchctl kickstart -k gui/$(id -u)/com.animoments.pipeline
+     Logs:                    ~/Library/Logs/animoments/serve.log
+
+     The server binds 127.0.0.1 ON PURPOSE — the outside world only ever
+     reaches it through the Cloudflare tunnel. Never change this to 0.0.0.0.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.animoments.pipeline</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/nadavkrashin/Documents/Code/Personal/ai-video-maker/.venv/bin/python</string>
+    <string>pipeline.py</string>
+    <string>serve</string>
+    <string>--host</string>
+    <string>127.0.0.1</string>
+    <string>--port</string>
+    <string>8300</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/nadavkrashin/Documents/Code/Personal/ai-video-maker</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <!-- Don't flap on a crash loop: wait 10s between restarts. -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/nadavkrashin/Library/Logs/animoments/serve.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/nadavkrashin/Library/Logs/animoments/serve.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- launchd agents get a minimal PATH; ffmpeg and node live in homebrew. -->
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>

@@ -1,0 +1,25 @@
+# CD: every push to main deploys to the Mac mini via its self-hosted runner
+# (see deploy/PRODUCTION.md for runner setup). The script fast-forwards the
+# live checkout, reruns the tests there, rebuilds the panel, restarts the
+# launchd service, and fails loudly if health doesn't come back.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Never two deploys at once; a new push supersedes a waiting one.
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Label set when registering the runner on the Mac mini.
+    runs-on: [self-hosted, macOS, mac-mini]
+    if: github.repository == 'NadavKrashin/ai-video-maker'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy the live checkout
+        run: bash deploy/deploy.sh

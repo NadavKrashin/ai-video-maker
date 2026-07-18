@@ -1,0 +1,22 @@
+# Cloudflare Tunnel config for the admin panel (copy to ~/.cloudflared/config.yml).
+#
+# One-time setup (needs a domain on Cloudflare, free plan is fine):
+#   cloudflared tunnel login
+#   cloudflared tunnel create animoments-admin
+#   cloudflared tunnel route dns animoments-admin admin.<your-domain>
+#   cp deploy/cloudflared-config.example.yml ~/.cloudflared/config.yml   # then edit
+#   sudo cloudflared service install        # installs its own launchd daemon
+#
+# Then STRONGLY recommended: put Cloudflare Access in front (Zero Trust ->
+# Access -> Applications -> add admin.<your-domain>, policy = allow only your
+# email, One-Time PIN). That way the panel needs BOTH a Cloudflare login and
+# the admin token — a leaked token alone gets nobody in.
+
+tunnel: <TUNNEL-UUID>                       # from `cloudflared tunnel create`
+credentials-file: /Users/nadavkrashin/.cloudflared/<TUNNEL-UUID>.json
+
+ingress:
+  - hostname: admin.<your-domain>
+    service: http://127.0.0.1:8300
+  # Everything else that hits the tunnel gets a 404.
+  - service: http_status:404
