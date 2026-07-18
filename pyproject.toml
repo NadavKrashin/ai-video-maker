@@ -24,7 +24,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "httpx>=0.27", "pyflakes>=3.2"]
 
 [project.scripts]
 ai-video-maker = "ai_video_maker.cli:main"

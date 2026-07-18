@@ -86,8 +86,15 @@ the `ADMIN_API_TOKEN` from `.env`:
   `cancelling` and stops between work items — whatever is mid-generation
   finishes and is kept (already-submitted API work bills either way), so
   re-running the same action later resumes instead of re-paying. Every route
-  (except `/api/health`) requires the `ADMIN_API_TOKEN` from `.env`, passed
-  as `Authorization: Bearer <token>` (or `?token=` for media tags).
+  (except `/api/health`) requires the `ADMIN_API_TOKEN` from `.env` (16+
+  chars — the server refuses to boot with a shorter one), passed as
+  `Authorization: Bearer <token>`. Only the media file route also accepts
+  `?token=` (for `<img>`/`<video>` tags); everywhere else the query form is
+  rejected. Token comparison is constant-time, and 10 failed attempts from
+  one address within 15 minutes lock it out (HTTP 429) for the rest of the
+  window. API docs endpoints (`/docs`, `/openapi.json`) are disabled, and
+  cross-origin access is off by default (`admin_cors_origins: []` — the
+  panel is same-origin; only set origins if you host it elsewhere).
 - **Orders, fetched live**: opening the panel's Orders tab (or `GET
   /api/orders`) reads the sources *at that moment* — no background process
   involved. With the **Firebase order ledger** configured (below) that

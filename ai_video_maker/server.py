@@ -21,8 +21,10 @@ Interactivity: pipeline confirm gates auto-proceed here (the API caller made
 the decision by pressing the button); nothing blocks on stdin.
 
 Auth: every /api route (except /api/health) requires the ``ADMIN_API_TOKEN``
-env value, as ``Authorization: Bearer <token>`` or ``?token=<token>`` — the
-query form exists because ``<img>``/``<video>`` tags can't send headers.
+env value as ``Authorization: Bearer <token>``. Only the media file route
+additionally accepts ``?token=<token>`` — ``<img>``/``<video>`` tags can't
+send headers. Comparisons are constant-time and repeated failures from one
+address are throttled (see ``_AuthThrottle``).
 """
 from __future__ import annotations
 
@@ -30,7 +32,9 @@ import dataclasses
 import logging
 import os
 import queue
+import secrets
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -73,6 +77,53 @@ _ALLOWED_OPTIONS = {f.name for f in dataclasses.fields(RunOptions)}
 
 # Uploads into input_images/ — the same formats a user would drop there.
 _PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".bmp", ".tif", ".tiff"}
+
+# Per-file cap for photo uploads. Phone photos top out around 15-20 MB; this
+# only exists so an unauthenticated-looking-but-authenticated mistake (or a
+# stolen token) can't fill the disk through the panel.
+_MAX_UPLOAD_BYTES = 40 * 1024 * 1024
+
+# The token is the only thing between the internet and the pipeline once the
+# server sits behind a tunnel — refuse to boot with a guessable one.
+_MIN_TOKEN_LENGTH = 16
+
+
+class _AuthThrottle:
+    """Lock out an address after repeated bad tokens (online brute force).
+
+    In-memory and deliberately simple: `max_failures` bad attempts within
+    `window_seconds` → 429 for the remainder of the window. A correct token
+    clears the address. Behind cloudflared every TCP peer is 127.0.0.1, so the
+    caller passes the CF-Connecting-IP header value when present (fine to
+    trust: the only way to reach the port from outside IS the tunnel).
+    """
+
+    def __init__(self, max_failures: int = 10, window_seconds: float = 900.0) -> None:
+        self._max = max_failures
+        self._window = window_seconds
+        self._failures: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def _prune(self, key: str, now: float) -> list[float]:
+        kept = [t for t in self._failures.get(key, []) if now - t < self._window]
+        if kept:
+            self._failures[key] = kept
+        else:
+            self._failures.pop(key, None)
+        return kept
+
+    def blocked(self, key: str) -> bool:
+        with self._lock:
+            return len(self._prune(key, time.monotonic())) >= self._max
+
+    def record_failure(self, key: str) -> None:
+        with self._lock:
+            now = time.monotonic()
+            self._failures[key] = self._prune(key, now) + [now]
+
+    def clear(self, key: str) -> None:
+        with self._lock:
+            self._failures.pop(key, None)
 
 
 def _now() -> str:
@@ -410,26 +461,75 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
             "ADMIN_API_TOKEN is not set. Add a long random value to .env — "
             "the admin panel authenticates with it."
         )
+    if len(token) < _MIN_TOKEN_LENGTH:
+        raise PipelineError(
+            f"ADMIN_API_TOKEN is too short ({len(token)} chars, minimum "
+            f"{_MIN_TOKEN_LENGTH}). It is the only credential on this API — "
+            "generate a strong one: python3 -c \"import secrets; "
+            "print(secrets.token_urlsafe(32))\""
+        )
     config = Config.load(config_path)
     jobs = JobRunner(config_path)
+    throttle = _AuthThrottle()
 
-    app = FastAPI(title="ai-video-maker admin API")
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=config.admin_cors_origins,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    app = FastAPI(title="ai-video-maker admin API", docs_url=None, redoc_url=None,
+                  openapi_url=None)
+    if config.admin_cors_origins:  # same-origin panel needs no CORS at all
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=config.admin_cors_origins,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
+    def _client_key(request: Request) -> str:
+        # Behind cloudflared the TCP peer is always localhost; the tunnel adds
+        # the real address. Direct (LAN) hits fall back to the socket peer.
+        return (
+            request.headers.get("cf-connecting-ip")
+            or (request.client.host if request.client else "unknown")
+        )
+
+    def _check_token(request: Request, supplied: str) -> None:
+        key = _client_key(request)
+        if throttle.blocked(key):
+            raise HTTPException(
+                status_code=429,
+                detail="Too many failed attempts — try again later.",
+            )
+        if not secrets.compare_digest(supplied, token):
+            throttle.record_failure(key)
+            raise HTTPException(status_code=401, detail="Bad or missing token")
+        throttle.clear(key)
 
     async def require_token(request: Request) -> None:
-        supplied = request.query_params.get("token", "")
         auth = request.headers.get("authorization", "")
-        if auth.lower().startswith("bearer "):
-            supplied = auth[7:]
-        if supplied != token:
-            raise HTTPException(status_code=401, detail="Bad or missing token")
+        supplied = auth[7:] if auth.lower().startswith("bearer ") else ""
+        _check_token(request, supplied)
+
+    async def require_token_or_query(request: Request) -> None:
+        """Media-only variant: <img>/<video> tags can't send headers, so the
+        file route also accepts ?token=. Everywhere else the query form is
+        rejected — query strings end up in access logs and browser history."""
+        auth = request.headers.get("authorization", "")
+        supplied = (
+            auth[7:] if auth.lower().startswith("bearer ")
+            else request.query_params.get("token", "")
+        )
+        _check_token(request, supplied)
 
     guarded = [Depends(require_token)]
+    media_guarded = [Depends(require_token_or_query)]
 
     def _workspace(name: str) -> Workspace:
         try:
@@ -604,7 +704,14 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
                     detail=f"Not an image file: {upload.filename!r} "
                            f"(accepted: {', '.join(sorted(_PHOTO_EXTENSIONS))})",
                 )
-            (ws.input_images_dir / filename).write_bytes(await upload.read())
+            data = await upload.read()
+            if len(data) > _MAX_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"{filename} is larger than "
+                           f"{_MAX_UPLOAD_BYTES // (1024 * 1024)} MB",
+                )
+            (ws.input_images_dir / filename).write_bytes(data)
             saved.append(filename)
         return {"saved": saved}
 
@@ -710,7 +817,8 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         "storyboard": lambda ws: ws.storyboard_dir,
     }
 
-    @app.get("/api/projects/{name}/files/{kind}/{filename}", dependencies=guarded)
+    @app.get("/api/projects/{name}/files/{kind}/{filename}",
+             dependencies=media_guarded)
     async def project_file(name: str, kind: str, filename: str) -> FileResponse:
         ws = _workspace(name)
         directory = _FILE_KINDS.get(kind)

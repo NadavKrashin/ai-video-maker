@@ -157,9 +157,12 @@ class Config(BaseModel):
     # (spends OpenAI credits — styling ~8-30 images per order — so the
     # storyboard is ready for review by the time you open the admin panel).
     watch_auto_storyboard: bool = True
-    # Origins allowed to call the admin API from a browser (the admin panel's
-    # URL). ["*"] = any origin; the token still gates every request.
-    admin_cors_origins: list[str] = Field(default_factory=lambda: ["*"])
+    # Origins allowed to call the admin API from a browser. The panel is
+    # served BY the API process (same origin), so the default is NO
+    # cross-origin access at all — the production-safe posture. Only add
+    # origins here if the panel is ever hosted elsewhere; the token still
+    # gates every request either way.
+    admin_cors_origins: list[str] = Field(default_factory=list)
 
     # How many image/clip/SFX API jobs to run at once. These steps are I/O-bound
     # (waiting on the provider), so a small thread pool runs them in parallel.
