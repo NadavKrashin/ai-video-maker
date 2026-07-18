@@ -461,9 +461,18 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         """
         ingested = ingested_orders(PROJECTS_DIR)
         pending_ingest = jobs.active_ingest_orders()
+        # Each order's most recent ingest job — the panel's success/failure
+        # feedback ("the button went back to normal like nothing happened"
+        # was a real complaint; a failed ingest must stay visible).
+        latest_ingest: dict[str, Job] = {}
+        for job in jobs.list():  # newest first
+            folder = job.options.get("order", "")
+            if job.command == "ingest" and folder and folder not in latest_ingest:
+                latest_ingest[folder] = job
 
         def row(folder: str) -> dict[str, Any]:
             parsed = parse_order_folder(folder)
+            job = latest_ingest.get(folder)
             return {
                 "folder": folder,
                 "order_id": parsed["order_id"],
@@ -471,6 +480,9 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
                 "uploaded_at": parsed["stamp"],
                 "project": ingested.get(folder, ""),
                 "ingesting": folder in pending_ingest,
+                "ingest_state": job.state if job else "",
+                "ingest_error": job.error if job else "",
+                "ingest_job": job.id if job else "",
             }
 
         out: list[dict[str, Any]] = []
@@ -483,6 +495,7 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
                     "folder": "", "order_id": order.order_id,
                     "customer": order.customer, "uploaded_at": "",
                     "project": "", "ingesting": False,
+                    "ingest_state": "", "ingest_error": "", "ingest_job": "",
                 }
                 entry.update({
                     "order_id": order.order_id,
