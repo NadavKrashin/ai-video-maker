@@ -194,7 +194,7 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
   the UI should just fetch the new orders"; intake is a button click in the
   panel). Only when the watcher is enabled does `watch_auto_storyboard`
   spend OpenAI credits automatically per paid order.
-- The **admin panel lives in THIS repo** (`admin_ui/`, React + Vite; decided
+- The **admin panel lives in THIS repo** (`admin_ui/`, React + Vite + Mantine; decided
   2026-07-18 — it's the pipeline's own UI, deliberately decoupled from the
   animoments storefront; the frontend repo's `admin-panel` branch is
   superseded and should not be merged). Build with `cd admin_ui && npm

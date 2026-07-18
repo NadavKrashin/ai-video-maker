@@ -1,45 +1,47 @@
 // Orders tab: paid web orders (Firestore when configured, else Cloudinary
 // folders). Each row shows the customer/package metadata the frontend saved
-// and the order's REAL pipeline position — not just "ingested or not" but
-// how far its project has come (storyboard review, clips rendered, final
-// ready), joined live from the project snapshot. Sortable by status.
+// and the order's REAL pipeline position, joined live from the project
+// snapshot. Searchable, filterable by status, sortable.
 //
 // Ingest outcomes are first-class: while a job runs the tab live-polls, and
 // when it settles the row keeps saying what happened — green "ingested" or a
 // red "ingest failed" with the error and its job log — instead of silently
 // resetting the button.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  Badge, Button, Card, Group, Modal, ScrollArea, Select, Stack, Text, TextInput, Title
+} from '@mantine/core';
 import { api } from './api.js';
-import { Btn, C, Modal, S } from './ui.jsx';
+import { notify } from './ui.jsx';
 
 // The one place that decides what an order's chip says. rank orders the
 // "By status" sort (most actionable first, finished movies last); group is
 // what the status filter buckets on.
 function stage(o) {
   if (!o.project && o.ingest_state === 'failed') {
-    return { text: 'ingest failed', color: C.err, rank: 0, group: 'failed' };
+    return { text: 'ingest failed', color: 'red', rank: 0, group: 'failed' };
   }
-  if (o.ingesting) return { text: 'ingesting…', color: C.run, rank: 2, group: 'running' };
+  if (o.ingesting) return { text: 'ingesting…', color: 'blue', rank: 2, group: 'running' };
   if (o.active_job) {
-    return { text: `${o.active_job.command} running…`, color: C.run, rank: 2, group: 'running' };
+    return { text: `${o.active_job.command} running…`, color: 'blue', rank: 2, group: 'running' };
   }
   const p = o.progress;
   if (p) {
-    if (p.final) return { text: 'final ready', color: C.ok, rank: 8, group: 'final' };
+    if (p.final) return { text: 'final ready', color: 'green', rank: 8, group: 'final' };
     if (p.clips_total > 0 && p.clips_rendered === p.clips_total) {
-      return { text: 'needs combine', color: C.run, rank: 5, group: 'todo' };
+      return { text: 'needs combine', color: 'blue', rank: 5, group: 'todo' };
     }
     if (p.clips_rendered > 0) {
-      return { text: `clips ${p.clips_rendered}/${p.clips_total}`, color: C.run, rank: 4, group: 'todo' };
+      return { text: `clips ${p.clips_rendered}/${p.clips_total}`, color: 'blue', rank: 4, group: 'todo' };
     }
     if (p.clips_total > 0) {
-      return { text: 'review storyboard', color: C.accentSoft, rank: 3, group: 'todo' };
+      return { text: 'review storyboard', color: 'yellow', rank: 3, group: 'todo' };
     }
-    return { text: 'needs storyboard', color: C.accentSoft, rank: 3, group: 'todo' };
+    return { text: 'needs storyboard', color: 'yellow', rank: 3, group: 'todo' };
   }
-  if (o.project) return { text: 'ingested', color: C.ok, rank: 3, group: 'todo' };
-  if (o.status && o.status !== 'new') return { text: o.status, color: C.run, rank: 9, group: 'other' };
-  return { text: 'new', color: C.accentSoft, rank: 1, group: 'new' };
+  if (o.project) return { text: 'ingested', color: 'green', rank: 3, group: 'todo' };
+  if (o.status && o.status !== 'new') return { text: o.status, color: 'blue', rank: 9, group: 'other' };
+  return { text: 'new', color: 'yellow', rank: 1, group: 'new' };
 }
 
 // 'failed' is both its own bucket and part of "needs action".
@@ -64,7 +66,7 @@ const progressLine = (p) => p && [
   p.final && 'final ready'
 ].filter(Boolean).join(' · ');
 
-export default function OrdersTab({ onOpenProject, notify }) {
+export default function OrdersTab({ onOpenProject }) {
   const [orders, setOrders] = useState(null);
   const [busyRow, setBusyRow] = useState('');
   const [checking, setChecking] = useState(false);
@@ -82,14 +84,14 @@ export default function OrdersTab({ onOpenProject, notify }) {
       for (const o of fresh) {
         if (o.ingesting) still.add(o.folder);
         else if (ingestingRef.current.has(o.folder)) {
-          if (o.project) notify(`Order ingested as project "${o.project}"`);
-          else if (o.ingest_state === 'failed') notify(`Ingest failed: ${o.ingest_error}`);
+          if (o.project) notify(`Order ingested as project "${o.project}"`, 'green');
+          else if (o.ingest_state === 'failed') notify(`Ingest failed: ${o.ingest_error}`, 'red');
         }
       }
       ingestingRef.current = still;
       setOrders(fresh);
-    } catch (e) { notify(`Orders failed: ${e.message}`); }
-  }, [notify]);
+    } catch (e) { notify(`Orders failed: ${e.message}`, 'red'); }
+  }, []);
   useEffect(() => { refresh(); }, [refresh]);
 
   // Live-poll while anything is running so outcomes show up by themselves.
@@ -105,7 +107,7 @@ export default function OrdersTab({ onOpenProject, notify }) {
       const res = await api.ingestOrder(order.folder, true);
       notify(`Ingesting as project "${res.project}" (storyboard follows)`);
       await refresh();
-    } catch (e) { notify(`Ingest failed: ${e.message}`); }
+    } catch (e) { notify(`Ingest failed: ${e.message}`, 'red'); }
     finally { setBusyRow(''); }
   };
 
@@ -117,16 +119,16 @@ export default function OrdersTab({ onOpenProject, notify }) {
         ? `Watcher queued: ${res.enqueued.join(', ')}`
         : 'No new complete orders.');
       await refresh();
-    } catch (e) { notify(`Watcher poll failed: ${e.message}`); }
+    } catch (e) { notify(`Watcher poll failed: ${e.message}`, 'red'); }
     finally { setChecking(false); }
   };
 
   const showLog = async (jobId) => {
     try { setLogJob(await api.job(jobId)); }
-    catch (e) { notify(`Log failed: ${e.message}`); }
+    catch (e) { notify(`Log failed: ${e.message}`, 'red'); }
   };
 
-  if (orders === null) return <p style={{ color: C.muted }}>Loading orders…</p>;
+  if (orders === null) return <Text c="dimmed">Loading orders…</Text>;
 
   const count = (group) => orders.filter((o) => inGroup(o, group)).length;
   const q = query.trim().toLowerCase();
@@ -136,45 +138,50 @@ export default function OrdersTab({ onOpenProject, notify }) {
   // else: keep the server's newest-first order
 
   return (
-    <div>
-      {logJob && (
-        <Modal title={`${logJob.command} — ${logJob.state}`} onClose={() => setLogJob(null)}>
-          {logJob.error && <p style={S.err}>{logJob.error}</p>}
-          <pre style={{ fontSize: 11, color: C.muted, overflowX: 'auto', maxHeight: 320 }}>
-            {(logJob.log || []).join('\n') || '(no log lines)'}
-          </pre>
-        </Modal>
-      )}
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 8 }}>
-        <h2 style={{ margin: 0, fontSize: 17, flex: 1 }}>Orders</h2>
-        <Btn ghost busy={checking} onClick={checkNow}>Check for new orders now</Btn>
-      </div>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
-        <input style={{ ...S.input, flex: 1, minWidth: 200 }} value={query}
+    <Stack gap="sm">
+      <Modal opened={Boolean(logJob)} onClose={() => setLogJob(null)} centered size="xl"
+        title={logJob ? `${logJob.command} — ${logJob.state}` : ''}>
+        {logJob?.error && <Text c="red" size="sm" mb="sm">{logJob.error}</Text>}
+        <ScrollArea.Autosize mah={360}>
+          <Text component="pre" size="xs" c="dimmed" style={{ margin: 0 }}>
+            {(logJob?.log || []).join('\n') || '(no log lines)'}
+          </Text>
+        </ScrollArea.Autosize>
+      </Modal>
+
+      <Group>
+        <Title order={4} style={{ flex: 1 }}>Orders</Title>
+        <Button variant="default" size="xs" loading={checking} onClick={checkNow}>
+          Check for new orders now
+        </Button>
+      </Group>
+      <Group>
+        <TextInput style={{ flex: 1 }} miw={200} value={query}
           placeholder="Search name, order id, email, phone, package…"
           onChange={(e) => setQuery(e.target.value)} />
-        <select style={{ ...S.input, width: 180 }} value={filter}
-          title="Show only orders in this state"
-          onChange={(e) => setFilter(e.target.value)}>
-          <option value="all">All statuses ({count('all')})</option>
-          <option value="new">New ({count('new')})</option>
-          <option value="todo">Needs action ({count('todo')})</option>
-          <option value="running">Running ({count('running')})</option>
-          <option value="failed">Failed ({count('failed')})</option>
-          <option value="final">Final ready ({count('final')})</option>
-        </select>
-        <select style={{ ...S.input, width: 170 }} value={sort}
-          title="Sort the orders"
-          onChange={(e) => setSort(e.target.value)}>
-          <option value="date">Newest first</option>
-          <option value="status">By status (todo first)</option>
-        </select>
-      </div>
+        <Select w={190} value={filter} onChange={(v) => setFilter(v || 'all')}
+          allowDeselect={false} title="Show only orders in this state"
+          data={[
+            { value: 'all', label: `All statuses (${count('all')})` },
+            { value: 'new', label: `New (${count('new')})` },
+            { value: 'todo', label: `Needs action (${count('todo')})` },
+            { value: 'running', label: `Running (${count('running')})` },
+            { value: 'failed', label: `Failed (${count('failed')})` },
+            { value: 'final', label: `Final ready (${count('final')})` }
+          ]} />
+        <Select w={190} value={sort} onChange={(v) => setSort(v || 'date')}
+          allowDeselect={false}
+          data={[
+            { value: 'date', label: 'Newest first' },
+            { value: 'status', label: 'By status (todo first)' }
+          ]} />
+      </Group>
+
       {shown.length === 0 && (
-        <p style={{ color: C.muted }}>
+        <Text c="dimmed" size="sm">
           {orders.length === 0 ? 'No orders found.'
             : 'No orders match the current search/filter.'}
-        </p>
+        </Text>
       )}
       {shown.map((o) => {
         const { text, color } = stage(o);
@@ -188,41 +195,44 @@ export default function OrdersTab({ onOpenProject, notify }) {
         ].filter(Boolean).join(' · ');
         const progress = progressLine(o.progress);
         return (
-          <div key={o.folder || o.order_id} style={{ ...S.card, display: 'flex', gap: 12, alignItems: 'center' }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontWeight: 700 }}>{o.customer || o.folder || o.order_id}</div>
-              <div style={{ color: C.muted, fontSize: 12 }}>{details}</div>
-              {progress && (
-                <div style={{ color: C.ink, fontSize: 12, marginTop: 2 }}>{progress}</div>
+          <Card key={o.folder || o.order_id} withBorder padding="md">
+            <Group align="center" wrap="nowrap">
+              <Stack gap={2} style={{ flex: 1, minWidth: 0 }}>
+                <Text fw={600}>{o.customer || o.folder || o.order_id}</Text>
+                <Text size="xs" c="dimmed">{details}</Text>
+                {progress && <Text size="xs">{progress}</Text>}
+                {o.blessing && (
+                  <Text size="xs" c="dimmed" fs="italic"
+                    title="The customer's blessing / dedication text">
+                    “{o.blessing}”
+                  </Text>
+                )}
+                {failed && (
+                  <Text size="xs" c="red" title={o.ingest_error}>{o.ingest_error}</Text>
+                )}
+              </Stack>
+              <Badge variant="light" color={color}>{text}</Badge>
+              {failed && o.ingest_job && (
+                <Button variant="subtle" size="xs" onClick={() => showLog(o.ingest_job)}>
+                  log
+                </Button>
               )}
-              {o.blessing && (
-                <div style={{ color: C.muted, fontSize: 12, marginTop: 2, fontStyle: 'italic' }}
-                  title="The customer's blessing / dedication text">
-                  “{o.blessing}”
-                </div>
+              {o.project ? (
+                <Button variant="default" size="xs" onClick={() => onOpenProject(o.project)}>
+                  open “{o.project}”
+                </Button>
+              ) : !o.ingesting && (
+                <Button size="xs" disabled={!o.folder}
+                  loading={Boolean(o.folder) && busyRow === o.folder}
+                  title={o.folder ? '' : 'No photo folder recorded for this order yet'}
+                  onClick={() => ingest(o)}>
+                  {failed ? 'Retry ingest' : 'Ingest + storyboard'}
+                </Button>
               )}
-              {failed && (
-                <div style={{ ...S.err, marginTop: 4 }} title={o.ingest_error}>
-                  {o.ingest_error}
-                </div>
-              )}
-            </div>
-            <span style={S.chip(color)}>{text}</span>
-            {failed && o.ingest_job && (
-              <Btn ghost onClick={() => showLog(o.ingest_job)}>log</Btn>
-            )}
-            {o.project ? (
-              <Btn ghost onClick={() => onOpenProject(o.project)}>open “{o.project}”</Btn>
-            ) : !o.ingesting && (
-              <Btn busy={Boolean(o.folder) && busyRow === o.folder} disabled={!o.folder}
-                title={o.folder ? '' : 'No photo folder recorded for this order yet'}
-                onClick={() => ingest(o)}>
-                {failed ? 'Retry ingest' : 'Ingest + storyboard'}
-              </Btn>
-            )}
-          </div>
+            </Group>
+          </Card>
         );
       })}
-    </div>
+    </Stack>
   );
 }

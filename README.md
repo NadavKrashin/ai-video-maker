@@ -69,7 +69,7 @@ python pipeline.py serve            # panel + API on 127.0.0.1:8300 + order watc
 One process serves the whole thing — open http://127.0.0.1:8300/ and enter
 the `ADMIN_API_TOKEN` from `.env`:
 
-- **Admin panel** (`admin_ui/`, a small React app served from its `dist/`
+- **Admin panel** (`admin_ui/`, a small React + Mantine app served from its `dist/`
   build): everything the CLI can do, from a browser — order intake, creating
   a project from scratch and uploading/removing photos (`init`), storyboards
   from photos or from a typed idea (with style prompt / duration /
@@ -648,7 +648,7 @@ ai_video_maker/
     audio.py         # AudioClient — SFX + music (fal)
     cloudinary_client.py # order photo listing/download (Cloudinary Admin API)
     firebase_client.py   # Firestore order ledger (list orders, status write-back)
-admin_ui/            # the admin panel (React + Vite); dist/ is served at / by `serve`
+admin_ui/            # the admin panel (React + Vite + Mantine); dist/ served at / by `serve`
 pipeline.py          # entry-point shim
 pyproject.toml       # package metadata, deps, `ai-video-maker` console script
 ```

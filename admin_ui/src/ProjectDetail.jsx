@@ -4,8 +4,12 @@
 // options + an explanation. Every action that changes files or spends money
 // goes through a confirmation modal that says exactly what will happen.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  Alert, Badge, Button, Card, Checkbox, Divider, Group, Image, Modal, Paper,
+  ScrollArea, Select, Stack, Text, Textarea, TextInput, Title, UnstyledButton
+} from '@mantine/core';
 import { api, fileUrl } from './api.js';
-import { Btn, C, ConfirmModal, Field, S, Toggle, stepChip } from './ui.jsx';
+import { ConfirmModal, notify, stepChip } from './ui.jsx';
 
 // A transition's start_frame/end_frame is the styled image path in practice
 // ("styled_images/img1.png"), but may also be a frame id — handle both.
@@ -17,31 +21,38 @@ function frameName(framesById, frameRef) {
 
 const CLIP_PRICE = '≈ $0.35 (5s) – $0.70 (10s) per clip';
 
+const jobColor = (state) =>
+  state === 'done' ? 'green'
+    : state === 'failed' ? 'red'
+      : state === 'cancelled' ? 'gray'
+        : state === 'cancelling' ? 'yellow'
+          : 'blue';
+
 function JobRow({ job, onShowLog, onCancel, cancelBusy }) {
-  const color = job.state === 'done' ? C.ok
-    : job.state === 'failed' ? C.err
-      : job.state === 'cancelled' ? C.muted
-        : job.state === 'cancelling' ? C.accentSoft
-          : C.run;
   const cancellable = job.state === 'queued' || job.state === 'running';
   return (
-    <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '6px 0', borderBottom: `1px solid ${C.border}` }}>
-      <span style={S.chip(color)}>{job.state}</span>
-      <span style={{ fontWeight: 600 }}>{job.command}</span>
-      <span style={{ color: C.muted, fontSize: 12, flex: 1 }}>
+    <Group gap="sm" py={6} wrap="nowrap"
+      style={{ borderBottom: '1px solid var(--mantine-color-dark-4)' }}>
+      <Badge variant="light" color={jobColor(job.state)}>{job.state}</Badge>
+      <Text size="sm" fw={600}>{job.command}</Text>
+      <Text size="xs" c="dimmed" style={{ flex: 1 }}>
         {(job.started_at || job.created_at || '').replace('T', ' ').slice(0, 19)}
-      </span>
-      {job.error && <span style={{ ...S.err, maxWidth: 380, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{job.error}</span>}
+      </Text>
+      {job.error && (
+        <Text size="xs" c="red" maw={380} truncate title={job.error}>{job.error}</Text>
+      )}
       {(cancellable || job.state === 'cancelling') && (
-        <Btn ghost busy={cancelBusy} disabled={!cancellable}
-          style={{ color: C.err, borderColor: `${C.err}88` }}
+        <Button variant="subtle" color="red" size="compact-xs"
+          loading={cancelBusy} disabled={!cancellable}
           title="Queued jobs stop now; running jobs finish the current item first. Re-running later resumes."
           onClick={() => onCancel(job.id)}>
           {job.state === 'cancelling' ? 'cancelling…' : 'cancel'}
-        </Btn>
+        </Button>
       )}
-      <Btn ghost onClick={() => onShowLog(job.id)}>log</Btn>
-    </div>
+      <Button variant="subtle" size="compact-xs" onClick={() => onShowLog(job.id)}>
+        log
+      </Button>
+    </Group>
   );
 }
 
@@ -50,70 +61,71 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, on
   const endImg = frameName(framesById, tr.end_frame);
   const clipFile = tr.output_path.split('/').pop();
   return (
-    <div style={S.card}>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
-        <strong>{tr.id}</strong>
-        <span style={S.chip(clip?.rendered ? C.ok : C.accentSoft)}>
+    <Card withBorder padding="md">
+      <Group gap="xs" mb="sm">
+        <Text fw={700}>{tr.id}</Text>
+        <Badge variant="light" color={clip?.rendered ? 'green' : 'yellow'}>
           {clip?.rendered ? (clip.sfx ? 'rendered · sfx' : 'rendered · silent') : 'not rendered'}
-        </span>
+        </Badge>
         {clip?.stale && (
-          <span style={S.chip('#E0A75B')}
+          <Badge variant="light" color="orange"
             title="The storyboard changed after this clip was rendered (re-planned motion). The clip is kept as-is — click regenerate when you want the new plan applied (spends credits).">
             outdated
-          </span>
+          </Badge>
         )}
-        <span style={{ color: C.muted, fontSize: 12 }}>{tr.duration}s</span>
-        {edited && <span style={S.chip(C.accentSoft)}>edited</span>}
+        <Text size="xs" c="dimmed">{tr.duration}s</Text>
+        {edited && <Badge variant="light" color="yellow">edited</Badge>}
         {placeholder && !edited && (
-          <span style={S.chip(C.err)} title="Planning failed for this pair; it still has the generic fallback prompt. Re-running Storyboard re-plans it.">
+          <Badge variant="light" color="red"
+            title="Planning failed for this pair; it still has the generic fallback prompt. Re-running Storyboard re-plans it.">
             generic prompt
-          </span>
+          </Badge>
         )}
-      </div>
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          {startImg && <img src={fileUrl(project, 'styled', startImg)} alt={tr.start_frame}
-            style={{ width: 128, borderRadius: 6 }} />}
-          <span style={{ color: C.muted }}>→</span>
-          {endImg && <img src={fileUrl(project, 'styled', endImg)} alt={tr.end_frame}
-            style={{ width: 128, borderRadius: 6 }} />}
-        </div>
+      </Group>
+      <Group align="center" gap="md">
+        <Group gap={6} align="center" wrap="nowrap">
+          {startImg && <Image src={fileUrl(project, 'styled', startImg)} alt={tr.start_frame}
+            w={128} radius="sm" />}
+          <Text c="dimmed">→</Text>
+          {endImg && <Image src={fileUrl(project, 'styled', endImg)} alt={tr.end_frame}
+            w={128} radius="sm" />}
+        </Group>
         {clip?.rendered && (
-          <video controls preload="metadata" style={{ width: 260, borderRadius: 6, background: '#000' }}
+          <video controls preload="metadata"
+            style={{ width: 260, borderRadius: 8, background: '#000' }}
             src={fileUrl(project, 'clips', clipFile)} />
         )}
-      </div>
-      <label style={{ ...S.label, marginTop: 10 }}>Motion prompt</label>
-      <textarea style={{ ...S.input, minHeight: 60, resize: 'vertical' }} value={tr.motion_prompt}
+      </Group>
+      <Textarea label="Motion prompt" mt="sm" autosize minRows={2}
+        value={tr.motion_prompt}
         onChange={(e) => onEdit({ ...tr, motion_prompt: e.target.value })} />
-      <div style={{ display: 'flex', gap: 10, marginTop: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-        <Field label="Duration">
-          <select style={{ ...S.input, width: 90 }} value={tr.duration}
-            onChange={(e) => onEdit({ ...tr, duration: Number(e.target.value) })}>
-            <option value={5}>5s</option>
-            <option value={10}>10s</option>
-          </select>
-        </Field>
-        <Field label="Sound prompt (optional)" style={{ flex: 1, minWidth: 220 }}>
-          <input style={S.input} value={tr.sound_prompt || ''}
-            onChange={(e) => onEdit({ ...tr, sound_prompt: e.target.value })} />
-        </Field>
-        <Btn ghost busy={replanBusy} onClick={() => onReplan(tr.id)}
+      <Group mt="sm" align="flex-end">
+        <Select label="Duration" w={90} allowDeselect={false}
+          value={String(tr.duration)}
+          onChange={(v) => onEdit({ ...tr, duration: Number(v) })}
+          data={[{ value: '5', label: '5s' }, { value: '10', label: '10s' }]} />
+        <TextInput label="Sound prompt (optional)" style={{ flex: 1 }} miw={220}
+          value={tr.sound_prompt || ''}
+          onChange={(e) => onEdit({ ...tr, sound_prompt: e.target.value })} />
+        <Button variant="default" size="xs" loading={replanBusy}
+          onClick={() => onReplan(tr.id)}
           title="Ask the AI planner to write a fresh motion prompt for this pair (small OpenAI call; the clip is not re-rendered)">
           Re-plan prompt
-        </Btn>
+        </Button>
         {clip?.rendered && (
-          <Btn ghost busy={audioBusy} onClick={() => onRedoAudio(tr.id)}
+          <Button variant="default" size="xs" loading={audioBusy}
+            onClick={() => onRedoAudio(tr.id)}
             title="Redo just this clip's SFX (use after editing its sound prompt)">
             Redo audio
-          </Btn>
+          </Button>
         )}
-        <Btn ghost busy={busy} onClick={() => onRegenerate(tr.id)}
+        <Button variant="default" size="xs" loading={busy}
+          onClick={() => onRegenerate(tr.id)}
           title="Re-render just this clip (save edits first)">
           {clip?.rendered ? 'Regenerate clip' : 'Render this clip'}
-        </Btn>
-      </div>
-    </div>
+        </Button>
+      </Group>
+    </Card>
   );
 }
 
@@ -122,7 +134,7 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, on
 // primary button that opens the confirmation modal (nothing runs directly).
 
 function PanelIntro({ children }) {
-  return <p style={{ color: C.muted, fontSize: 13, margin: '0 0 12px', lineHeight: 1.5 }}>{children}</p>;
+  return <Text size="sm" c="dimmed" mb="md">{children}</Text>;
 }
 
 function StoryboardPanel({ ask, locked, info }) {
@@ -168,37 +180,38 @@ function StoryboardPanel({ ask, locked, info }) {
         again after edits is safe. The result stops here for your review —
         nothing renders until you say so.
       </PanelIntro>
-      <Field label="Idea (leave empty to storyboard from the project's photos; fill to invent frames from text)">
-        <textarea style={{ ...S.input, minHeight: 48, resize: 'vertical' }} value={idea}
-          placeholder="(from photos)" onChange={(e) => setIdea(e.target.value)} />
-      </Field>
-      <div style={{ display: 'flex', gap: 10, marginTop: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+      <Textarea
+        label="Idea"
+        description="Leave empty to storyboard from the project's photos; fill to invent frames from text"
+        placeholder="(from photos)" autosize minRows={2}
+        value={idea} onChange={(e) => setIdea(e.target.value)} />
+      <Group mt="sm" align="flex-end">
         {fromIdea && (
-          <Field label="Frames (0 = model decides)">
-            <input style={{ ...S.input, width: 110 }} type="number" min="0" value={frameCount}
-              placeholder="config" onChange={(e) => setFrameCount(e.target.value)} />
-          </Field>
+          <TextInput label="Frames" description="0 = model decides" w={120}
+            type="number" placeholder="config"
+            value={frameCount} onChange={(e) => setFrameCount(e.target.value)} />
         )}
-        <Field label="Force every clip to" style={{ width: 130 }}>
-          <select style={S.input} value={duration} onChange={(e) => setDuration(e.target.value)}>
-            <option value="">planner mixes</option>
-            <option value="5">5s</option>
-            <option value="10">10s</option>
-          </select>
-        </Field>
-        <Field label="Style prompt override (optional)" style={{ flex: 1, minWidth: 220 }}>
-          <input style={S.input} value={stylePrompt} placeholder="(config style_prompt)"
-            onChange={(e) => setStylePrompt(e.target.value)} />
-        </Field>
-      </div>
-      <div style={{ display: 'flex', gap: 16, marginTop: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-        <Toggle label="Analyze frames (per-clip motion plans)" checked={analyze} onChange={setAnalyze}
+        <Select label="Force every clip to" w={150} value={duration}
+          onChange={(v) => setDuration(v || '')}
+          data={[
+            { value: '', label: 'planner mixes' },
+            { value: '5', label: '5s' },
+            { value: '10', label: '10s' }
+          ]} />
+        <TextInput label="Style prompt override (optional)" style={{ flex: 1 }} miw={220}
+          placeholder="(config style_prompt)"
+          value={stylePrompt} onChange={(e) => setStylePrompt(e.target.value)} />
+      </Group>
+      <Group mt="md">
+        <Checkbox label="Analyze frames (per-clip motion plans)"
+          checked={analyze} onChange={(e) => setAnalyze(e.target.checked)}
           title="Off: skip the vision analysis and give every clip the one generic motion prompt" />
-        <Toggle label="Force re-style all photos" checked={force} onChange={setForce}
+        <Checkbox label="Force re-style all photos"
+          checked={force} onChange={(e) => setForce(e.target.checked)}
           title="Re-style photos that are already styled (spends OpenAI credits on every photo again)" />
-        <span style={{ flex: 1 }} />
-        <Btn disabled={locked} onClick={start}>Run storyboard…</Btn>
-      </div>
+        <div style={{ flex: 1 }} />
+        <Button disabled={locked} onClick={start}>Run storyboard…</Button>
+      </Group>
     </div>
   );
 }
@@ -236,24 +249,24 @@ function RenderPanel({ ask, locked, info }) {
         doesn't have one yet. Review the storyboard first — each clip is paid
         the moment it renders.
       </PanelIntro>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-        <Field label="Motion prompt override for this run (optional)" style={{ flex: 1, minWidth: 240 }}>
-          <input style={S.input} value={motionPrompt} placeholder="(per-clip storyboard prompts)"
-            onChange={(e) => setMotionPrompt(e.target.value)} />
-        </Field>
-        <Field label="Force duration" style={{ width: 120 }}>
-          <select style={S.input} value={duration} onChange={(e) => setDuration(e.target.value)}>
-            <option value="">storyboard</option>
-            <option value="5">5s</option>
-            <option value="10">10s</option>
-          </select>
-        </Field>
-        <Toggle label="Dry run" checked={dryRun} onChange={setDryRun}
+      <Group align="flex-end">
+        <TextInput label="Motion prompt override for this run (optional)"
+          style={{ flex: 1 }} miw={240} placeholder="(per-clip storyboard prompts)"
+          value={motionPrompt} onChange={(e) => setMotionPrompt(e.target.value)} />
+        <Select label="Force duration" w={130} value={duration}
+          onChange={(v) => setDuration(v || '')}
+          data={[
+            { value: '', label: 'storyboard' },
+            { value: '5', label: '5s' },
+            { value: '10', label: '10s' }
+          ]} />
+        <Checkbox label="Dry run" checked={dryRun}
+          onChange={(e) => setDryRun(e.target.checked)} mb={6}
           title="Show what would be rendered without spending credits" />
-        <Btn disabled={locked} onClick={start}>
+        <Button disabled={locked} onClick={start}>
           {`Render ${info.missing || 'missing'} clip(s)…`}
-        </Btn>
-      </div>
+        </Button>
+      </Group>
     </div>
   );
 }
@@ -282,27 +295,30 @@ function AudioPanel({ ask, locked, info }) {
         background music track mixed over the whole movie. Optional — skip it
         for a silent film.
       </PanelIntro>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-        <Field label="Music prompt override (optional)" style={{ flex: 1, minWidth: 240 }}>
-          <input style={S.input} value={musicPrompt} placeholder="(config music_prompt)"
-            onChange={(e) => setMusicPrompt(e.target.value)} />
-        </Field>
-        <Btn disabled={locked} onClick={start}>Run audio…</Btn>
-      </div>
+      <Group align="flex-end">
+        <TextInput label="Music prompt override (optional)" style={{ flex: 1 }} miw={240}
+          placeholder="(config music_prompt)"
+          value={musicPrompt} onChange={(e) => setMusicPrompt(e.target.value)} />
+        <Button disabled={locked} onClick={start}>Run audio…</Button>
+      </Group>
     </div>
   );
 }
 
+// Tri-state checkbox cycling config → on → off → config.
+function TriToggle({ value, onChange, label, title }) {
+  const suffix = value === null ? ' (config)' : value ? ' (on)' : ' (off)';
+  return (
+    <Checkbox label={label + suffix} title={title}
+      checked={value === true} indeterminate={value === null}
+      onChange={() => onChange(value === null ? true : value === true ? false : null)} />
+  );
+}
+
 function CombinePanel({ ask, locked, info }) {
-  // null = follow config; cycling the toggle: config → on → off → config.
   const [intro, setIntro] = useState(null);
   const [credits, setCredits] = useState(null);
   const [letter, setLetter] = useState(null);
-  const tri = (value, set, label, title) => (
-    <Toggle label={label + (value === null ? ' (config)' : value ? ' (on)' : ' (off)')}
-      checked={value === true} indeterminate={value === null} title={title}
-      onChange={() => set(value === null ? true : value === true ? false : null)} />
-  );
   const start = (finalize) => {
     const o = finalize
       ? { intro_clip: true, credits_photos: true, force: true }
@@ -337,15 +353,18 @@ function CombinePanel({ ask, locked, info }) {
         1920×1080 movie, with the music bed when audio is on. Free and
         repeatable — rerun it any time a clip changes.
       </PanelIntro>
-      <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
-        {tri(intro, setIntro, 'Intro clip', 'Prepend the shared intro.mp4')}
-        {tri(credits, setCredits, 'Credits photos', 'End-credits montage of the original photos')}
-        {tri(letter, setLetter, 'Closing letter', "Scroll the project's letter.txt at the end")}
-        <span style={{ flex: 1 }} />
-        <Btn ghost disabled={locked} onClick={() => start(true)}
-          title="The delivery preset: intro + photo credits + rebuild">Finalize…</Btn>
-        <Btn disabled={locked} onClick={() => start(false)}>Combine…</Btn>
-      </div>
+      <Group>
+        <TriToggle value={intro} onChange={setIntro} label="Intro clip"
+          title="Prepend the shared intro.mp4" />
+        <TriToggle value={credits} onChange={setCredits} label="Credits photos"
+          title="End-credits montage of the original photos" />
+        <TriToggle value={letter} onChange={setLetter} label="Closing letter"
+          title="Scroll the project's letter.txt at the end" />
+        <div style={{ flex: 1 }} />
+        <Button variant="default" disabled={locked} onClick={() => start(true)}
+          title="The delivery preset: intro + photo credits + rebuild">Finalize…</Button>
+        <Button disabled={locked} onClick={() => start(false)}>Combine…</Button>
+      </Group>
     </div>
   );
 }
@@ -372,11 +391,12 @@ function RunAllPanel({ ask, locked, info }) {
         Best for a project whose storyboard you've already checked — or when
         you trust the plan blindly.
       </PanelIntro>
-      <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
-        <Toggle label="Stop after clips (no final video)" checked={noCombine} onChange={setNoCombine} />
-        <span style={{ flex: 1 }} />
-        <Btn disabled={locked} style={{ background: C.err }} onClick={start}>Run everything…</Btn>
-      </div>
+      <Group>
+        <Checkbox label="Stop after clips (no final video)" checked={noCombine}
+          onChange={(e) => setNoCombine(e.target.checked)} />
+        <div style={{ flex: 1 }} />
+        <Button color="red" disabled={locked} onClick={start}>Run everything…</Button>
+      </Group>
     </div>
   );
 }
@@ -394,7 +414,24 @@ const STEPS = [
   { id: 'combine', n: 4, name: 'Combine', caption: 'Build the final movie' }
 ];
 
-export default function ProjectDetail({ name, onBack, notify }) {
+function StepTile({ selected, highlight, dashed, onClick, children }) {
+  return (
+    <UnstyledButton onClick={onClick}
+      style={{
+        flex: dashed ? '0 1 160px' : '1 1 160px', minWidth: 150,
+        borderRadius: 'var(--mantine-radius-md)', padding: '10px 12px',
+        background: dashed ? 'transparent' : 'var(--mantine-color-dark-6)',
+        border: `1px ${dashed ? 'dashed' : 'solid'} ${
+          selected ? 'var(--mantine-color-orange-5)'
+            : highlight ? 'var(--mantine-color-orange-8)'
+              : 'var(--mantine-color-dark-4)'}`
+      }}>
+      {children}
+    </UnstyledButton>
+  );
+}
+
+export default function ProjectDetail({ name, onBack }) {
   const [snap, setSnap] = useState(null);
   const [storyboard, setStoryboard] = useState(null); // parsed, editable copy
   const [dirty, setDirty] = useState(new Set());
@@ -433,7 +470,7 @@ export default function ProjectDetail({ name, onBack, notify }) {
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
 
-  useEffect(() => { load().catch((e) => notify(`Load failed: ${e.message}`)); }, [load, notify]);
+  useEffect(() => { load().catch((e) => notify(`Load failed: ${e.message}`, 'red')); }, [load]);
 
   // Poll while a job is queued/running, refresh once when it settles.
   useEffect(() => {
@@ -443,14 +480,14 @@ export default function ProjectDetail({ name, onBack, notify }) {
     return () => clearInterval(pollRef.current);
   }, [snap, load]);
 
-  if (!snap) return <p style={{ color: C.muted }}>Loading {name}…</p>;
+  if (!snap) return <Text c="dimmed">Loading {name}…</Text>;
 
   const framesById = Object.fromEntries((storyboard?.frames || []).map((f) => [f.id, f]));
   const clipsById = Object.fromEntries((snap.clips || []).map((c) => [c.id, c]));
   // Transitions the backend planner never succeeded on (still carrying the
   // config fallback prompt) — flagged so nobody renders a whole order generic.
   const placeholderIds = new Set(snap.storyboard?.placeholder_transitions || []);
-  const [stepText, stepColor] = stepChip(snap.next_step);
+  const chip = stepChip(snap.next_step);
   const activeJob = (snap.jobs || []).find((j) => ['running', 'queued', 'cancelling'].includes(j.state));
   const locked = Boolean(activeJob);
 
@@ -490,7 +527,7 @@ export default function ProjectDetail({ name, onBack, notify }) {
       notify(`${label} started`);
       setOpenPanel('');
       await load();
-    } catch (e) { notify(`${label} failed: ${e.message}`); }
+    } catch (e) { notify(`${label} failed: ${e.message}`, 'red'); }
     finally { setBusyAction(''); }
   };
 
@@ -508,9 +545,9 @@ export default function ProjectDetail({ name, onBack, notify }) {
     try {
       await api.saveStoryboard(name, storyboard);
       setDirty(new Set());
-      notify('Storyboard saved');
+      notify('Storyboard saved', 'green');
       await load();
-    } catch (e) { notify(`Save failed: ${e.message}`); }
+    } catch (e) { notify(`Save failed: ${e.message}`, 'red'); }
     finally { setBusyAction(''); }
   };
 
@@ -527,7 +564,7 @@ export default function ProjectDetail({ name, onBack, notify }) {
   };
 
   const needsSave = () => {
-    if (dirty.size) { notify('Save your storyboard edits first.'); return true; }
+    if (dirty.size) { notify('Save your storyboard edits first.', 'yellow'); return true; }
     return false;
   };
 
@@ -583,10 +620,10 @@ export default function ProjectDetail({ name, onBack, notify }) {
     setUploading(true);
     try {
       const res = await api.uploadPhotos(name, Array.from(files));
-      notify(`Uploaded ${res.saved.length} photo(s)`);
+      notify(`Uploaded ${res.saved.length} photo(s)`, 'green');
       setShowPhotos(true);
       await load();
-    } catch (e) { notify(`Upload failed: ${e.message}`); }
+    } catch (e) { notify(`Upload failed: ${e.message}`, 'red'); }
     finally { setUploading(false); if (fileInputRef.current) fileInputRef.current.value = ''; }
   };
 
@@ -604,14 +641,14 @@ export default function ProjectDetail({ name, onBack, notify }) {
           await api.deletePhoto(name, filename);
           notify(`Deleted ${filename}`);
           await load();
-        } catch (e) { notify(`Delete failed: ${e.message}`); }
+        } catch (e) { notify(`Delete failed: ${e.message}`, 'red'); }
       }
     });
   };
 
   const showLog = async (jobId) => {
     try { setLogJob(await api.job(jobId)); }
-    catch (e) { notify(`Log failed: ${e.message}`); }
+    catch (e) { notify(`Log failed: ${e.message}`, 'red'); }
   };
 
   const cancelJob = async (jobId) => {
@@ -622,14 +659,14 @@ export default function ProjectDetail({ name, onBack, notify }) {
         ? 'Cancelling — the clip being generated will finish, then the job stops.'
         : 'Job cancelled.');
       await load();
-    } catch (e) { notify(`Cancel failed: ${e.message}`); }
+    } catch (e) { notify(`Cancel failed: ${e.message}`, 'red'); }
     finally { setBusyAction(''); }
   };
 
-  const statusChipFor = (status) =>
-    status === 'done' ? <span style={S.chip(C.ok)}>✓ done</span>
-      : status === 'next' ? <span style={S.chip(C.accent)}>next step</span>
-        : status === 'optional' ? <span style={{ color: C.muted, fontSize: 11 }}>optional</span>
+  const statusBadge = (status) =>
+    status === 'done' ? <Badge variant="light" color="green" size="sm">✓ done</Badge>
+      : status === 'next' ? <Badge variant="light" color="orange" size="sm">next step</Badge>
+        : status === 'optional' ? <Text size="xs" c="dimmed">optional</Text>
           : null;
 
   const panels = {
@@ -641,171 +678,158 @@ export default function ProjectDetail({ name, onBack, notify }) {
   };
 
   return (
-    <div>
+    <Stack gap="sm">
       <ConfirmModal confirm={confirm} onCancel={() => setConfirm(null)} onConfirm={confirmed} />
 
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
-        <Btn ghost onClick={onBack}>← back</Btn>
-        <h2 style={{ margin: 0, fontSize: 18 }}>{name}</h2>
-        <span style={S.chip(stepColor)}>{stepText}</span>
-        {snap.order?.customer && <span style={{ color: C.muted, fontSize: 13 }}>
-          {snap.order.customer} · {snap.order.order_id}</span>}
-        {activeJob && <span style={S.chip(activeJob.state === 'cancelling' ? C.accentSoft : C.run)}>
-          {activeJob.command} {activeJob.state}…</span>}
-      </div>
+      <Modal opened={Boolean(logJob)} onClose={() => setLogJob(null)} centered size="xl"
+        title={logJob ? `${logJob.command} — ${logJob.state}` : ''}>
+        {logJob?.error && <Text c="red" size="sm" mb="sm">{logJob.error}</Text>}
+        <ScrollArea.Autosize mah={360}>
+          <Text component="pre" size="xs" c="dimmed" style={{ margin: 0 }}>
+            {(logJob?.log || []).join('\n') || '(no log lines)'}
+          </Text>
+        </ScrollArea.Autosize>
+      </Modal>
 
-      <div style={{ ...S.card, padding: 10 }}>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      <Group gap="sm">
+        <Button variant="subtle" size="xs" onClick={onBack}>← back</Button>
+        <Title order={3}>{name}</Title>
+        <Badge variant="light" color={chip.color}>{chip.label}</Badge>
+        {snap.order?.customer && (
+          <Text size="sm" c="dimmed">{snap.order.customer} · {snap.order.order_id}</Text>
+        )}
+        {activeJob && (
+          <Badge variant="light" color={activeJob.state === 'cancelling' ? 'yellow' : 'blue'}>
+            {activeJob.command} {activeJob.state}…
+          </Badge>
+        )}
+      </Group>
+
+      <Card withBorder padding="sm">
+        <Group gap="xs" align="stretch">
           {STEPS.map((step) => {
             const status = stepStatus(step.id);
             const selected = openPanel === step.id;
             return (
-              <div key={step.id} role="button" tabIndex={0}
-                onClick={() => setOpenPanel(selected ? '' : step.id)}
-                onKeyDown={(e) => e.key === 'Enter' && setOpenPanel(selected ? '' : step.id)}
-                style={{
-                  flex: '1 1 150px', minWidth: 150, cursor: 'pointer',
-                  background: C.panel, borderRadius: 8, padding: '10px 12px',
-                  border: `1px solid ${selected ? C.accent : status === 'next' ? `${C.accent}88` : C.border}`
-                }}>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between' }}>
-                  <strong style={{ fontSize: 14 }}>
-                    <span style={{ color: C.muted, fontWeight: 400 }}>{step.n} · </span>{step.name}
-                  </strong>
-                  {statusChipFor(status)}
-                </div>
-                <div style={{ color: C.muted, fontSize: 12, marginTop: 3 }}>{step.caption}</div>
-              </div>
+              <StepTile key={step.id} selected={selected} highlight={status === 'next'}
+                onClick={() => setOpenPanel(selected ? '' : step.id)}>
+                <Group justify="space-between" gap={6} wrap="nowrap">
+                  <Text size="sm" fw={700}>
+                    <Text span c="dimmed" fw={400}>{step.n} · </Text>{step.name}
+                  </Text>
+                  {statusBadge(status)}
+                </Group>
+                <Text size="xs" c="dimmed" mt={2}>{step.caption}</Text>
+              </StepTile>
             );
           })}
-          <div role="button" tabIndex={0}
-            onClick={() => setOpenPanel(openPanel === 'runall' ? '' : 'runall')}
-            onKeyDown={(e) => e.key === 'Enter' && setOpenPanel(openPanel === 'runall' ? '' : 'runall')}
-            title="All remaining steps as one unattended job"
-            style={{
-              flex: '0 1 150px', minWidth: 130, cursor: 'pointer',
-              background: 'transparent', borderRadius: 8, padding: '10px 12px',
-              border: `1px dashed ${openPanel === 'runall' ? C.err : C.border}`
-            }}>
-            <strong style={{ fontSize: 14, color: C.muted }}>⚡ Run everything</strong>
-            <div style={{ color: C.muted, fontSize: 12, marginTop: 3 }}>All steps, no stops</div>
-          </div>
-        </div>
+          <StepTile dashed selected={openPanel === 'runall'}
+            onClick={() => setOpenPanel(openPanel === 'runall' ? '' : 'runall')}>
+            <Text size="sm" fw={700} c="dimmed">⚡ Run everything</Text>
+            <Text size="xs" c="dimmed" mt={2}>All steps, no stops</Text>
+          </StepTile>
+        </Group>
         {openPanel && (
-          <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 10, paddingTop: 12 }}>
+          <>
+            <Divider my="sm" />
             {panels[openPanel]}
-          </div>
+          </>
         )}
-      </div>
+      </Card>
 
       {snap.final_video && (
-        <div style={S.card}>
-          <strong>Final video</strong>
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
-            <video controls preload="metadata" style={{ width: 420, maxWidth: '100%', borderRadius: 8, background: '#000' }}
+        <Card withBorder padding="md">
+          <Text fw={600} mb="sm">Final video</Text>
+          <Group align="center">
+            <video controls preload="metadata"
+              style={{ width: 420, maxWidth: '100%', borderRadius: 8, background: '#000' }}
               src={fileUrl(name, 'output', 'final_video.mp4')} />
-            <a style={{ color: C.accentSoft }} href={fileUrl(name, 'output', 'final_video.mp4')}
-              download={`${name}.mp4`}>Download</a>
-          </div>
-        </div>
+            <Button component="a" variant="light"
+              href={fileUrl(name, 'output', 'final_video.mp4')} download={`${name}.mp4`}>
+              Download
+            </Button>
+          </Group>
+        </Card>
       )}
 
-      <div style={S.card}>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          <strong>Photos ({inputImages.length})</strong>
-          <span style={{ color: C.muted, fontSize: 12, flex: 1 }}>
+      <Card withBorder padding="md">
+        <Group gap="sm">
+          <Text fw={600}>Photos ({inputImages.length})</Text>
+          <Text size="xs" c="dimmed" style={{ flex: 1 }}>
             Movie order follows the filenames (sorted). Styled versions shown when available.
-          </span>
-          <input ref={fileInputRef} type="file" accept="image/*" multiple style={{ display: 'none' }}
-            onChange={(e) => upload(e.target.files)} />
-          <Btn ghost busy={uploading} onClick={() => fileInputRef.current?.click()}>Add photos</Btn>
-          <Btn ghost onClick={() => setShowPhotos((v) => !v)}>{showPhotos ? 'Hide' : 'Show'}</Btn>
-        </div>
+          </Text>
+          <input ref={fileInputRef} type="file" accept="image/*" multiple
+            style={{ display: 'none' }} onChange={(e) => upload(e.target.files)} />
+          <Button variant="default" size="xs" loading={uploading}
+            onClick={() => fileInputRef.current?.click()}>Add photos</Button>
+          <Button variant="subtle" size="xs" onClick={() => setShowPhotos((v) => !v)}>
+            {showPhotos ? 'Hide' : 'Show'}
+          </Button>
+        </Group>
         {showPhotos && (
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+          <Group mt="md" gap="sm" align="flex-start">
             {inputImages.map((img) => {
               const styledName = img.replace(/\.[^.]+$/, '.png');
               const styled = styledImages.includes(styledName);
               return (
-                <div key={img}>
-                  <img style={{ width: 120, borderRadius: 6 }} alt={img}
+                <Stack key={img} gap={2}>
+                  <Image w={120} radius="sm" alt={img}
                     src={fileUrl(name, styled ? 'styled' : 'input', styled ? styledName : img)} />
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ color: C.muted, fontSize: 11 }}>{img}</span>
-                    <button title={`Delete ${img}`} onClick={() => deletePhoto(img)}
-                      style={{ background: 'none', border: 'none', color: C.err, cursor: 'pointer', fontSize: 13 }}>
+                  <Group justify="space-between" gap={4}>
+                    <Text size="xs" c="dimmed">{img}</Text>
+                    <UnstyledButton title={`Delete ${img}`} onClick={() => deletePhoto(img)}
+                      style={{ color: 'var(--mantine-color-red-5)', fontSize: 13 }}>
                       ✕
-                    </button>
-                  </div>
-                </div>
+                    </UnstyledButton>
+                  </Group>
+                </Stack>
               );
             })}
             {inputImages.length === 0 && (
-              <p style={{ color: C.muted, fontSize: 13 }}>
+              <Text size="sm" c="dimmed">
                 No photos yet — add some above, or run Storyboard with an idea instead.
-              </p>
+              </Text>
             )}
-          </div>
+          </Group>
         )}
-      </div>
+      </Card>
 
       {(snap.jobs || []).length > 0 && (
-        <div style={S.card}>
-          <strong>Jobs</strong>
+        <Card withBorder padding="md">
+          <Text fw={600} mb={4}>Jobs</Text>
           {(snap.jobs || []).map((j) => (
             <JobRow key={j.id} job={j} onShowLog={showLog} onCancel={cancelJob}
               cancelBusy={busyAction === `cancel ${j.id}`} />
           ))}
-        </div>
-      )}
-
-      {logJob && (
-        <div style={S.card}>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <strong>{logJob.command} — {logJob.state}</strong>
-            <Btn ghost onClick={() => setLogJob(null)}>close</Btn>
-          </div>
-          <pre style={{ fontSize: 11, color: C.muted, overflowX: 'auto', maxHeight: 300 }}>
-            {(logJob.log || []).join('\n') || '(no log lines)'}
-          </pre>
-        </div>
+        </Card>
       )}
 
       {storyboard && (
         <>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '18px 0 8px' }}>
-            <h3 style={{ margin: 0, fontSize: 16 }}>
-              Storyboard — {storyboard.transitions.length} clips
-            </h3>
+          <Group mt="md" gap="md">
+            <Title order={4}>Storyboard — {storyboard.transitions.length} clips</Title>
             {dirty.size > 0 && (
-              <Btn busy={busyAction === 'save'} onClick={saveEdits}>
+              <Button size="xs" loading={busyAction === 'save'} onClick={saveEdits}>
                 Save {dirty.size} edit{dirty.size > 1 ? 's' : ''}
-              </Btn>
+              </Button>
             )}
-          </div>
+          </Group>
           {placeholderIds.size > 0 && (
-            <div style={{ ...S.card, border: `1px solid ${C.err}88` }}>
-              <strong style={{ color: C.err }}>
-                {placeholderIds.size} of {storyboard.transitions.length} transitions still have
-                the generic fallback prompt
-              </strong>
-              <p style={{ color: C.muted, fontSize: 13, margin: '6px 0 0' }}>
-                Planning failed for them (OpenAI quota or rate limit) — run Storyboard again
-                to re-plan exactly these. Clips rendered from the generic prompt lose their
-                tailored motion.
-              </p>
-            </div>
+            <Alert color="red" variant="light"
+              title={`${placeholderIds.size} of ${storyboard.transitions.length} transitions still have the generic fallback prompt`}>
+              Planning failed for them (OpenAI quota or rate limit) — run Storyboard
+              again to re-plan exactly these. Clips rendered from the generic prompt
+              lose their tailored motion.
+            </Alert>
           )}
-          <div style={S.card}>
-            <label style={S.label}>
-              Global motion prompt — prepended to every clip (whole-movie facts, e.g.
-              “two separate people appear throughout; never blend them”; keep it to a
-              sentence or two)
-            </label>
-            <textarea style={{ ...S.input, minHeight: 44, resize: 'vertical' }}
-              placeholder="(none)" value={storyboard.global_motion_prompt || ''}
+          <Card withBorder padding="md">
+            <Textarea
+              label="Global motion prompt"
+              description={'Prepended to every clip — whole-movie facts, e.g. "two separate people appear throughout; never blend them"; keep it to a sentence or two'}
+              placeholder="(none)" autosize minRows={2}
+              value={storyboard.global_motion_prompt || ''}
               onChange={(e) => editGlobalMotion(e.target.value)} />
-          </div>
+          </Card>
           {storyboard.transitions.map((tr) => (
             <TransitionCard key={tr.id} project={name} tr={tr} framesById={framesById}
               clip={clipsById[tr.output_path.split('/').pop()?.replace(/\.mp4$/, '')]}
@@ -818,7 +842,9 @@ export default function ProjectDetail({ name, onBack, notify }) {
           ))}
         </>
       )}
-      {snap.storyboard_error && <p style={S.err}>Storyboard unreadable: {snap.storyboard_error}</p>}
-    </div>
+      {snap.storyboard_error && (
+        <Text c="red" size="sm">Storyboard unreadable: {snap.storyboard_error}</Text>
+      )}
+    </Stack>
   );
 }
