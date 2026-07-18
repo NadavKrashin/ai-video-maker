@@ -13,31 +13,46 @@ import { api } from './api.js';
 import { Btn, C, Modal, S } from './ui.jsx';
 
 // The one place that decides what an order's chip says. rank orders the
-// "By status" sort: most actionable first, finished movies last.
+// "By status" sort (most actionable first, finished movies last); group is
+// what the status filter buckets on.
 function stage(o) {
   if (!o.project && o.ingest_state === 'failed') {
-    return { text: 'ingest failed', color: C.err, rank: 0 };
+    return { text: 'ingest failed', color: C.err, rank: 0, group: 'failed' };
   }
-  if (o.ingesting) return { text: 'ingesting…', color: C.run, rank: 2 };
+  if (o.ingesting) return { text: 'ingesting…', color: C.run, rank: 2, group: 'running' };
   if (o.active_job) {
-    return { text: `${o.active_job.command} running…`, color: C.run, rank: 2 };
+    return { text: `${o.active_job.command} running…`, color: C.run, rank: 2, group: 'running' };
   }
   const p = o.progress;
   if (p) {
-    if (p.final) return { text: 'final ready', color: C.ok, rank: 8 };
+    if (p.final) return { text: 'final ready', color: C.ok, rank: 8, group: 'final' };
     if (p.clips_total > 0 && p.clips_rendered === p.clips_total) {
-      return { text: 'needs combine', color: C.run, rank: 5 };
+      return { text: 'needs combine', color: C.run, rank: 5, group: 'todo' };
     }
     if (p.clips_rendered > 0) {
-      return { text: `clips ${p.clips_rendered}/${p.clips_total}`, color: C.run, rank: 4 };
+      return { text: `clips ${p.clips_rendered}/${p.clips_total}`, color: C.run, rank: 4, group: 'todo' };
     }
-    if (p.clips_total > 0) return { text: 'review storyboard', color: C.accentSoft, rank: 3 };
-    return { text: 'needs storyboard', color: C.accentSoft, rank: 3 };
+    if (p.clips_total > 0) {
+      return { text: 'review storyboard', color: C.accentSoft, rank: 3, group: 'todo' };
+    }
+    return { text: 'needs storyboard', color: C.accentSoft, rank: 3, group: 'todo' };
   }
-  if (o.project) return { text: 'ingested', color: C.ok, rank: 3 };
-  if (o.status && o.status !== 'new') return { text: o.status, color: C.run, rank: 9 };
-  return { text: 'new', color: C.accentSoft, rank: 1 };
+  if (o.project) return { text: 'ingested', color: C.ok, rank: 3, group: 'todo' };
+  if (o.status && o.status !== 'new') return { text: o.status, color: C.run, rank: 9, group: 'other' };
+  return { text: 'new', color: C.accentSoft, rank: 1, group: 'new' };
 }
+
+// 'failed' is both its own bucket and part of "needs action".
+const inGroup = (o, group) =>
+  group === 'all'
+  || stage(o).group === group
+  || (group === 'todo' && stage(o).group === 'failed');
+
+const matchesQuery = (o, q) =>
+  !q || [
+    o.customer, o.order_id, o.folder, o.project, o.email, o.phone,
+    o.package_id, o.music_mood, o.blessing
+  ].some((v) => (v || '').toLowerCase().includes(q));
 
 const progressLine = (p) => p && [
   `${p.photos} photos`,
@@ -55,6 +70,8 @@ export default function OrdersTab({ onOpenProject, notify }) {
   const [checking, setChecking] = useState(false);
   const [logJob, setLogJob] = useState(null);
   const [sort, setSort] = useState('date');
+  const [filter, setFilter] = useState('all');
+  const [query, setQuery] = useState('');
   const ingestingRef = useRef(new Set());
 
   const refresh = useCallback(async () => {
@@ -111,9 +128,12 @@ export default function OrdersTab({ onOpenProject, notify }) {
 
   if (orders === null) return <p style={{ color: C.muted }}>Loading orders…</p>;
 
-  const shown = sort === 'status'
-    ? [...orders].sort((a, b) => stage(a).rank - stage(b).rank)
-    : orders; // the server already returns newest first
+  const count = (group) => orders.filter((o) => inGroup(o, group)).length;
+  const q = query.trim().toLowerCase();
+  const shown = orders
+    .filter((o) => inGroup(o, filter) && matchesQuery(o, q));
+  if (sort === 'status') shown.sort((a, b) => stage(a).rank - stage(b).rank);
+  // else: keep the server's newest-first order
 
   return (
     <div>
@@ -127,15 +147,35 @@ export default function OrdersTab({ onOpenProject, notify }) {
       )}
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 8 }}>
         <h2 style={{ margin: 0, fontSize: 17, flex: 1 }}>Orders</h2>
+        <Btn ghost busy={checking} onClick={checkNow}>Check for new orders now</Btn>
+      </div>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
+        <input style={{ ...S.input, flex: 1, minWidth: 200 }} value={query}
+          placeholder="Search name, order id, email, phone, package…"
+          onChange={(e) => setQuery(e.target.value)} />
+        <select style={{ ...S.input, width: 180 }} value={filter}
+          title="Show only orders in this state"
+          onChange={(e) => setFilter(e.target.value)}>
+          <option value="all">All statuses ({count('all')})</option>
+          <option value="new">New ({count('new')})</option>
+          <option value="todo">Needs action ({count('todo')})</option>
+          <option value="running">Running ({count('running')})</option>
+          <option value="failed">Failed ({count('failed')})</option>
+          <option value="final">Final ready ({count('final')})</option>
+        </select>
         <select style={{ ...S.input, width: 170 }} value={sort}
           title="Sort the orders"
           onChange={(e) => setSort(e.target.value)}>
           <option value="date">Newest first</option>
           <option value="status">By status (todo first)</option>
         </select>
-        <Btn ghost busy={checking} onClick={checkNow}>Check for new orders now</Btn>
       </div>
-      {shown.length === 0 && <p style={{ color: C.muted }}>No orders found.</p>}
+      {shown.length === 0 && (
+        <p style={{ color: C.muted }}>
+          {orders.length === 0 ? 'No orders found.'
+            : 'No orders match the current search/filter.'}
+        </p>
+      )}
       {shown.map((o) => {
         const { text, color } = stage(o);
         const failed = !o.project && o.ingest_state === 'failed';
