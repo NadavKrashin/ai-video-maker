@@ -130,8 +130,12 @@ Core design rules:
 
 ## Working rules (the user's standing instructions)
 
-1. **Before committing anything, ask which branch to work on** (unless the
-   user already said in this session). Do not assume `main`.
+1. **Branch flow (since 2026-07-18): work lands on `dev`** (or a feature
+   branch merged into `dev`); `main` is production — pushing `main`
+   auto-deploys to the Mac mini via the self-hosted runner
+   (`.github/workflows/deploy.yml`). Never commit straight to `main`;
+   releasing is a PR `dev` → `main`. If the user asks for something odd,
+   confirm the branch first.
 2. **Commit after each completed feature/fix** — small, focused commits with
    messages explaining *why*, not just *what*.
 3. **Run the tests before every commit:** `.venv/bin/python -m pytest tests/ -q`
@@ -185,8 +189,9 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
   is the one project-less CLI command — special-cased in cli.py before
   workspace resolution.
 - `pipeline.py serve` (`server.py`) is the admin panel + API + order intake:
-  FastAPI, token auth via ADMIN_API_TOKEN in .env (Bearer header or `?token=`
-  for media tags), serial background JobRunner (one pipeline command at a
+  FastAPI, token auth via ADMIN_API_TOKEN in .env (Bearer header everywhere;
+  `?token=` is accepted ONLY on the media files route, for `<img>`/`<video>`
+  tags), serial background JobRunner (one pipeline command at a
   time, whitelisted commands/options), and the panel's static build mounted
   at `/`. Orders are fetched LIVE on request (/api/orders); the background
   watcher thread is OPT-IN (`watch_enabled`, default False — the user
@@ -233,6 +238,29 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
   webhook from the frontend (exact photo_count completeness), delivery step
   (upload final + customer email), later move off the Mac to a VPS behind a
   tunnel. Keep review gates human; automate only the plumbing.
+
+## Production (since 2026-07-18)
+
+- **`deploy/PRODUCTION.md` is the runbook.** The server runs on the Mac mini
+  as a launchd LaunchAgent (`deploy/com.animoments.pipeline.plist`) bound to
+  **127.0.0.1 only — never 0.0.0.0, never a forwarded port**; the internet
+  reaches it exclusively through a Cloudflare Tunnel, with Cloudflare Access
+  (email OTP) in front of the app's own token — two auth layers. Server
+  logs: `~/Library/Logs/animoments/serve.log`.
+- CI (`.github/workflows/ci.yml`): offline tests + pyflakes + panel build on
+  every push/PR to dev/main. CD (`deploy.yml`): push to `main` → the mini's
+  self-hosted runner runs `deploy/deploy.sh` (refuses a dirty tree, ff-only
+  merge, retests on the machine, rebuilds the panel, kickstarts the service,
+  health-checks). **CI must stay keyless/offline — it can never be allowed
+  to spend API credits.**
+- Admin API security invariants (pinned by tests/test_server_auth.py):
+  constant-time token compare; ADMIN_API_TOKEN ≥ 16 chars enforced at boot;
+  per-address lockout (10 bad tokens / 15 min → 429; keyed on
+  CF-Connecting-IP behind the tunnel); `/docs`/`/openapi.json` disabled;
+  `admin_cors_origins` defaults to `[]` (the panel is same-origin); photo
+  uploads capped at 40 MB/file. When adding endpoints, use the `guarded`
+  (Bearer-only) dependency — `media_guarded` (also `?token=`) is reserved
+  for routes that feed media tags. Don't loosen any of these.
 
 ## Gotchas / facts sessions keep rediscovering
 

@@ -115,10 +115,24 @@ the `ADMIN_API_TOKEN` from `.env`:
   the panel. Use it when you want orders handled while you're away from
   the panel; `--no-watch` force-disables it for one run.
 
-To reach the panel away from home, expose the port with a tunnel
-(Cloudflare Tunnel / Tailscale) — don't bind `0.0.0.0` on an open network.
 For UI development, `cd admin_ui && npm run dev` serves the panel with hot
 reload, proxying `/api` to a locally running `pipeline.py serve`.
+
+### Production (the Mac mini)
+
+**[deploy/PRODUCTION.md](deploy/PRODUCTION.md) is the runbook.** The short
+version: the server runs as a launchd service bound to `127.0.0.1` only
+(`deploy/com.animoments.pipeline.plist`), and the internet reaches it
+exclusively through a **Cloudflare Tunnel** (see
+`deploy/cloudflared-config.example.yml`) with Cloudflare Access (email +
+one-time PIN) in front — two auth layers, zero open ports.
+
+Branch flow: work lands on **`dev`**, a PR into **`main`** is the release.
+CI (`.github/workflows/ci.yml`) runs the offline tests + lint + panel build
+on every push/PR to either branch; pushing `main` triggers
+`.github/workflows/deploy.yml`, which runs `deploy/deploy.sh` on the mini's
+self-hosted runner: fast-forward, reinstall, retest, rebuild the panel,
+restart the service, health-check. Never bind `0.0.0.0`; never port-forward.
 
 ### The Firebase order ledger (optional, recommended)
 
@@ -656,6 +670,8 @@ ai_video_maker/
     cloudinary_client.py # order photo listing/download (Cloudinary Admin API)
     firebase_client.py   # Firestore order ledger (list orders, status write-back)
 admin_ui/            # the admin panel (React + Vite + Mantine); dist/ served at / by `serve`
+deploy/              # production: runbook, launchd plist, tunnel config, deploy script
+.github/workflows/   # CI (tests/lint/panel build) + CD (deploy to the Mac mini)
 pipeline.py          # entry-point shim
 pyproject.toml       # package metadata, deps, `ai-video-maker` console script
 ```
