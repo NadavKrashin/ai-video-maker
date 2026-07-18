@@ -1,6 +1,8 @@
 // Orders tab: paid web orders (Firestore when configured, else Cloudinary
 // folders). Each row shows the customer/package metadata the frontend saved
-// and the order's pipeline state; one click ingests it as a project.
+// and the order's REAL pipeline position — not just "ingested or not" but
+// how far its project has come (storyboard review, clips rendered, final
+// ready), joined live from the project snapshot. Sortable by status.
 //
 // Ingest outcomes are first-class: while a job runs the tab live-polls, and
 // when it settles the row keeps saying what happened — green "ingested" or a
@@ -10,20 +12,49 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from './api.js';
 import { Btn, C, Modal, S } from './ui.jsx';
 
-const statusChip = (o) => {
-  if (o.project) return ['ingested', C.ok];
-  if (o.ingesting) return ['ingesting…', C.run];
-  if (o.ingest_state === 'failed') return ['ingest failed', C.err];
-  if (o.ingest_state === 'cancelled') return ['ingest cancelled', C.muted];
-  if (o.status && o.status !== 'new') return [o.status, C.run];
-  return ['new', C.accentSoft];
-};
+// The one place that decides what an order's chip says. rank orders the
+// "By status" sort: most actionable first, finished movies last.
+function stage(o) {
+  if (!o.project && o.ingest_state === 'failed') {
+    return { text: 'ingest failed', color: C.err, rank: 0 };
+  }
+  if (o.ingesting) return { text: 'ingesting…', color: C.run, rank: 2 };
+  if (o.active_job) {
+    return { text: `${o.active_job.command} running…`, color: C.run, rank: 2 };
+  }
+  const p = o.progress;
+  if (p) {
+    if (p.final) return { text: 'final ready', color: C.ok, rank: 8 };
+    if (p.clips_total > 0 && p.clips_rendered === p.clips_total) {
+      return { text: 'needs combine', color: C.run, rank: 5 };
+    }
+    if (p.clips_rendered > 0) {
+      return { text: `clips ${p.clips_rendered}/${p.clips_total}`, color: C.run, rank: 4 };
+    }
+    if (p.clips_total > 0) return { text: 'review storyboard', color: C.accentSoft, rank: 3 };
+    return { text: 'needs storyboard', color: C.accentSoft, rank: 3 };
+  }
+  if (o.project) return { text: 'ingested', color: C.ok, rank: 3 };
+  if (o.status && o.status !== 'new') return { text: o.status, color: C.run, rank: 9 };
+  return { text: 'new', color: C.accentSoft, rank: 1 };
+}
+
+const progressLine = (p) => p && [
+  `${p.photos} photos`,
+  p.clips_total > 0
+    ? `${p.clips_rendered}/${p.clips_total} clips`
+    : 'no storyboard yet',
+  p.clips_stale > 0 && `${p.clips_stale} outdated`,
+  p.placeholders > 0 && `${p.placeholders} generic prompt(s)`,
+  p.final && 'final ready'
+].filter(Boolean).join(' · ');
 
 export default function OrdersTab({ onOpenProject, notify }) {
   const [orders, setOrders] = useState(null);
   const [busyRow, setBusyRow] = useState('');
   const [checking, setChecking] = useState(false);
   const [logJob, setLogJob] = useState(null);
+  const [sort, setSort] = useState('date');
   const ingestingRef = useRef(new Set());
 
   const refresh = useCallback(async () => {
@@ -44,9 +75,9 @@ export default function OrdersTab({ onOpenProject, notify }) {
   }, [notify]);
   useEffect(() => { refresh(); }, [refresh]);
 
-  // Live-poll while any ingest is running so the outcome shows up by itself.
+  // Live-poll while anything is running so outcomes show up by themselves.
   useEffect(() => {
-    if (!(orders || []).some((o) => o.ingesting)) return undefined;
+    if (!(orders || []).some((o) => o.ingesting || o.active_job)) return undefined;
     const timer = setInterval(refresh, 3000);
     return () => clearInterval(timer);
   }, [orders, refresh]);
@@ -79,6 +110,11 @@ export default function OrdersTab({ onOpenProject, notify }) {
   };
 
   if (orders === null) return <p style={{ color: C.muted }}>Loading orders…</p>;
+
+  const shown = sort === 'status'
+    ? [...orders].sort((a, b) => stage(a).rank - stage(b).rank)
+    : orders; // the server already returns newest first
+
   return (
     <div>
       {logJob && (
@@ -89,13 +125,19 @@ export default function OrdersTab({ onOpenProject, notify }) {
           </pre>
         </Modal>
       )}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <h2 style={{ margin: 0, fontSize: 17 }}>Orders</h2>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 8 }}>
+        <h2 style={{ margin: 0, fontSize: 17, flex: 1 }}>Orders</h2>
+        <select style={{ ...S.input, width: 170 }} value={sort}
+          title="Sort the orders"
+          onChange={(e) => setSort(e.target.value)}>
+          <option value="date">Newest first</option>
+          <option value="status">By status (todo first)</option>
+        </select>
         <Btn ghost busy={checking} onClick={checkNow}>Check for new orders now</Btn>
       </div>
-      {orders.length === 0 && <p style={{ color: C.muted }}>No orders found.</p>}
-      {orders.map((o) => {
-        const [text, color] = statusChip(o);
+      {shown.length === 0 && <p style={{ color: C.muted }}>No orders found.</p>}
+      {shown.map((o) => {
+        const { text, color } = stage(o);
         const failed = !o.project && o.ingest_state === 'failed';
         const details = [
           o.order_id,
@@ -104,11 +146,15 @@ export default function OrdersTab({ onOpenProject, notify }) {
           o.phone, o.email,
           o.uploaded_at && `uploaded ${o.uploaded_at}`
         ].filter(Boolean).join(' · ');
+        const progress = progressLine(o.progress);
         return (
           <div key={o.folder || o.order_id} style={{ ...S.card, display: 'flex', gap: 12, alignItems: 'center' }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontWeight: 700 }}>{o.customer || o.folder || o.order_id}</div>
               <div style={{ color: C.muted, fontSize: 12 }}>{details}</div>
+              {progress && (
+                <div style={{ color: C.ink, fontSize: 12, marginTop: 2 }}>{progress}</div>
+              )}
               {o.blessing && (
                 <div style={{ color: C.muted, fontSize: 12, marginTop: 2, fontStyle: 'italic' }}
                   title="The customer's blessing / dedication text">

@@ -470,15 +470,47 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
             if job.command == "ingest" and folder and folder not in latest_ingest:
                 latest_ingest[folder] = job
 
+        def project_progress(project: str) -> Optional[dict[str, Any]]:
+            """The order's real pipeline position, from its project snapshot."""
+            try:
+                ws = Workspace.for_project(project)
+                if not ws.root.exists():
+                    return None
+                snap = _pipeline(ws).snapshot()
+            except Exception:  # noqa: BLE001 - a broken project can't hide its order
+                return None
+            clips = snap.get("clips") or []
+            return {
+                "photos": len(snap.get("input_images") or []),
+                "clips_total": len(clips),
+                "clips_rendered": sum(1 for c in clips if c.get("rendered")),
+                "clips_stale": sum(1 for c in clips if c.get("stale")),
+                "final": bool(snap.get("final_video")),
+                "next_step": snap.get("next_step", ""),
+                "placeholders": len(
+                    (snap.get("storyboard") or {}).get("placeholder_transitions")
+                    or []
+                ),
+            }
+
+        def active_job_on(project: str) -> Optional[dict[str, str]]:
+            for job in jobs.list(project=project):
+                if job.state in ("queued", "running", "cancelling"):
+                    return {"command": job.command, "state": job.state}
+            return None
+
         def row(folder: str) -> dict[str, Any]:
             parsed = parse_order_folder(folder)
             job = latest_ingest.get(folder)
+            project = ingested.get(folder, "")
             return {
                 "folder": folder,
                 "order_id": parsed["order_id"],
                 "customer": parsed["customer"],
                 "uploaded_at": parsed["stamp"],
-                "project": ingested.get(folder, ""),
+                "project": project,
+                "progress": project_progress(project) if project else None,
+                "active_job": active_job_on(project) if project else None,
                 "ingesting": folder in pending_ingest,
                 "ingest_state": job.state if job else "",
                 "ingest_error": job.error if job else "",
@@ -494,7 +526,8 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
                 entry = row(leaf) if leaf else {
                     "folder": "", "order_id": order.order_id,
                     "customer": order.customer, "uploaded_at": "",
-                    "project": "", "ingesting": False,
+                    "project": "", "progress": None, "active_job": None,
+                    "ingesting": False,
                     "ingest_state": "", "ingest_error": "", "ingest_job": "",
                 }
                 entry.update({
