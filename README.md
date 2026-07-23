@@ -73,13 +73,15 @@ the `ADMIN_API_TOKEN` from `.env`:
   build): everything the CLI can do, from a browser — order intake, creating
   a project from scratch and uploading/removing photos (`init`), storyboards
   from photos or from a typed idea (with style prompt / duration /
-  no-analyze / frame-count options), reviewing and editing every transition
-  (motion prompt, duration, sound prompt, global motion prompt), rendering
-  all clips or regenerating one, per-clip audio redo, combine/finalize with
+  no-analyze / frame-count options), regenerating a single styled image,
+  reviewing and editing every transition (motion prompt, duration, sound
+  prompt, global motion prompt), rendering all clips or regenerating one,
+  per-clip audio redo, uploading your own music track, combine/finalize with
   intro/credits/letter toggles, and `run` for the whole chain. Jobs stream
   their logs and can be cancelled from the panel.
-- **API**: order list, per-project status, storyboard read/edit, photos and
-  clip playback, and actions (ingest / storyboard / render / redo one clip /
+- **API**: order list, per-project status, storyboard read/edit, photos, a
+  custom music-bed upload (`POST`/`DELETE /api/projects/<name>/music`), and
+  clip playback, plus actions (ingest / storyboard / render / redo one clip /
   audio / combine / run) that run as **background jobs** — one at a time,
   with their logs available at `/api/jobs/<id>`. `POST /api/jobs/<id>/cancel`
   cancels a job: a queued job is dropped immediately; a running one shows
@@ -176,7 +178,7 @@ insertions, number in tens (`10.jpg, 20.jpg, 30.jpg`).
 | Add an image between 2 and 3 | copy it in as `input_images/2a.jpg`, then:<br>`python pipeline.py storyboard myfilm`<br>`python pipeline.py render myfilm` | 1 styling + 2 clips |
 | Remove image 2 | `rm projects/myfilm/input_images/2.jpg projects/myfilm/styled_images/2.png`, then:<br>`python pipeline.py storyboard myfilm`<br>`python pipeline.py render myfilm` | 1 clip |
 | Swap image 2 for a different photo | overwrite `input_images/2.jpg` with the new file, then:<br>`python pipeline.py storyboard myfilm` (asks before re-styling)<br>`python pipeline.py render myfilm --clip 1_to_2 --clip 2_to_3` | 1 styling + 2 clips |
-| Re-style one image (new roll of the styling dice) | `rm projects/myfilm/styled_images/2.png`, then:<br>`python pipeline.py storyboard myfilm`<br>`python pipeline.py render myfilm --clip 1_to_2 --clip 2_to_3` | 1 styling + 2 clips |
+| Re-style one image (new roll of the styling dice) | `python pipeline.py storyboard myfilm --restyle-frame 2.png` — its adjacent clips are marked outdated, then:<br>`python pipeline.py render myfilm --clip 1_to_2 --clip 2_to_3` | 1 styling + 2 clips |
 | Rebuild the movie after any of the above | `python pipeline.py combine myfilm --force` | free (local) |
 | Redo all clips (e.g. after big storyboard edits) | `python pipeline.py render myfilm --force -y` | all clips |
 | Redo styling + analysis from scratch | `python pipeline.py storyboard myfilm --force` | all stylings + 1 analysis |
@@ -445,7 +447,7 @@ project name as its first argument (except `orders`, which is project-less).
 | `serve` | — (no project argument) `--host`, `--port`, `--no-watch` |
 | `ingest` | `<order>` (id / folder / unique fragment), `--force`, `--dry-run` |
 | `init` | — |
-| `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--replan-clip ID` (repeatable; fresh motion prompt for that pair), `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
+| `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--replan-clip ID` (repeatable; fresh motion prompt for that pair), `--restyle-frame NAME` (repeatable; re-style that frame, e.g. `2.png`, marking adjacent clips outdated), `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
 | `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 5\|10`, `--add-audio`, `--no-audio` |
 | `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-prompt`, `--music-file PATH` |
 | `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--add-audio`, `--no-audio`, `--final`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter` |
@@ -536,7 +538,7 @@ Everything below lives inside the project workspace, `projects/<name>/`:
 | `styled_images/` | Styled frames (`001_styled.png`, …) |
 | `generated_frames/` | Idea-based generated frames (`001.png`, …) |
 | `clips/` | Rendered clips (`001_to_002.mp4`, …) |
-| `output/` | `final_video.mp4` + `music.mp3` (the generated bed, when audio is on) |
+| `output/` | `final_video.mp4` + `music.mp3` (the generated bed, when audio is on) + `music_custom.mp3` (an uploaded track, when you supply your own) |
 | `storyboard/` | `storyboard.json` (editable source of truth), `storyboard.md` (readable view), `preview.html` (visual contact sheet — open it in a browser) |
 | `logs/` | Run logs + `state.json` |
 | `failed_jobs/` | `failed_jobs.json` |
@@ -581,9 +583,12 @@ python pipeline.py audio myfilm --music-prompt "Upbeat playful ukulele, no vocal
 python pipeline.py run myfilm --no-audio
 ```
 
-The music bed comes from `--music-file` if given, else the project's existing
-`output/music.mp3`, else it is generated from the music prompt (storyboard's
-`music_prompt`, or `--music-prompt`, or config).
+The music bed comes from `--music-file` if given, else an uploaded custom track
+(`output/music_custom.mp3` — dropped in via the panel's "Upload my own music",
+and used as-is for the whole movie: it wins over generation and survives
+`--force`), else the project's existing generated `output/music.mp3`, else it is
+generated from the music prompt (storyboard's `music_prompt`, or
+`--music-prompt`, or config).
 
 Cost is roughly **$0.20–0.50 per full video** (MMAudio is ~$0.001/s; music is
 one short call). Requires `ffmpeg`/`ffprobe` on your `PATH`.

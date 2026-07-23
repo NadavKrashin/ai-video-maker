@@ -271,8 +271,9 @@ function RenderPanel({ ask, locked, info }) {
   );
 }
 
-function AudioPanel({ ask, locked, info }) {
+function AudioPanel({ ask, locked, info, onUploadMusic, onRemoveMusic, musicBusy }) {
   const [musicPrompt, setMusicPrompt] = useState('');
+  const musicInputRef = useRef(null);
   const start = () => {
     const o = {};
     if (musicPrompt.trim()) o.music_prompt = musicPrompt.trim();
@@ -282,7 +283,9 @@ function AudioPanel({ ask, locked, info }) {
         info.silentRendered > 0
           ? `Adds synced sound effects to ${info.silentRendered} silent clip(s) (clips that already have SFX are skipped).`
           : 'All rendered clips already have SFX — they are skipped.',
-        'Generates the background music track if it doesn\'t exist yet, then rebuilds the final video with everything mixed.',
+        info.customMusic
+          ? 'Uses your uploaded music track for the background bed (no music is generated), then rebuilds the final video with everything mixed.'
+          : 'Generates the background music track if it doesn\'t exist yet, then rebuilds the final video with everything mixed.',
         'Audio jobs are much cheaper than clip renders.'
       ],
       cost: 'fal', label: 'Run audio', command: 'audio', options: o
@@ -297,10 +300,37 @@ function AudioPanel({ ask, locked, info }) {
       </PanelIntro>
       <Group align="flex-end">
         <TextInput label="Music prompt override (optional)" style={{ flex: 1 }} miw={240}
-          placeholder="(config music_prompt)"
+          placeholder={info.customMusic ? '(custom music uploaded — prompt unused)' : '(config music_prompt)'}
+          disabled={info.customMusic}
           value={musicPrompt} onChange={(e) => setMusicPrompt(e.target.value)} />
         <Button disabled={locked} onClick={start}>Run audio…</Button>
       </Group>
+      <input ref={musicInputRef} type="file" accept="audio/*"
+        style={{ display: 'none' }}
+        onChange={(e) => { onUploadMusic(e.target.files?.[0]); e.target.value = ''; }} />
+      <Group mt="md" gap="sm" align="center">
+        <Text size="sm" fw={600}>Background music:</Text>
+        {info.customMusic ? (
+          <>
+            <Badge variant="light" color="green">custom track uploaded</Badge>
+            <Button variant="default" size="xs" loading={musicBusy}
+              onClick={() => musicInputRef.current?.click()}>Replace</Button>
+            <Button variant="subtle" color="red" size="xs" onClick={onRemoveMusic}>
+              Remove
+            </Button>
+          </>
+        ) : (
+          <>
+            <Text size="xs" c="dimmed">AI-generated from the music prompt</Text>
+            <Button variant="default" size="xs" loading={musicBusy}
+              onClick={() => musicInputRef.current?.click()}>Upload my own music…</Button>
+          </>
+        )}
+      </Group>
+      <Text size="xs" c="dimmed" mt={4}>
+        An uploaded track is used as-is for the whole movie and is never
+        regenerated. Applied on the next Audio or Combine run.
+      </Text>
     </div>
   );
 }
@@ -440,6 +470,7 @@ export default function ProjectDetail({ name, onBack }) {
   const [showPhotos, setShowPhotos] = useState(false);
   const [openPanel, setOpenPanel] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [musicBusy, setMusicBusy] = useState(false);
   const [confirm, setConfirm] = useState(null);
   const pollRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -505,7 +536,8 @@ export default function ProjectDetail({ name, onBack }) {
     rendered,
     missing: total - rendered,
     silentRendered: (snap.clips || []).filter((c) => c.rendered && !c.sfx).length,
-    finalExists: Boolean(snap.final_video)
+    finalExists: Boolean(snap.final_video),
+    customMusic: Boolean(snap.custom_music)
   };
 
   const stepStatus = (id) => {
@@ -615,6 +647,55 @@ export default function ProjectDetail({ name, onBack }) {
     });
   };
 
+  // Re-style one frame from scratch (spends image credits). Runs the
+  // storyboard command with restyle_frames; reconcile then marks the
+  // adjacent clips outdated (never deletes them).
+  const regenerateImage = (inputName) => {
+    if (needsSave()) return;
+    const styledName = inputName.replace(/\.[^.]+$/, '.png');
+    ask({
+      title: `Regenerate the styled image for ${inputName}?`,
+      lines: [
+        `Re-styles ${inputName} into a fresh cartoon frame, replacing styled_images/${styledName}.`,
+        'Spends OpenAI image credits (one image, plus a small vision call to re-plan the motion prompts on each side of this frame).',
+        'Any clips next to this frame are marked "outdated" so you can regenerate them against the new image — they are never deleted automatically.'
+      ],
+      cost: 'openai', danger: true,
+      label: 'Regenerate image',
+      action: () => run('storyboard', { restyle_frames: [styledName] }, `restyle ${styledName}`)
+    });
+  };
+
+  const uploadMusic = async (file) => {
+    if (!file) return;
+    setMusicBusy(true);
+    try {
+      await api.uploadMusic(name, file);
+      notify('Custom music uploaded', 'green');
+      await load();
+    } catch (e) { notify(`Music upload failed: ${e.message}`, 'red'); }
+    finally { setMusicBusy(false); }
+  };
+
+  const removeMusic = () => {
+    ask({
+      title: 'Remove custom music?',
+      lines: [
+        'Deletes the uploaded music track from this project.',
+        'The next Audio or Combine run generates a music bed from the music prompt instead.'
+      ],
+      cost: 'free', danger: true,
+      label: 'Remove music',
+      action: async () => {
+        try {
+          await api.deleteMusic(name);
+          notify('Custom music removed');
+          await load();
+        } catch (e) { notify(`Remove failed: ${e.message}`, 'red'); }
+      }
+    });
+  };
+
   const upload = async (files) => {
     if (!files?.length) return;
     setUploading(true);
@@ -672,7 +753,8 @@ export default function ProjectDetail({ name, onBack }) {
   const panels = {
     storyboard: <StoryboardPanel ask={ask} locked={locked} info={info} />,
     render: <RenderPanel ask={ask} locked={locked} info={info} />,
-    audio: <AudioPanel ask={ask} locked={locked} info={info} />,
+    audio: <AudioPanel ask={ask} locked={locked} info={info}
+      onUploadMusic={uploadMusic} onRemoveMusic={removeMusic} musicBusy={musicBusy} />,
     combine: <CombinePanel ask={ask} locked={locked} info={info} />,
     runall: <RunAllPanel ask={ask} locked={locked} info={info} />
   };
@@ -772,16 +854,24 @@ export default function ProjectDetail({ name, onBack }) {
               const styledName = img.replace(/\.[^.]+$/, '.png');
               const styled = styledImages.includes(styledName);
               return (
-                <Stack key={img} gap={2}>
+                <Stack key={img} gap={2} w={120}>
                   <Image w={120} radius="sm" alt={img}
                     src={fileUrl(name, styled ? 'styled' : 'input', styled ? styledName : img)} />
-                  <Group justify="space-between" gap={4}>
-                    <Text size="xs" c="dimmed">{img}</Text>
+                  <Group justify="space-between" gap={4} wrap="nowrap">
+                    <Text size="xs" c="dimmed" truncate title={img}>{img}</Text>
                     <UnstyledButton title={`Delete ${img}`} onClick={() => deletePhoto(img)}
                       style={{ color: 'var(--mantine-color-red-5)', fontSize: 13 }}>
                       ✕
                     </UnstyledButton>
                   </Group>
+                  {styled && (
+                    <Button variant="subtle" size="compact-xs" disabled={locked}
+                      loading={busyAction === `restyle ${styledName}`}
+                      onClick={() => regenerateImage(img)}
+                      title="Re-style this photo into a fresh cartoon frame (spends image credits). Adjacent clips are marked outdated.">
+                      Regenerate image
+                    </Button>
+                  )}
                 </Stack>
               );
             })}

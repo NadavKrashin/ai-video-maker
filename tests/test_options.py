@@ -10,6 +10,23 @@ def _combine_options(*argv: str) -> RunOptions:
     return RunOptions.from_args(args)
 
 
+def _storyboard_options(*argv: str) -> RunOptions:
+    args = build_parser().parse_args(["storyboard", "proj", *argv])
+    return RunOptions.from_args(args)
+
+
+class TestRestyleFrame:
+    """--restyle-frame = the per-frame 'regenerate this image' knob."""
+
+    def test_repeatable_collects_frames(self):
+        opts = _storyboard_options("--restyle-frame", "a.png",
+                                   "--restyle-frame", "b.png")
+        assert opts.restyle_frames == ["a.png", "b.png"]
+
+    def test_absent_is_none(self):
+        assert _storyboard_options().restyle_frames is None
+
+
 class TestFinalFlag:
     """--final = --intro --credits-photos in one flag."""
 

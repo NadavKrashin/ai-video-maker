@@ -50,6 +50,15 @@ export const api = {
     request(`/api/projects/${encodeURIComponent(name)}/photos/${encodeURIComponent(filename)}`, {
       method: 'DELETE'
     }),
+  uploadMusic: (name, file) => {
+    const fd = new FormData();
+    fd.append('file', file, file.name);
+    return request(`/api/projects/${encodeURIComponent(name)}/music`, {
+      method: 'POST', body: fd
+    });
+  },
+  deleteMusic: (name) =>
+    request(`/api/projects/${encodeURIComponent(name)}/music`, { method: 'DELETE' }),
   saveStoryboard: (name, storyboard) =>
     request(`/api/projects/${encodeURIComponent(name)}/storyboard`, {
       method: 'PUT', body: JSON.stringify(storyboard)

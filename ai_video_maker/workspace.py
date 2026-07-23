@@ -83,6 +83,14 @@ class Workspace:
         return self.output_dir / "music.mp3"
 
     @property
+    def custom_music_file(self) -> Path:
+        """A user-supplied music track (uploaded via the panel / --music-file).
+
+        Kept separate from the AI-generated ``music.mp3`` so it always wins and
+        is never overwritten by a regeneration, even under ``--force``."""
+        return self.output_dir / "music_custom.mp3"
+
+    @property
     def state_file(self) -> Path:
         return self.logs_dir / "state.json"
 

@@ -782,3 +782,53 @@ class TestClipName:
         a = workspace.styled_images_dir / "alpha.png"
         b = workspace.styled_images_dir / "002.png"
         assert pipeline._clip_name(a, b).name == "alpha_to_002.mp4"
+
+
+class TestRestyleImages:
+    """--restyle-frame / the panel's 'Regenerate image': force one styled frame."""
+
+    def test_restyle_forces_named_frame_only(self, make_pipeline, workspace):
+        pairs = _make_frame_pairs(workspace, ["a", "b", "c"])
+        images = [src for src, _ in pairs]
+        p = make_pipeline(dry_run=True, restyle_frames=["b.png"])
+        p._style_images(images, {})
+        assert p.summary.styled_created == 1  # b would be re-styled
+        assert p.summary.styled_skipped == 2  # a, c reused untouched
+
+    def test_unknown_restyle_frame_raises(self, make_pipeline, workspace):
+        pairs = _make_frame_pairs(workspace, ["a", "b"])
+        images = [src for src, _ in pairs]
+        p = make_pipeline(dry_run=True, restyle_frames=["z.png"])
+        with pytest.raises(PipelineError, match="z.png"):
+            p._style_images(images, {})
+
+
+class TestResolveMusicFile:
+    """Custom uploaded music beats generation and survives --force."""
+
+    def test_prefers_uploaded_custom_music(self, make_pipeline, workspace):
+        p = make_pipeline()
+        _touch(workspace.music_file, b"generated")
+        _touch(workspace.custom_music_file, b"custom")
+        assert p._resolve_music_file() == workspace.custom_music_file
+
+    def test_custom_music_wins_even_under_force(self, make_pipeline, workspace):
+        p = make_pipeline(force=True)
+        _touch(workspace.music_file, b"generated")
+        _touch(workspace.custom_music_file, b"custom")
+        assert p._resolve_music_file() == workspace.custom_music_file
+
+    def test_falls_back_to_generated_music(self, make_pipeline, workspace):
+        p = make_pipeline()
+        _touch(workspace.music_file, b"generated")
+        assert p._resolve_music_file() == workspace.music_file
+
+
+class TestSnapshotMusic:
+    def test_reports_custom_and_generated_music(self, pipeline, workspace):
+        snap = pipeline.snapshot()
+        assert snap["custom_music"] is False and snap["music"] is False
+        _touch(workspace.custom_music_file, b"custom")
+        _touch(workspace.music_file, b"generated")
+        snap = pipeline.snapshot()
+        assert snap["custom_music"] is True and snap["music"] is True

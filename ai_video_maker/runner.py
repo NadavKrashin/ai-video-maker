@@ -517,6 +517,21 @@ class Pipeline:
         targets = self._styled_targets(images)
         jobs = list(zip(images, targets))
 
+        # Explicitly requested re-styles (--restyle-frame / the panel's
+        # "Regenerate image" button): redo these frames from scratch even when
+        # the source is unchanged, with no confirm gate (an explicit request,
+        # like render --clip). A typo must fail loudly, not silently no-op.
+        restyle = set(self.options.restyle_frames or [])
+        if restyle:
+            valid = {dst.name for dst in targets}
+            unknown = restyle - valid
+            if unknown:
+                raise PipelineError(
+                    "No such styled frame(s) to regenerate: "
+                    f"{', '.join(sorted(unknown))}.\n"
+                    "Valid frames: " + ", ".join(sorted(valid))
+                )
+
         redo: dict[Path, str] = {}  # styled path -> reason
         if not self.force:
             for src, dst in jobs:
@@ -549,7 +564,7 @@ class Pipeline:
             src, dst = job
             job_id = f"style:{dst.name}"
 
-            if dst.exists() and not self.force and dst not in redo:
+            if dst.exists() and not self.force and dst not in redo and dst.name not in restyle:
                 with self._lock:
                     self.summary.styled_skipped += 1
                 logger.info("Skip styled (done): %s", dst.name)
@@ -1727,7 +1742,9 @@ class Pipeline:
     def _resolve_music_file(self) -> Optional[Path]:
         """Decide which music track to lay under the final video.
 
-        --music-file wins (and must exist). Otherwise the project's
+        --music-file wins (and must exist). Next comes an uploaded custom track
+        (output/music_custom.mp3, e.g. from the panel) — it always wins over
+        generation and survives --force. Otherwise the project's
         output/music.mp3 is reused when present (unless --force), and failing
         that a track is generated from the resolved music prompt. Returns None
         to proceed without music.
@@ -1738,6 +1755,10 @@ class Pipeline:
                 raise PipelineError(f"--music-file not found: {supplied}")
             logger.info("Using music file: %s", supplied)
             return supplied
+        custom = self.workspace.custom_music_file
+        if custom.exists():
+            logger.info("Using uploaded custom music: %s", custom)
+            return custom
         default = self.workspace.music_file
         if default.exists() and not self.force:
             logger.info("Reusing music file: %s", default)
@@ -1882,6 +1903,8 @@ class Pipeline:
             "clips": clips,
             "stray_clips": stray,
             "final_video": ws.final_video.exists(),
+            "music": ws.music_file.exists(),
+            "custom_music": ws.custom_music_file.exists(),
             "has_failed_jobs": self.failed.path.exists(),
             "next_step": next_step,
         }

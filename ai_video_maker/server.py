@@ -78,6 +78,10 @@ _ALLOWED_OPTIONS = {f.name for f in dataclasses.fields(RunOptions)}
 # Uploads into input_images/ — the same formats a user would drop there.
 _PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".bmp", ".tif", ".tiff"}
 
+# Custom music-bed uploads. ffmpeg reads by content, not extension, so the
+# bytes are stored under a fixed name regardless of what was uploaded.
+_AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus"}
+
 # Per-file cap for photo uploads. Phone photos top out around 15-20 MB; this
 # only exists so an unauthenticated-looking-but-authenticated mistake (or a
 # stolen token) can't fill the disk through the panel.
@@ -729,6 +733,42 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         if not path.is_file():
             raise HTTPException(status_code=404, detail="Not found")
         path.unlink()
+        return {"ok": True}
+
+    @app.post("/api/projects/{name}/music", dependencies=guarded)
+    async def upload_music(
+        name: str, file: UploadFile = File(...)
+    ) -> dict[str, Any]:
+        """Set a custom music bed (the UI twin of --music-file).
+
+        Saved as output/music_custom.mp3, which the pipeline uses instead of
+        generating a track — it wins over generation and survives --force.
+        """
+        ws = _workspace(name)
+        suffix = Path(file.filename or "").suffix.lower()
+        if suffix not in _AUDIO_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Not an audio file: {file.filename!r} "
+                       f"(accepted: {', '.join(sorted(_AUDIO_EXTENSIONS))})",
+            )
+        data = await file.read()
+        if len(data) > _MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Music file is larger than "
+                       f"{_MAX_UPLOAD_BYTES // (1024 * 1024)} MB",
+            )
+        dst = ws.custom_music_file
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(data)
+        return {"ok": True}
+
+    @app.delete("/api/projects/{name}/music", dependencies=guarded)
+    async def delete_music(name: str) -> dict[str, Any]:
+        """Remove the custom music bed (revert to AI-generated music)."""
+        ws = _workspace(name)
+        ws.custom_music_file.unlink(missing_ok=True)
         return {"ok": True}
 
     @app.get("/api/projects", dependencies=guarded)

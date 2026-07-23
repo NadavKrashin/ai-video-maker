@@ -156,6 +156,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "didn't change; everything else is kept. If its clip "
                          "is already rendered it gets marked outdated. "
                          "Repeatable.")
+    sp.add_argument("--restyle-frame", action="append", metavar="NAME",
+                    help="Re-style this frame from scratch (styled png name, "
+                         "e.g. beach.png) even though its source is unchanged "
+                         "— spends image credits. The adjacent clips are marked "
+                         "outdated (never deleted). Repeatable.")
     sp.add_argument("--duration", type=int, choices=sorted(VALID_DURATIONS),
                     help="Force every clip to this length (5 or 10 seconds); "
                          "omit to let the planner mix lengths.")
