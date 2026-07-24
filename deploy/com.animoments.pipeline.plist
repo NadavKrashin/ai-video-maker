@@ -20,7 +20,7 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/nadavkrashin/Documents/Code/Personal/ai-video-maker/.venv/bin/python</string>
+    <string>/Users/atlas/Documents/code/ai-video-maker/.venv/bin/python</string>
     <string>pipeline.py</string>
     <string>serve</string>
     <string>--host</string>
@@ -30,7 +30,7 @@
   </array>
 
   <key>WorkingDirectory</key>
-  <string>/Users/nadavkrashin/Documents/Code/Personal/ai-video-maker</string>
+  <string>/Users/atlas/Documents/code/ai-video-maker</string>
 
   <key>RunAtLoad</key>
   <true/>
@@ -41,9 +41,9 @@
   <integer>10</integer>
 
   <key>StandardOutPath</key>
-  <string>/Users/nadavkrashin/Library/Logs/animoments/serve.log</string>
+  <string>/Users/atlas/Library/Logs/animoments/serve.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/nadavkrashin/Library/Logs/animoments/serve.log</string>
+  <string>/Users/atlas/Library/Logs/animoments/serve.log</string>
 
   <key>EnvironmentVariables</key>
   <dict>

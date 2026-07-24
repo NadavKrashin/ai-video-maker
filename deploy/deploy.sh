@@ -5,7 +5,7 @@
 # runner) on every push to main — or by hand: bash deploy/deploy.sh
 set -euo pipefail
 
-REPO="${REPO_DIR:-$HOME/Documents/Code/Personal/ai-video-maker}"
+REPO="${REPO_DIR:-$HOME/Documents/code/ai-video-maker}"
 SERVICE="com.animoments.pipeline"
 HEALTH_URL="http://127.0.0.1:8300/api/health"
 

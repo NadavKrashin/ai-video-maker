@@ -13,7 +13,7 @@
 # the admin token — a leaked token alone gets nobody in.
 
 tunnel: <TUNNEL-UUID>                       # from `cloudflared tunnel create`
-credentials-file: /Users/nadavkrashin/.cloudflared/<TUNNEL-UUID>.json
+credentials-file: /Users/atlas/.cloudflared/<TUNNEL-UUID>.json
 
 ingress:
   - hostname: admin.<your-domain>
