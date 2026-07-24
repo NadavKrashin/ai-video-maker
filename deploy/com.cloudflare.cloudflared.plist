@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- LaunchDaemon for the Cloudflare tunnel (`animoments-studio`).
+
+     Install as ROOT (a LaunchDaemon, not a LaunchAgent) — see
+     deploy/PRODUCTION.md §2. `sudo cloudflared service install` is NOT used
+     on macOS: run as root it can't find ~/.cloudflared/config.yml and writes
+     a broken plist. Stage the config under /etc/cloudflared first, then:
+
+       sudo cp deploy/com.cloudflare.cloudflared.plist /Library/LaunchDaemons/
+       sudo chown root:wheel /Library/LaunchDaemons/com.cloudflare.cloudflared.plist
+       sudo launchctl bootstrap system /Library/LaunchDaemons/com.cloudflare.cloudflared.plist
+
+     Restart:  sudo launchctl kickstart -k system/com.cloudflare.cloudflared
+     Logs:     /Library/Logs/com.cloudflare.cloudflared.err.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.cloudflare.cloudflared</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/cloudflared</string>
+    <string>--no-autoupdate</string>
+    <string>--config</string>
+    <string>/etc/cloudflared/config.yml</string>
+    <string>tunnel</string>
+    <string>run</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <!-- Don't hammer Cloudflare on a crash loop: 5s between restarts. -->
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+  <key>StandardOutPath</key>
+  <string>/Library/Logs/com.cloudflare.cloudflared.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Library/Logs/com.cloudflare.cloudflared.err.log</string>
+</dict>
+</plist>

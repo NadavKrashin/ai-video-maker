@@ -41,18 +41,47 @@ way; they never travel through GitHub. Back both up somewhere private
 
 ### 2. Cloudflare Tunnel (`cloudflared` is already installed via homebrew)
 
+The panel lives at **`studio.animoment.co.il`** behind a named tunnel
+(**`animoments-studio`**). The mini makes an *outbound* connection to
+Cloudflare's edge; no inbound port is ever opened. (`animoment.co.il` itself is
+a Cloudflare zone now — its DNS was migrated off SitesDepot; the apex/`www`
+still point at Vercel as `DNS only`/grey-cloud records, only `studio` is
+proxied.)
+
 ```bash
-cloudflared tunnel login                       # opens the browser, pick your domain
-cloudflared tunnel create animoments-admin
-cloudflared tunnel route dns animoments-admin admin.<your-domain>
+cloudflared tunnel login                  # opens the browser, pick your domain
+cloudflared tunnel create animoments-studio
+cloudflared tunnel route dns animoments-studio studio.animoment.co.il
 cp deploy/cloudflared-config.example.yml ~/.cloudflared/config.yml  # edit UUID + hostname
-cloudflared tunnel run animoments-admin        # test once in the foreground
-sudo cloudflared service install               # then install as a service
+cloudflared tunnel run animoments-studio       # test once in the foreground (Ctrl+C when done)
+```
+
+**Then install it as a daemon — but do NOT use `sudo cloudflared service
+install`.** On macOS that runs as root, whose home is `/var/root`, so it never
+finds `~/.cloudflared/config.yml` and writes a broken plist whose
+`ProgramArguments` is just `cloudflared` (no `tunnel run`). The daemon starts,
+does nothing, and the site returns **HTTP 530** ("tunnel not connected").
+Instead, stage the config where a root daemon can see it (`/etc/cloudflared`)
+and install the known-good plist committed at
+`deploy/com.cloudflare.cloudflared.plist`:
+
+```bash
+sudo mkdir -p /etc/cloudflared
+sudo cp ~/.cloudflared/config.yml /etc/cloudflared/config.yml
+sudo cp ~/.cloudflared/<TUNNEL-UUID>.json /etc/cloudflared/
+sudo sed -i '' 's#/Users/atlas/\.cloudflared#/etc/cloudflared#' /etc/cloudflared/config.yml
+sudo cp deploy/com.cloudflare.cloudflared.plist /Library/LaunchDaemons/
+sudo chown root:wheel /Library/LaunchDaemons/com.cloudflare.cloudflared.plist
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.cloudflare.cloudflared.plist
+cloudflared tunnel info animoments-studio      # should list active connections
+curl -s -o /dev/null -w "%{http_code}\n" https://studio.animoment.co.il  # 200
 ```
 
 Then in the Cloudflare dashboard → **Zero Trust → Access → Applications**:
-add `admin.<your-domain>`, policy **Allow → emails →** your email, login
-method **One-Time PIN**. Session length 24h is a good default.
+add `studio.animoment.co.il`, policy **Allow → emails →** your email, login
+method **One-Time PIN**. Session length 24h is a good default. Scope the app to
+exactly that hostname — never the bare domain or a `*.animoment.co.il`
+wildcard, or you'd gate the customer frontend too.
 
 ### 3. The server as a launchd service
 
@@ -110,7 +139,9 @@ a self-hosted runner must never run untrusted PR code).
 | Ship to production | merge PR `dev` → `main` (deploy runs itself) |
 | Deploy manually | `bash deploy/deploy.sh` on the mini |
 | Restart the server | `launchctl kickstart -k gui/$(id -u)/com.animoments.pipeline` |
+| Restart the tunnel | `sudo launchctl kickstart -k system/com.cloudflare.cloudflared` |
 | Server logs | `tail -f ~/Library/Logs/animoments/serve.log` |
+| Tunnel logs | `tail -f /Library/Logs/com.cloudflare.cloudflared.err.log` |
 | Rotate the token | edit `.env`, restart the server, re-enter it in the panel |
 | Roll back | `git revert` the bad commit on `main`, push (deploys the revert) |
 

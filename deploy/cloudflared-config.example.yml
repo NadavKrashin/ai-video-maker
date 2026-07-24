@@ -1,22 +1,29 @@
-# Cloudflare Tunnel config for the admin panel (copy to ~/.cloudflared/config.yml).
+# Cloudflare Tunnel config for the admin panel.
+# Lives at ~/.cloudflared/config.yml for the foreground test run, then gets
+# copied to /etc/cloudflared/config.yml for the root daemon (see below).
 #
 # One-time setup (needs a domain on Cloudflare, free plan is fine):
 #   cloudflared tunnel login
-#   cloudflared tunnel create animoments-admin
-#   cloudflared tunnel route dns animoments-admin admin.<your-domain>
+#   cloudflared tunnel create animoments-studio
+#   cloudflared tunnel route dns animoments-studio studio.animoment.co.il
 #   cp deploy/cloudflared-config.example.yml ~/.cloudflared/config.yml   # then edit
-#   sudo cloudflared service install        # installs its own launchd daemon
+#   cloudflared tunnel run animoments-studio    # foreground test; Ctrl+C when it works
+#
+# Install as a daemon: do NOT use `sudo cloudflared service install` on macOS —
+# run as root it can't see ~/.cloudflared/config.yml and writes a broken plist
+# (site returns HTTP 530). Stage the config under /etc/cloudflared and install
+# deploy/com.cloudflare.cloudflared.plist instead. Full steps: deploy/PRODUCTION.md §2.
 #
 # Then STRONGLY recommended: put Cloudflare Access in front (Zero Trust ->
-# Access -> Applications -> add admin.<your-domain>, policy = allow only your
+# Access -> Applications -> add studio.animoment.co.il, policy = allow only your
 # email, One-Time PIN). That way the panel needs BOTH a Cloudflare login and
 # the admin token — a leaked token alone gets nobody in.
 
 tunnel: <TUNNEL-UUID>                       # from `cloudflared tunnel create`
-credentials-file: /Users/atlas/.cloudflared/<TUNNEL-UUID>.json
+credentials-file: /Users/atlas/.cloudflared/<TUNNEL-UUID>.json  # -> /etc/cloudflared/<UUID>.json for the daemon
 
 ingress:
-  - hostname: admin.<your-domain>
+  - hostname: studio.animoment.co.il
     service: http://127.0.0.1:8300
   # Everything else that hits the tunnel gets a 404.
   - service: http_status:404
