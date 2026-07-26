@@ -401,6 +401,26 @@ other."` Keep it to a sentence or two — it spends part of every clip's word
 budget. Editing it does **not** invalidate already-rendered clips; re-render
 with `--clip ID` (or `--force`) to apply it to existing ones.
 
+**The cast — `characters`:** the storyboard also carries a top-level
+`characters` list, one entry per person the planner saw
+(`{"id": "bald-man", "epithet": "the bald man in pink sunglasses"}`). The
+video model sees only pixels — it knows no names — so every motion prompt
+refers to people by a short appearance-only epithet, and the cast is what
+keeps that wording **identical across the whole movie**. It matters because
+`storyboard` re-plans only the pairs that changed: a targeted re-plan sees
+just its own two frames and would otherwise invent a fresh epithet for
+someone the rest of the film already calls something else. The saved cast
+rides along with every planning call, its epithets fixed; the planner adds
+only people who are genuinely new.
+
+Hand-edit an epithet to correct it (make it more distinguishing, fix a
+mis-read feature) — the panel has a Cast editor next to the global motion
+prompt, or edit `storyboard.json` directly. Because epithets are baked into
+a motion prompt when its pair is *planned*, editing the cast changes future
+plans only: it never marks a rendered clip outdated, and existing prompts
+keep their old wording until you re-plan those clips
+(`storyboard --replan-clip ID` / the panel's re-plan button).
+
 ### `render`
 
 Reads the storyboard, generates any missing key frames (idea-based projects

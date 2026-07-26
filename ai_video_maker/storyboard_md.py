@@ -17,6 +17,12 @@ def write_storyboard_markdown(storyboard: Storyboard, path: Path) -> None:
         lines.append(
             f"**Global motion (every clip):** {storyboard.global_motion_prompt}\n"
         )
+    if storyboard.characters:
+        lines.append("**Cast** (the exact wording every motion prompt uses):\n")
+        for c in storyboard.characters:
+            note = f" — {c.notes}" if c.notes else ""
+            lines.append(f"- `{c.id}`: {c.epithet}{note}")
+        lines.append("")
     durs = sorted({tr.duration for tr in storyboard.transitions})
     if len(durs) > 1:
         dur_desc = "mixed clip lengths (" + "/".join(f"{d}s" for d in durs) + ")"

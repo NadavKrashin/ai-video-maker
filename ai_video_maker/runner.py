@@ -59,7 +59,7 @@ from .media.images import (
     slugify_stem,
     verify_dimensions,
 )
-from .models import Frame, Storyboard, Transition
+from .models import Character, Frame, Storyboard, Transition
 from .options import RunOptions
 from .state import FailedJobStore, StateStore
 from .storyboard_html import write_storyboard_preview
@@ -722,9 +722,10 @@ class Pipeline:
             if changed:
                 stale_tids.append(f"{a.id}_to_{b.id}")
 
-        plans = self._plan_pairs(
+        plans, cast = self._plan_pairs(
             styled_paths, dirty, style,
             global_context=saved.global_motion_prompt if saved else "",
+            cast=saved.characters if saved else [],
         )
 
         transitions: list[Transition] = []
@@ -768,6 +769,7 @@ class Pipeline:
             target_width=self.config.target_width,
             target_height=self.config.target_height,
             global_motion_prompt=saved.global_motion_prompt if saved else "",
+            characters=cast,
             frames=frames,
             transitions=transitions,
         )
@@ -779,7 +781,8 @@ class Pipeline:
         dirty: list[int],
         style: str,
         global_context: str = "",
-    ) -> dict[int, tuple[str, int, str]]:
+        cast: Optional[list[Character]] = None,
+    ) -> tuple[dict[int, tuple[str, int, str]], list[Character]]:
         """Vision-plan the dirty pairs only: {pair index: (motion, dur, sound)}.
 
         Consecutive dirty pairs are analysed together in one call containing
@@ -788,16 +791,22 @@ class Pipeline:
         global motion prompt per pair when analysis is off (--no-analyze),
         during a dry-run, or if a call fails — a planning hiccup never sinks
         the run.
+
+        Also returns the movie's cast list: the one passed in (the saved
+        storyboard's), extended by any new people the planning calls
+        discovered. Each call receives the cast as it stands so epithets stay
+        identical across separately planned segments.
         """
+        cast = list(cast or [])
         if not dirty:
-            return {}
+            return {}, cast
         fallback = (
             self._motion_prompt(),
             self.options.duration or self.config.duration,
             "",
         )
         if self.dry_run or not self.options.analyze_frames:
-            return {i: fallback for i in dirty}
+            return {i: fallback for i in dirty}, cast
         plans: dict[int, tuple[str, int, str]] = {}
         for run in _consecutive_runs(dirty):
             segment = styled[run[0]: run[-1] + 2]
@@ -806,10 +815,11 @@ class Pipeline:
                 len(segment), len(run),
             )
             try:
-                seg_plans = self.openai.analyze_frame_transitions(
+                seg_plans, cast = self.openai.analyze_frame_transitions(
                     segment, style,
                     default_duration=self.options.duration,
                     global_context=global_context,
+                    cast=cast,
                 )
                 for offset, i in enumerate(run):
                     plans[i] = seg_plans[offset]
@@ -820,7 +830,7 @@ class Pipeline:
                 )
                 for i in run:
                     plans[i] = fallback
-        return plans
+        return plans, cast
 
     def mark_clips_outdated(self, tids: list[str]) -> list[str]:
         """Public entry point for the admin API; returns the clip files marked.

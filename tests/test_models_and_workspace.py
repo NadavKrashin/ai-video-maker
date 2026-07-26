@@ -6,6 +6,7 @@ import pytest
 from ai_video_maker.clients.openai_client import OpenAIClient
 from ai_video_maker.errors import InvalidProjectName, StoryboardError
 from ai_video_maker.models import (
+    Character,
     Frame,
     Storyboard,
     Transition,
@@ -65,6 +66,16 @@ class TestChangedTransitionIds:
         # Nothing was rendered from a pair that did not exist before.
         before = Storyboard(project_title="t", style="s", frames=[], transitions=[])
         assert changed_transition_ids(before, self._sb()) == []
+
+    def test_cast_edit_leaves_rendered_clips_alone(self):
+        # Unlike the global motion prompt, epithets are NOT prepended at
+        # render time — they are baked into a motion prompt when the pair is
+        # planned. An already-rendered clip therefore still matches its own
+        # prompt; picking up a new epithet takes an explicit re-plan.
+        after = self._sb(
+            characters=[Character(id="bald-man", epithet="the bald man")]
+        )
+        assert changed_transition_ids(self._sb(), after) == []
 
     def test_no_previous_storyboard_marks_nothing(self):
         assert changed_transition_ids(None, self._sb()) == []

@@ -67,6 +67,11 @@ def write_storyboard_preview(storyboard: Storyboard, root: Path, path: Path) -> 
             "<br><b>Global motion (every clip):</b> "
             f"{html.escape(storyboard.global_motion_prompt)}"
         )
+    if storyboard.characters:
+        cast = "; ".join(
+            html.escape(c.epithet) for c in storyboard.characters
+        )
+        parts.append(f"<br><b>Cast (how prompts name people):</b> {cast}")
     parts.append(
         f"<br><b>Output:</b> {storyboard.target_width}x{storyboard.target_height}, "
         f"{len(storyboard.transitions)} clip(s)</div>"

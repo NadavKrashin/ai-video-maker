@@ -500,9 +500,10 @@ function RunAllPanel({ ask, locked, info }) {
 
 // ------------------------------ main view ---------------------------------- #
 
-// Sentinel id in the `dirty` set for the storyboard-level global motion
-// prompt (transition ids never collide with it).
+// Sentinel ids in the `dirty` set for the storyboard-level fields — the
+// global motion prompt and the cast list (transition ids never collide).
 const GLOBAL_EDIT = '__global_motion__';
+const CAST_EDIT = '__characters__';
 
 const STEPS = [
   { id: 'storyboard', n: 1, name: 'Storyboard', caption: 'Style photos & plan each clip' },
@@ -561,6 +562,9 @@ export default function ProjectDetail({ name, onBack }) {
           fresh.transitions = fresh.transitions.map((t) => editedById[t.id] || t);
           if (dirtyRef.current.has(GLOBAL_EDIT)) {
             fresh.global_motion_prompt = prev.global_motion_prompt;
+          }
+          if (dirtyRef.current.has(CAST_EDIT)) {
+            fresh.characters = prev.characters;
           }
           return fresh;
         });
@@ -734,6 +738,19 @@ export default function ProjectDetail({ name, onBack }) {
   const editGlobalMotion = (value) => {
     setStoryboard((sb) => ({ ...sb, global_motion_prompt: value }));
     setDirty((d) => new Set(d).add(GLOBAL_EDIT));
+  };
+
+  // Cast epithets feed FUTURE planning calls (they are baked into motion
+  // prompts when a pair is planned), so editing one never marks a rendered
+  // clip outdated — re-plan a clip to pick up a changed epithet.
+  const editCharacter = (id, epithet) => {
+    setStoryboard((sb) => ({
+      ...sb,
+      characters: (sb.characters || []).map(
+        (c) => (c.id === id ? { ...c, epithet } : c)
+      )
+    }));
+    setDirty((d) => new Set(d).add(CAST_EDIT));
   };
 
   const needsSave = () => {
@@ -1196,6 +1213,24 @@ export default function ProjectDetail({ name, onBack }) {
               value={storyboard.global_motion_prompt || ''}
               onChange={(e) => editGlobalMotion(e.target.value)} />
           </Card>
+          {(storyboard.characters || []).length > 0 && (
+            <Card withBorder padding="md">
+              <Text size="sm" fw={500}>Cast</Text>
+              <Text size="xs" c="dimmed" mb="xs">
+                How motion prompts name each person — the video model sees only
+                pixels, so every mention uses these exact words. Keep them
+                short, appearance-only, and distinct from each other. Edits
+                apply to clips planned from now on: re-plan a clip to pick up a
+                change.
+              </Text>
+              <Stack gap="xs">
+                {(storyboard.characters || []).map((c) => (
+                  <TextInput key={c.id} size="xs" label={c.id} value={c.epithet}
+                    onChange={(e) => editCharacter(c.id, e.target.value)} />
+                ))}
+              </Stack>
+            </Card>
+          )}
           {storyboard.transitions.map((tr) => (
             <TransitionCard key={tr.id} project={name} tr={tr} framesById={framesById}
               clip={clipsById[tr.output_path.split('/').pop()?.replace(/\.mp4$/, '')]}

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from ai_video_maker.errors import PipelineCancelled, PipelineError
-from ai_video_maker.models import Frame, Storyboard, Transition
+from ai_video_maker.models import Character, Frame, Storyboard, Transition
 
 
 def _touch(path: Path, data: bytes = b"x") -> Path:
@@ -439,6 +439,120 @@ class TestReconcileStoryboard:
         sb, replanned, stale = p._reconcile_storyboard(None, pairs)
         assert replanned == ["a_to_b", "b_to_c"] and stale == []
         assert all(t.motion_prompt == p.config.motion_prompt for t in sb.transitions)
+
+    def test_cast_is_carried_over_when_nothing_is_replanned(
+        self, make_pipeline, workspace
+    ):
+        p = self._pipeline(make_pipeline)
+        pairs = _make_frame_pairs(workspace, ["a", "b", "c"])
+        saved = _save_slug_storyboard(workspace, ["a", "b", "c"])
+        saved.characters = [Character(id="bald-man", epithet="the bald man")]
+        sb, replanned, _ = p._reconcile_storyboard(saved, pairs)
+        assert replanned == []
+        assert [c.epithet for c in sb.characters] == ["the bald man"]
+
+    def test_planning_off_still_preserves_the_cast(self, make_pipeline, workspace):
+        # --no-analyze / dry-run take the fallback path; losing the cast there
+        # would silently drop the movie's identity anchor.
+        p = self._pipeline(make_pipeline)
+        saved = _save_slug_storyboard(workspace, ["a", "b", "c"])
+        saved.characters = [Character(id="bald-man", epithet="the bald man")]
+        pairs = _make_frame_pairs(workspace, ["a", "x", "b", "c"])
+        sb, replanned, _ = p._reconcile_storyboard(saved, pairs)
+        assert replanned  # the inserted frame's pairs were (fallback-)planned
+        assert [c.epithet for c in sb.characters] == ["the bald man"]
+
+
+class TestCastAcrossPlanningCalls:
+    """The cast list is what keeps separately planned pairs naming people the
+    same way. A targeted re-plan sees only its own two frames, so without the
+    saved cast riding along it invents a fresh epithet for someone the rest of
+    the movie already calls something else — and the video model then has no
+    way to know it is the same person from clip to clip.
+    """
+
+    def _pipeline_with_planner(self, make_pipeline, new_people=None):
+        """A pipeline whose vision call is stubbed; records the cast it saw."""
+        p = make_pipeline(analyze_frames=True)
+        seen: list[list[str]] = []
+        # One batch of "new" people per call, so a multi-segment run can show
+        # the cast accumulating.
+        batches = list(new_people or [])
+
+        def fake_analyze(frames, style, default_duration=None,
+                         global_context="", cast=None):
+            seen.append([c.epithet for c in (cast or [])])
+            found = batches.pop(0) if batches else []
+            merged = list(cast or []) + [
+                Character(id=e.replace(" ", "-"), epithet=e) for e in found
+            ]
+            plans = [("planned motion", 5, "sound")] * (len(frames) - 1)
+            return plans, merged
+
+        p.openai.analyze_frame_transitions = fake_analyze
+        return p, seen
+
+    def test_saved_cast_is_handed_to_the_planner(self, make_pipeline, workspace):
+        p, seen = self._pipeline_with_planner(make_pipeline)
+        saved = _save_slug_storyboard(workspace, ["a", "b", "c"])
+        saved.characters = [
+            Character(id="bald-man", epithet="the bald man in pink sunglasses")
+        ]
+        pairs = _make_frame_pairs(workspace, ["a", "x", "b", "c"])
+        sb, _, _ = p._reconcile_storyboard(saved, pairs)
+        assert seen == [["the bald man in pink sunglasses"]]
+        assert [c.epithet for c in sb.characters] == [
+            "the bald man in pink sunglasses"
+        ]
+
+    def test_new_people_reach_the_storyboard(self, make_pipeline, workspace):
+        p, _ = self._pipeline_with_planner(
+            make_pipeline, new_people=[["the small girl with curly hair"]]
+        )
+        pairs = _make_frame_pairs(workspace, ["a", "b"])
+        sb, _, _ = p._reconcile_storyboard(None, pairs)
+        assert [c.epithet for c in sb.characters] == [
+            "the small girl with curly hair"
+        ]
+
+    def test_cast_accumulates_across_segments_in_one_run(
+        self, make_pipeline, workspace
+    ):
+        # Two non-adjacent dirty pairs = two vision calls. The second must be
+        # told what the first discovered, or the same person gets two names.
+        p, seen = self._pipeline_with_planner(
+            make_pipeline, new_people=[["the bald man"], ["the woman in red"]]
+        )
+        saved = _save_slug_storyboard(workspace, ["a", "b", "c", "d", "e"])
+        pairs = _make_frame_pairs(workspace, ["a", "b", "c", "d", "e"])
+        # Dirty the first and last pairs only, leaving a clean pair between.
+        for name in ("a", "e"):
+            path = workspace.styled_images_dir / f"{name}.png"
+            path.write_bytes(b"changed")
+        sb, _, _ = p._reconcile_storyboard(saved, pairs)
+        assert seen == [[], ["the bald man"]]
+        assert [c.epithet for c in sb.characters] == [
+            "the bald man", "the woman in red",
+        ]
+
+    def test_planning_failure_keeps_the_cast_intact(self, make_pipeline, workspace):
+        # "A planning hiccup never sinks the run" — and must not wipe the cast.
+        p = make_pipeline(analyze_frames=True)
+
+        def boom(*_a, **_kw):
+            raise RuntimeError("vision call failed")
+
+        p.openai.analyze_frame_transitions = boom
+        saved = _save_slug_storyboard(workspace, ["a", "b", "c"])
+        saved.characters = [Character(id="bald-man", epithet="the bald man")]
+        pairs = _make_frame_pairs(workspace, ["a", "x", "b", "c"])
+        sb, _, _ = p._reconcile_storyboard(saved, pairs)
+        assert [c.epithet for c in sb.characters] == ["the bald man"]
+
+
+class TestStaleMarking:
+    def _pipeline(self, make_pipeline):
+        return make_pipeline(analyze_frames=False)
 
     def test_stale_clips_are_marked_never_deleted(self, make_pipeline, workspace):
         # The admin API's confirm callback auto-answers yes, so any deletion

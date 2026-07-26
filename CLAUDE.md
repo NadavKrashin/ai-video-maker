@@ -102,6 +102,18 @@ Core design rules:
   "the scene shifts to a toddler ...". Both made Kling swap in a
   different-looking kid mid-story on a real project. Enforced in
   `_MODE_A_SYSTEM` ("SAME PERSON, ONE PROTAGONIST").
+- THE CAST LIST (`Storyboard.characters`, added 2026-07-26) pins each
+  person's epithet for the WHOLE movie. Identity rules were enforced
+  per-planning-call, but reconcile re-plans only dirty pairs, so a targeted
+  `_plan_pairs` call saw two frames and invented its own epithet for
+  someone the rest of the film named differently. The saved cast is now
+  handed to every planning call (fixed, used verbatim) and merged back
+  (`_merge_cast` in clients/openai_client.py — existing entries are NEVER
+  rewritten, since their wording is already baked into planned prompts).
+  Epithets are baked in at PLAN time, not render time: editing the cast
+  must never mark clips stale (unlike `global_motion_prompt`, which is
+  prepended at render time and does). Surfaced in storyboard.md, the
+  preview HTML, and the panel's Cast editor.
 - REFER TO PEOPLE BY APPEARANCE ONLY in motion prompts: never names or
   relationship/role words ("the son", "the dad", "the couple") — the video
   model sees only pixels and guesses who is who (a real clip prompted "the
@@ -366,6 +378,12 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
   `Entebbe`, `Hila`) — treat their contents as user data: don't delete,
   regenerate, or overwrite without asking. `ai_video_maker.egg-info/` is
   generated packaging metadata; ignore it.
+- Clip requests carry `fal_negative_prompt` (curated artifact preset in the
+  shared config) and optional `fal_cfg_scale`; `fal_extra_arguments` is
+  applied last and overrides both. All three join the render FINGERPRINT,
+  but only when set — an unset knob keeps pre-existing fingerprints valid so
+  already-paid pending renders stay resumable. `cfg_scale` is deliberately
+  left at the provider default until a real A/B on one clip says otherwise.
 - `config.json` at the repo root is the user's live shared config. Current
   model choices are deliberate: Kling v2.5 Turbo Pro (`fal_model_id`),
   `gpt-image-2` for images (user wants OpenAI images), `gpt-5.1` for
