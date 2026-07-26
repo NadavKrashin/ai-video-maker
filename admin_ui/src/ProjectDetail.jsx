@@ -85,13 +85,17 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, on
       <Group align="center" gap="md">
         <Group gap={6} align="center" wrap="nowrap">
           {startImg && <Image src={fileUrl(project, 'styled', startImg)} alt={tr.start_frame}
-            w={128} radius="sm" />}
+            w={128} radius="sm" loading="lazy" />}
           <Text c="dimmed">→</Text>
           {endImg && <Image src={fileUrl(project, 'styled', endImg)} alt={tr.end_frame}
-            w={128} radius="sm" />}
+            w={128} radius="sm" loading="lazy" />}
         </Group>
         {clip?.rendered && (
-          <video controls preload="metadata"
+          // preload="none": don't fetch clip bytes until the user hits play.
+          // A project with ~20 clips otherwise fires 20+ range requests on
+          // open, which floods the single-worker origin through the tunnel
+          // and freezes the panel (looked like the tunnel "going down").
+          <video controls preload="none"
             style={{ width: 260, borderRadius: 8, background: '#000' }}
             src={fileUrl(project, 'clips', clipFile)} />
         )}
