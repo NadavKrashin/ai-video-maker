@@ -16,6 +16,7 @@ individually instead.
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -1935,8 +1936,38 @@ class Pipeline:
             "music": ws.music_file.exists(),
             "custom_music": ws.custom_music_file.exists(),
             "has_failed_jobs": self.failed.path.exists(),
+            # The failures themselves, not just "a file exists": the panel had
+            # no way to show WHAT went wrong, so a run whose clips all failed
+            # was indistinguishable from a clean one without opening the log.
+            "failed_jobs": self._recorded_failures(),
             "next_step": next_step,
         }
+
+    def _recorded_failures(self) -> list[dict[str, Any]]:
+        """The last run's failures, from failed_jobs/failed_jobs.json.
+
+        The file is removed by a clean run, so whatever is here describes the
+        most recent run that had problems. Best-effort: a malformed file
+        reports nothing rather than breaking status.
+        """
+        path = self.failed.path
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return []
+        if not isinstance(data, list):
+            return []
+        return [
+            {
+                "id": str(f.get("job_id", "")),
+                "kind": str(f.get("kind", "")),
+                "error": str(f.get("error", ""))[:400],
+                "at": str(f.get("timestamp", "")),
+            }
+            for f in data if isinstance(f, dict)
+        ]
 
     def pending_renders(self) -> list[dict[str, Any]]:
         """Clip renders that were submitted to fal but never collected.

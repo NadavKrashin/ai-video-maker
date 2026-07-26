@@ -42,16 +42,20 @@ const clipsNeedingRender = (snap) =>
 const jobColor = (state) =>
   state === 'done' ? 'green'
     : state === 'failed' ? 'red'
-      : state === 'cancelled' ? 'gray'
-        : state === 'cancelling' ? 'yellow'
-          : 'blue';
+      // Ran to the end, but some items failed — never green.
+      : state === 'partial' ? 'orange'
+        : state === 'cancelled' ? 'gray'
+          : state === 'cancelling' ? 'yellow'
+            : 'blue';
 
 function JobRow({ job, onShowLog, onCancel, cancelBusy }) {
   const cancellable = job.state === 'queued' || job.state === 'running';
   return (
     <Group gap="sm" py={6} wrap="nowrap"
       style={{ borderBottom: '1px solid var(--mantine-color-dark-4)' }}>
-      <Badge variant="light" color={jobColor(job.state)}>{job.state}</Badge>
+      <Badge variant="light" color={jobColor(job.state)}>
+        {job.failures > 0 ? `${job.state} · ${job.failures} failed` : job.state}
+      </Badge>
       <Text size="sm" fw={600}>{job.command}</Text>
       <Text size="xs" c="dimmed" style={{ flex: 1 }}>
         {(job.started_at || job.created_at || '').replace('T', ' ').slice(0, 19)}
@@ -944,6 +948,35 @@ export default function ProjectDetail({ name, onBack }) {
           </>
         )}
       </Card>
+
+      {/* The last run's failures. The pipeline survives individual failures
+          on purpose, so a command can finish having produced nothing — this
+          is what stops that from reading as success. */}
+      {(snap.failed_jobs || []).length > 0 && (
+        <Alert color="red" variant="light"
+          title={`Last run had ${snap.failed_jobs.length} failure(s) — nothing was produced for these`}>
+          <Stack gap={6}>
+            {snap.failed_jobs.slice(0, 6).map((f, i) => (
+              <div key={`${f.id}-${i}`}>
+                <Text size="sm" fw={600}>
+                  {f.kind ? `${f.kind}: ` : ''}{f.id.replace(/^clip:/, '')}
+                </Text>
+                <Text size="xs" c="dimmed">{f.error}</Text>
+              </div>
+            ))}
+            {snap.failed_jobs.length > 6 && (
+              <Text size="xs" c="dimmed">
+                …and {snap.failed_jobs.length - 6} more.
+              </Text>
+            )}
+            <Text size="xs" c="dimmed">
+              These clips were NOT regenerated — the files on disk are still the
+              previous versions, which is why they remain marked outdated. This
+              clears when a run finishes without failures.
+            </Text>
+          </Stack>
+        </Alert>
+      )}
 
       {/* Renders submitted (and billed) but not yet downloaded. Split by
           in_flight: a clip the RUNNING job is polling for collects itself

@@ -139,6 +139,34 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _outcome(pipeline: Pipeline) -> tuple[str, str, int]:
+    """Turn a completed run into (state, error, failure count).
+
+    A pipeline command deliberately survives individual failures — one clip
+    hitting a timeout must not abandon the other nineteen — so `execute()`
+    returning is NOT proof the work succeeded. Reporting it as "done"
+    regardless made a render whose every clip timed out look exactly like a
+    successful one. Anything that produced output alongside failures is
+    "partial"; a run that produced nothing at all is "failed".
+    """
+    failures = list(pipeline.failed.failures)
+    if not failures:
+        return "done", "", 0
+    s = pipeline.summary
+    produced = s.styled_created + s.videos_created + s.sfx_created
+    kinds: dict[str, int] = {}
+    for f in failures:
+        kind = f.get("kind", "item")
+        kinds[kind] = kinds.get(kind, 0) + 1
+    breakdown = ", ".join(f"{n} {kind}" for kind, n in sorted(kinds.items()))
+    first = str(failures[0].get("error", ""))[:200]
+    return (
+        "partial" if produced else "failed",
+        f"{len(failures)} failed ({breakdown}). First error: {first}",
+        len(failures),
+    )
+
+
 def apply_in_flight(
     pending: list[dict[str, Any]], active_options: Optional[dict[str, Any]]
 ) -> None:
@@ -171,8 +199,15 @@ class Job:
     project: str
     command: str
     options: dict[str, Any]
-    state: str = "queued"  # queued | running | cancelling | done | failed | cancelled
+    # queued | running | cancelling | done | partial | failed | cancelled
+    # "partial" = the command ran to the end but some work items failed. The
+    # pipeline deliberately keeps going when one clip fails, so without this
+    # a render that produced nothing still reported "done" and read as
+    # success — a real 3-of-3 timeout looked like a completed render.
+    state: str = "queued"
     error: str = ""
+    # How many individual items (clips, frames, SFX) failed inside the run.
+    failures: int = 0
     log: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=_now)
     started_at: str = ""
@@ -188,6 +223,7 @@ class Job:
         return {
             "id": self.id, "project": self.project, "command": self.command,
             "state": self.state, "error": self.error,
+            "failures": self.failures,
             "created_at": self.created_at, "started_at": self.started_at,
             "finished_at": self.finished_at,
         }
@@ -316,7 +352,12 @@ class JobRunner:
                 cancel_event=job.cancel_event,
             )  # default confirm: always proceed
             pipeline.execute(job.command)
-            job.state = "done"
+            job.state, job.error, job.failures = _outcome(pipeline)
+            if job.state != "done":
+                logger.error(
+                    "Job %s (%s %s) finished with failures: %s",
+                    job.id, job.command, job.project, job.error,
+                )
         except PipelineCancelled as exc:
             job.state, job.error = "cancelled", str(exc)
             logger.info("Job %s (%s %s) cancelled.",

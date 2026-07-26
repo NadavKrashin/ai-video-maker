@@ -17,7 +17,7 @@ from ai_video_maker.config import Config
 from ai_video_maker.models import Storyboard
 from ai_video_maker.options import RunOptions
 from ai_video_maker.runner import Pipeline
-from ai_video_maker.server import apply_in_flight, create_app
+from ai_video_maker.server import _outcome, apply_in_flight, create_app
 from ai_video_maker.state import StateStore
 from ai_video_maker.workspace import Workspace
 
@@ -216,3 +216,43 @@ class TestPendingRendersInFlight:
             headers={"Authorization": f"Bearer {TOKEN}"},
         )
         assert [p["in_flight"] for p in res.json()["pending_renders"]] == [False]
+
+
+class TestJobOutcome:
+    """A command that survives item failures must not report success.
+
+    `execute()` returning is not proof the work happened: the pipeline keeps
+    going when one clip fails so the rest still render. A real render whose
+    three clips all timed out on fal reported "done" and looked identical to
+    a successful one.
+    """
+
+    class _Pipeline:
+        """Minimal stand-in exposing what _outcome reads."""
+
+        def __init__(self, failures, created):
+            from ai_video_maker.summary import RunSummary
+            self.failed = type("F", (), {"failures": failures})()
+            self.summary = RunSummary(videos_created=created)
+
+    def _fail(self, kind="clip", error="timed out"):
+        return {"job_id": f"{kind}:x", "kind": kind, "error": error}
+
+    def test_clean_run_is_done(self):
+        state, error, n = _outcome(self._Pipeline([], 3))
+        assert (state, error, n) == ("done", "", 0)
+
+    def test_every_item_failing_is_failed_not_done(self):
+        state, error, n = _outcome(self._Pipeline([self._fail()] * 3, 0))
+        assert state == "failed"
+        assert n == 3
+        assert "3 failed" in error and "timed out" in error
+
+    def test_some_produced_some_failed_is_partial(self):
+        state, _, n = _outcome(self._Pipeline([self._fail()], 5))
+        assert state == "partial" and n == 1
+
+    def test_error_breaks_down_by_kind(self):
+        failures = [self._fail("clip"), self._fail("clip"), self._fail("sfx")]
+        _, error, _ = _outcome(self._Pipeline(failures, 0))
+        assert "2 clip" in error and "1 sfx" in error

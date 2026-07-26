@@ -930,3 +930,33 @@ class TestLocalTime:
     def test_unparseable_falls_back_to_the_raw_prefix(self):
         from ai_video_maker.runner import _local_time
         assert _local_time("not a timestamp at all") == "not a timestamp at "
+
+
+class TestRecordedFailures:
+    """snapshot() carries the actual failures, not just "a file exists"."""
+
+    def test_no_file_means_no_failures(self, pipeline):
+        assert pipeline.snapshot()["failed_jobs"] == []
+
+    def test_failures_are_surfaced_with_kind_and_error(self, pipeline, workspace):
+        pipeline.failed.record("clip:a_to_b", "clip", "fal request still Queued")
+        pipeline.failed.flush()
+        failures = pipeline.snapshot()["failed_jobs"]
+        assert len(failures) == 1
+        assert failures[0]["id"] == "clip:a_to_b"
+        assert failures[0]["kind"] == "clip"
+        assert "still Queued" in failures[0]["error"]
+
+    def test_a_clean_run_clears_them(self, pipeline):
+        pipeline.failed.record("clip:a_to_b", "clip", "boom")
+        pipeline.failed.flush()
+        assert pipeline.snapshot()["failed_jobs"]
+        pipeline.failed.failures.clear()
+        pipeline.failed.flush()  # removes the stale report
+        assert pipeline.snapshot()["failed_jobs"] == []
+
+    def test_malformed_report_does_not_break_status(self, pipeline, workspace):
+        path = pipeline.failed.path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not json", encoding="utf-8")
+        assert pipeline.snapshot()["failed_jobs"] == []
