@@ -341,6 +341,27 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
 
 ## Gotchas / facts sessions keep rediscovering
 
+- **NEVER `git add -A` blindly in this repo; read `git diff --cached`
+  before every commit.** On 2026-07-26 a blanket add committed a `projects`
+  SYMLINK (the dev tree points at the production checkout). `.gitignore`
+  said `projects/`, which matches a DIRECTORY only, so the symlink was not
+  ignored. The next deploy's `git checkout main` materialised it over the
+  real directory and **destroyed 606 MB of styled frames, rendered clips,
+  storyboards and finished movies for four projects — permanently**, since
+  the machine had no backup. The pattern is now `/projects` (anchored, no
+  slash), but the habit is the actual guard.
+- **Git treats IGNORED paths as expendable.** `checkout`/`merge` overwrite
+  and delete them with no prompt and no "would be overwritten" error — that
+  protection only applies to *untracked-but-not-ignored* files. "It's in
+  .gitignore" means git will destroy it without asking, not that it is safe.
+- **Verify `git status` AFTER committing.** The first attempt to fix the
+  above shipped a half-fix: `git rm --cached` was staged but the `.gitignore`
+  edit was not, and `git commit` silently committed only the staged part, so
+  the dangerous pattern reached `main` anyway.
+- **`projects/` is irreplaceable and (as of 2026-07-26) UNBACKED** — no Time
+  Machine destination, no snapshots. Its contents cost real API credits.
+  Count/checksum before and after ANY operation that moves, relinks or
+  recreates it, and refuse to do such an operation while a job is running.
 - `projects/` is gitignored and holds the user's real movies (e.g. `Matan`,
   `Entebbe`, `Hila`) — treat their contents as user data: don't delete,
   regenerate, or overwrite without asking. `ai_video_maker.egg-info/` is

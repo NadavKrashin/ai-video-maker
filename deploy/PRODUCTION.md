@@ -198,7 +198,22 @@ a self-hosted runner must never run untrusted PR code).
 
 ## What is deliberately NOT automated
 
-`projects/` holds the customers' real movies and is not in git. Back it up on
-its own schedule (Time Machine covers it if enabled). Rendering/styling always
-stays behind explicit human action or the opt-in watcher — deploys never touch
-projects, never re-render, never spend credits.
+`projects/` holds the customers' real movies and is not in git. Rendering and
+styling always stay behind explicit human action or the opt-in watcher —
+deploys never touch projects, never re-render, never spend credits.
+
+### Backups — currently NONE (fix this)
+
+As of 2026-07-26 this machine has **no Time Machine destination and no
+snapshots**: `tmutil destinationinfo` returns "No destinations configured".
+That is not a theoretical gap. On 2026-07-26, 606 MB of styled frames,
+rendered clips, storyboards and finished movies across four projects were
+destroyed by a single `git checkout`, and with no backup the loss was
+permanent. Only the input photos of Cloudinary-sourced orders survived,
+because they live on Cloudinary.
+
+`projects/` is the ONLY irreplaceable data on this box — everything else is
+in git or reinstallable, and its contents cost real API credits to produce.
+Attach an external disk and enable Time Machine, or schedule an rsync of
+`~/production/ai-video-maker/projects` to another machine. Do it before
+generating anything you would mind losing.
