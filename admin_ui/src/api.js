@@ -75,6 +75,12 @@ export const api = {
 
 // <img>/<video> tags can't send an Authorization header — the API accepts the
 // token as a query param for exactly this case.
-export const fileUrl = (project, kind, filename) =>
+//
+// `version` is a cache-buster: styled frames and clips are REPLACED in place
+// (same filename) when re-styled or regenerated, so without it the browser
+// keeps showing the previous image — which looked like "the regenerate button
+// did nothing". Callers bump it while a job is running and once it settles.
+export const fileUrl = (project, kind, filename, version) =>
   `/api/projects/${encodeURIComponent(project)}/files/${kind}/` +
-  `${encodeURIComponent(filename)}?token=${encodeURIComponent(getToken())}`;
+  `${encodeURIComponent(filename)}?token=${encodeURIComponent(getToken())}` +
+  (version ? `&v=${version}` : '');

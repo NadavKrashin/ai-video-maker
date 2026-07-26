@@ -5,8 +5,69 @@ import pytest
 
 from ai_video_maker.clients.openai_client import OpenAIClient
 from ai_video_maker.errors import InvalidProjectName, StoryboardError
-from ai_video_maker.models import Frame, Storyboard
+from ai_video_maker.models import (
+    Frame,
+    Storyboard,
+    Transition,
+    changed_transition_ids,
+)
 from ai_video_maker.workspace import Workspace
+
+
+class TestChangedTransitionIds:
+    """Which hand-edits invalidate an already-rendered clip.
+
+    Drives the panel's "save edits, then regenerate exactly those" flow: an
+    edited motion prompt must mark its clip outdated, a sound-only edit must
+    not (that is the audio step's business).
+    """
+
+    def _sb(self, **over) -> Storyboard:
+        tr = dict(id="a_to_b", start_frame="styled_images/a.png",
+                  end_frame="styled_images/b.png", motion_prompt="walks",
+                  duration=5, sound_prompt="birds",
+                  output_path="clips/a_to_b.mp4")
+        tr.update(over.pop("transition", {}))
+        return Storyboard(
+            project_title="t", style="s",
+            frames=[Frame(id="a", description="d", image_prompt="",
+                          output_path="styled_images/a.png")],
+            transitions=[Transition(**tr)],
+            **over,
+        )
+
+    def test_no_change_marks_nothing(self):
+        assert changed_transition_ids(self._sb(), self._sb()) == []
+
+    def test_motion_prompt_edit_marks_the_clip(self):
+        after = self._sb(transition={"motion_prompt": "runs"})
+        assert changed_transition_ids(self._sb(), after) == ["a_to_b"]
+
+    def test_duration_edit_marks_the_clip(self):
+        after = self._sb(transition={"duration": 10})
+        assert changed_transition_ids(self._sb(), after) == ["a_to_b"]
+
+    def test_frame_swap_marks_the_clip(self):
+        after = self._sb(transition={"end_frame": "styled_images/c.png"})
+        assert changed_transition_ids(self._sb(), after) == ["a_to_b"]
+
+    def test_sound_prompt_edit_leaves_the_video_alone(self):
+        # SFX is muxed in by the audio step; the rendered video is unaffected.
+        after = self._sb(transition={"sound_prompt": "waves"})
+        assert changed_transition_ids(self._sb(), after) == []
+
+    def test_global_motion_prompt_edit_marks_every_clip(self):
+        # It is prepended to every clip's prompt at render time.
+        after = self._sb(global_motion_prompt="two separate people")
+        assert changed_transition_ids(self._sb(), after) == ["a_to_b"]
+
+    def test_new_transition_is_not_marked(self):
+        # Nothing was rendered from a pair that did not exist before.
+        before = Storyboard(project_title="t", style="s", frames=[], transitions=[])
+        assert changed_transition_ids(before, self._sb()) == []
+
+    def test_no_previous_storyboard_marks_nothing(self):
+        assert changed_transition_ids(None, self._sb()) == []
 
 
 class TestStoryboardModel:

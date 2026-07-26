@@ -37,8 +37,20 @@ Core design rules:
   shown by status/snapshot/panel). **Clips are NEVER auto-deleted or
   auto-re-rendered**: confirm gates don't protect server jobs (the admin
   API's confirm auto-answers yes — that combination deleted 26 rendered
-  clips on a real order), so redoing a clip is always an explicit per-clip
-  action (`render --clip ID`), which also clears the stale mark.
+  clips on a real order), so redoing a clip is always an explicit, named
+  action (`render --clip ID`, repeatable), which also clears the stale mark.
+  The panel's "Generate everything that needs it" batches outdated +
+  never-rendered clips into ONE render job, but stays inside that rule: the
+  clip ids are enumerated client-side from the snapshot and listed
+  individually in the confirmation modal — never a blanket "re-render all".
+- Saving a storyboard through the API (`PUT /api/projects/<n>/storyboard`)
+  DIFFS against the copy on disk and marks the rendered clips whose plan
+  changed as stale (`changed_transition_ids` in models.py). Motion prompt /
+  duration / start_frame / end_frame invalidate the clip; `sound_prompt`
+  does NOT (that only feeds the audio step); editing `global_motion_prompt`
+  invalidates every clip, because it is prepended to each prompt at render
+  time. Without this a hand edit lived only in the browser tab that made it,
+  so nothing downstream could know which clips to redo.
 - **No `input()` or other stdin use inside `ai_video_maker/`** — all
   interactivity lives in `cli.py` via the injected `confirm` callback.
 - Resume is existence-based for files (styled images, clips) and
@@ -212,6 +224,11 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
   and EVERY mutating action goes through a confirmation modal that lists
   exactly what will change and whether money is spent (user requirement,
   2026-07-18) — put new actions behind `ask({...})`, never a bare run.
+  Media (styled frames, clips, final video) is served under a stable
+  filename and REPLACED in place, so every `<img>`/`<video>` src carries a
+  `v=` cache-buster (`fileUrl`'s 4th argument, bumped by the panel's poll
+  and once more when a job settles); without it a regenerated frame kept
+  showing its previous version and looked like the button did nothing.
 - The **Firestore order ledger** (`clients/firebase_client.py`, REST +
   google-auth, NOT the heavy firebase-admin SDK) is the watcher's order
   source when a service-account key exists (FIREBASE_SERVICE_ACCOUNT in

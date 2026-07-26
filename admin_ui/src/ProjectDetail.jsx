@@ -21,6 +21,13 @@ function frameName(framesById, frameRef) {
 
 const CLIP_PRICE = '≈ $0.35 (5s) – $0.70 (10s) per clip';
 
+// Every clip the CURRENT storyboard says is not up to date: never rendered,
+// or rendered before an edit/re-plan/re-style changed its plan ("outdated").
+// The backend marks the second kind when the panel saves storyboard edits, so
+// this survives a page reload rather than living in one browser tab.
+const clipsNeedingRender = (snap) =>
+  (snap?.clips || []).filter((c) => !c.rendered || c.stale);
+
 const jobColor = (state) =>
   state === 'done' ? 'green'
     : state === 'failed' ? 'red'
@@ -56,7 +63,7 @@ function JobRow({ job, onShowLog, onCancel, cancelBusy }) {
   );
 }
 
-function TransitionCard({ project, tr, framesById, clip, edited, placeholder, onEdit, onRegenerate, onReplan, onRedoAudio, busy, replanBusy, audioBusy }) {
+function TransitionCard({ project, tr, framesById, clip, edited, placeholder, onEdit, onRegenerate, onReplan, onRedoAudio, busy, replanBusy, audioBusy, mediaV }) {
   const startImg = frameName(framesById, tr.start_frame);
   const endImg = frameName(framesById, tr.end_frame);
   const clipFile = tr.output_path.split('/').pop();
@@ -84,10 +91,10 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, on
       </Group>
       <Group align="center" gap="md">
         <Group gap={6} align="center" wrap="nowrap">
-          {startImg && <Image src={fileUrl(project, 'styled', startImg)} alt={tr.start_frame}
+          {startImg && <Image src={fileUrl(project, 'styled', startImg, mediaV)} alt={tr.start_frame}
             w={128} radius="sm" loading="lazy" />}
           <Text c="dimmed">→</Text>
-          {endImg && <Image src={fileUrl(project, 'styled', endImg)} alt={tr.end_frame}
+          {endImg && <Image src={fileUrl(project, 'styled', endImg, mediaV)} alt={tr.end_frame}
             w={128} radius="sm" loading="lazy" />}
         </Group>
         {clip?.rendered && (
@@ -97,7 +104,7 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, on
           // and freezes the panel (looked like the tunnel "going down").
           <video controls preload="none"
             style={{ width: 260, borderRadius: 8, background: '#000' }}
-            src={fileUrl(project, 'clips', clipFile)} />
+            src={fileUrl(project, 'clips', clipFile, mediaV)} />
         )}
       </Group>
       <Textarea label="Motion prompt" mt="sm" autosize minRows={2}
@@ -220,7 +227,7 @@ function StoryboardPanel({ ask, locked, info }) {
   );
 }
 
-function RenderPanel({ ask, locked, info }) {
+function RenderPanel({ ask, locked, info, onGenerateAll }) {
   const [motionPrompt, setMotionPrompt] = useState('');
   const [duration, setDuration] = useState('');
   const [dryRun, setDryRun] = useState(false);
@@ -253,6 +260,14 @@ function RenderPanel({ ask, locked, info }) {
         doesn't have one yet. Review the storyboard first — each clip is paid
         the moment it renders.
       </PanelIntro>
+      {info.outdated > 0 && (
+        <Alert color="orange" variant="light" mb="md"
+          title={`${info.outdated} rendered clip(s) are outdated`}>
+          Their motion prompt, duration or frames changed after they were
+          rendered. Rendering missing clips leaves them alone — use
+          “Generate everything that needs it” to redo them in the same job.
+        </Alert>
+      )}
       <Group align="flex-end">
         <TextInput label="Motion prompt override for this run (optional)"
           style={{ flex: 1 }} miw={240} placeholder="(per-clip storyboard prompts)"
@@ -267,8 +282,12 @@ function RenderPanel({ ask, locked, info }) {
         <Checkbox label="Dry run" checked={dryRun}
           onChange={(e) => setDryRun(e.target.checked)} mb={6}
           title="Show what would be rendered without spending credits" />
-        <Button disabled={locked} onClick={start}>
+        <Button variant="default" disabled={locked} onClick={start}>
           {`Render ${info.missing || 'missing'} clip(s)…`}
+        </Button>
+        <Button disabled={locked || info.needsRender === 0} onClick={onGenerateAll}
+          title="One job for every clip that is missing OR outdated — the batch you normally want after editing motion prompts">
+          {`Generate everything that needs it (${info.needsRender})…`}
         </Button>
       </Group>
     </div>
@@ -476,6 +495,10 @@ export default function ProjectDetail({ name, onBack }) {
   const [uploading, setUploading] = useState(false);
   const [musicBusy, setMusicBusy] = useState(false);
   const [confirm, setConfirm] = useState(null);
+  // Cache-buster for styled frames and clips: they are replaced in place, so
+  // the browser would otherwise keep showing the pre-render version. Bumped
+  // on every poll while a job runs, and once more when it settles.
+  const [mediaV, setMediaV] = useState(0);
   const pollRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -507,13 +530,26 @@ export default function ProjectDetail({ name, onBack }) {
 
   useEffect(() => { load().catch((e) => notify(`Load failed: ${e.message}`, 'red')); }, [load]);
 
-  // Poll while a job is queued/running, refresh once when it settles.
+  // Poll while a job is queued/running, refresh once when it settles. The
+  // media version bumps with each tick so styled frames appear (and replaced
+  // ones refresh) DURING the job instead of only after it finishes.
+  const activeJobId = (snap?.jobs || []).find(
+    (j) => ['queued', 'running', 'cancelling'].includes(j.state)
+  )?.id || '';
   useEffect(() => {
-    const active = (snap?.jobs || []).some((j) => ['queued', 'running', 'cancelling'].includes(j.state));
-    if (!active) return undefined;
-    pollRef.current = setInterval(() => load().catch(() => {}), 3000);
+    if (!activeJobId) {
+      // The job just settled: one last bump so the finished frames/clips
+      // aren't served from the cache of their half-done selves.
+      setMediaV((v) => v + 1);
+      return undefined;
+    }
+    setShowPhotos(true); // watching the frames arrive is the point of waiting
+    pollRef.current = setInterval(() => {
+      setMediaV((v) => v + 1);
+      load().catch(() => {});
+    }, 3000);
     return () => clearInterval(pollRef.current);
-  }, [snap, load]);
+  }, [activeJobId, load]);
 
   if (!snap) return <Text c="dimmed">Loading {name}…</Text>;
 
@@ -525,6 +561,8 @@ export default function ProjectDetail({ name, onBack }) {
   const chip = stepChip(snap.next_step);
   const activeJob = (snap.jobs || []).find((j) => ['running', 'queued', 'cancelling'].includes(j.state));
   const locked = Boolean(activeJob);
+  // A running storyboard/run job is what produces styled frames.
+  const styling = ['storyboard', 'run'].includes(activeJob?.command);
 
   // Facts every confirmation modal builds on.
   const inputImages = snap.input_images || [];
@@ -539,6 +577,8 @@ export default function ProjectDetail({ name, onBack }) {
     total,
     rendered,
     missing: total - rendered,
+    outdated: (snap.clips || []).filter((c) => c.rendered && c.stale).length,
+    needsRender: clipsNeedingRender(snap).length,
     silentRendered: (snap.clips || []).filter((c) => c.rendered && !c.sfx).length,
     finalExists: Boolean(snap.final_video),
     customMusic: Boolean(snap.custom_music)
@@ -576,13 +616,54 @@ export default function ProjectDetail({ name, onBack }) {
     return run(command, options, label || command);
   };
 
+  // One job for every clip that is missing or outdated — the batch you want
+  // after editing a handful of motion prompts, instead of clicking through
+  // the clips one at a time. Listing `clips` FORCES those clips, so the
+  // outdated ones are re-rendered rather than skipped as "done".
+  const generateAll = (data) => {
+    const todo = clipsNeedingRender(data);
+    if (!todo.length) {
+      notify('Every clip is rendered and up to date — nothing to generate.', 'green');
+      return;
+    }
+    const missing = todo.filter((c) => !c.rendered).map((c) => c.id);
+    const outdated = todo.filter((c) => c.rendered).map((c) => c.id);
+    ask({
+      title: `Generate ${todo.length} clip(s) in one job?`,
+      lines: [
+        ...(missing.length
+          ? [`${missing.length} never rendered: ${missing.join(', ')}`] : []),
+        ...(outdated.length
+          ? [`${outdated.length} outdated — REPLACED with the current motion prompt: ${outdated.join(', ')}`]
+          : []),
+        `${CLIP_PRICE} — up to ${todo.length} clip(s) this run.`,
+        'Every other rendered clip is left untouched.',
+        ...(outdated.length
+          ? ['Regenerated clips lose their SFX, so run Audio and Combine again afterwards.']
+          : [])
+      ],
+      cost: 'fal',
+      danger: outdated.length > 0,
+      label: `Generate ${todo.length}`,
+      action: () => run('render', { clips: todo.map((c) => c.id) },
+        `render ${todo.length} clip(s)`)
+    });
+  };
+
   const saveEdits = async () => {
     setBusyAction('save');
     try {
-      await api.saveStoryboard(name, storyboard);
+      const res = await api.saveStoryboard(name, storyboard);
       setDirty(new Set());
-      notify('Storyboard saved', 'green');
-      await load();
+      const marked = (res.outdated || []).length;
+      notify(marked
+        ? `Storyboard saved — ${marked} rendered clip(s) marked outdated`
+        : 'Storyboard saved', 'green');
+      const data = await load();
+      // Saving edits is normally step one of "now re-render them", so offer
+      // the whole batch straight away. It is still a confirmation modal:
+      // nothing is spent until it is accepted.
+      generateAll(data);
     } catch (e) { notify(`Save failed: ${e.message}`, 'red'); }
     finally { setBusyAction(''); }
   };
@@ -756,7 +837,8 @@ export default function ProjectDetail({ name, onBack }) {
 
   const panels = {
     storyboard: <StoryboardPanel ask={ask} locked={locked} info={info} />,
-    render: <RenderPanel ask={ask} locked={locked} info={info} />,
+    render: <RenderPanel ask={ask} locked={locked} info={info}
+      onGenerateAll={() => { if (!needsSave()) generateAll(snap); }} />,
     audio: <AudioPanel ask={ask} locked={locked} info={info}
       onUploadMusic={uploadMusic} onRemoveMusic={removeMusic} musicBusy={musicBusy} />,
     combine: <CombinePanel ask={ask} locked={locked} info={info} />,
@@ -829,9 +911,9 @@ export default function ProjectDetail({ name, onBack }) {
           <Group align="center">
             <video controls preload="metadata"
               style={{ width: 420, maxWidth: '100%', borderRadius: 8, background: '#000' }}
-              src={fileUrl(name, 'output', 'final_video.mp4')} />
+              src={fileUrl(name, 'output', 'final_video.mp4', mediaV)} />
             <Button component="a" variant="light"
-              href={fileUrl(name, 'output', 'final_video.mp4')} download={`${name}.mp4`}>
+              href={fileUrl(name, 'output', 'final_video.mp4', mediaV)} download={`${name}.mp4`}>
               Download
             </Button>
           </Group>
@@ -841,8 +923,18 @@ export default function ProjectDetail({ name, onBack }) {
       <Card withBorder padding="md">
         <Group gap="sm">
           <Text fw={600}>Photos ({inputImages.length})</Text>
+          {/* Styled frames land one file at a time and the panel polls every
+              3s, so the grid below fills in DURING the storyboard run instead
+              of staying empty until it finishes. */}
+          {styling && (
+            <Badge variant="light" color="blue">
+              styling {styledImages.length} / {inputImages.length}
+            </Badge>
+          )}
           <Text size="xs" c="dimmed" style={{ flex: 1 }}>
-            Movie order follows the filenames (sorted). Styled versions shown when available.
+            {styling
+              ? 'Frames appear here as they come back from the styler.'
+              : 'Movie order follows the filenames (sorted). Styled versions shown when available.'}
           </Text>
           <input ref={fileInputRef} type="file" accept="image/*" multiple
             style={{ display: 'none' }} onChange={(e) => upload(e.target.files)} />
@@ -860,9 +952,13 @@ export default function ProjectDetail({ name, onBack }) {
               return (
                 <Stack key={img} gap={2} w={120}>
                   <Image w={120} radius="sm" alt={img}
-                    src={fileUrl(name, styled ? 'styled' : 'input', styled ? styledName : img)} />
+                    style={styling && !styled ? { opacity: 0.45 } : undefined}
+                    src={fileUrl(name, styled ? 'styled' : 'input',
+                      styled ? styledName : img, styled ? mediaV : 0)} />
                   <Group justify="space-between" gap={4} wrap="nowrap">
-                    <Text size="xs" c="dimmed" truncate title={img}>{img}</Text>
+                    <Text size="xs" c="dimmed" truncate title={img}>
+                      {styling && !styled ? 'styling…' : img}
+                    </Text>
                     <UnstyledButton title={`Delete ${img}`} onClick={() => deletePhoto(img)}
                       style={{ color: 'var(--mantine-color-red-5)', fontSize: 13 }}>
                       ✕
@@ -932,7 +1028,8 @@ export default function ProjectDetail({ name, onBack }) {
               onRegenerate={regenerate} onReplan={replanPrompt} onRedoAudio={redoAudio}
               busy={busyAction === `render ${tr.id}`}
               replanBusy={busyAction === `re-plan ${tr.id}`}
-              audioBusy={busyAction === `audio ${tr.id}`} />
+              audioBusy={busyAction === `audio ${tr.id}`}
+              mediaV={mediaV} />
           ))}
         </>
       )}

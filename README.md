@@ -79,6 +79,17 @@ the `ADMIN_API_TOKEN` from `.env`:
   per-clip audio redo, uploading your own music track, combine/finalize with
   intro/credits/letter toggles, and `run` for the whole chain. Jobs stream
   their logs and can be cancelled from the panel.
+  **Editing prompts in bulk:** saving your transition edits marks every
+  already-rendered clip whose motion prompt / duration / frames changed as
+  OUTDATED (a sound-prompt-only edit doesn't — that's the audio step's
+  business), and then offers **“Generate everything that needs it”** — one
+  background job covering the edited clips *and* the ones never rendered, so
+  a round of prompt edits doesn't have to be clicked through clip by clip.
+  The confirmation lists every clip by name and which of the two groups it
+  is in before anything is spent; the same button lives in the Render step.
+  While a storyboard job runs, the Photos panel opens itself and fills in
+  live — styled frames appear one by one as they come back, instead of only
+  once the whole run finishes.
 - **API**: order list, per-project status, storyboard read/edit, photos, a
   custom music-bed upload (`POST`/`DELETE /api/projects/<name>/music`), and
   clip playback, plus actions (ingest / storyboard / render / redo one clip /
@@ -193,7 +204,9 @@ Notes:
   everything else verbatim. **Existing clips are never deleted or redone
   automatically**: a rendered clip whose transition changed is only marked
   OUTDATED (`status` and the admin panel flag it) — regenerate it yourself
-  with `render --clip ID` when you're ready to spend the credits. Old clips
+  with `render --clip ID` when you're ready to spend the credits (the panel's
+  “Generate everything that needs it” does the same for outdated + missing
+  clips in one confirmed job). Old clips
   whose pair no longer exists at all become "strays" — `combine` ignores
   them and `status` lists them for deletion.
 - **Preview before spending:** `render` prints a per-clip plan (render vs

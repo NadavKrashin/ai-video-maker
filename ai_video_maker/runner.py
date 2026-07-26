@@ -800,7 +800,15 @@ class Pipeline:
                     plans[i] = fallback
         return plans
 
-    def _mark_stale_clips(self, stale_tids: list[str]) -> None:
+    def mark_clips_outdated(self, tids: list[str]) -> list[str]:
+        """Public entry point for the admin API; returns the clip files marked.
+
+        Used when the panel saves hand-edited transitions: the same
+        "outdated, kept, never auto-rendered" contract as a re-plan.
+        """
+        return self._mark_stale_clips(tids)
+
+    def _mark_stale_clips(self, stale_tids: list[str]) -> list[str]:
         """Flag rendered clips that no longer match the updated storyboard.
 
         NEVER deletes and never triggers regeneration: rendered clips cost
@@ -817,11 +825,11 @@ class Pipeline:
             if (clip := self.workspace.clips_dir / f"{tid}.mp4").exists()
         ]
         if not stale:
-            return
+            return []
         if self.dry_run:
             for clip in stale:
                 logger.info("[dry-run] would mark clip %s outdated", clip.name)
-            return
+            return [clip.name for clip in stale]
         for clip in stale:
             self.state.set(f"stale:{clip.name}", "outdated")
         logger.info(
@@ -832,6 +840,7 @@ class Pipeline:
             len(stale), ", ".join(c.name for c in stale),
             self.workspace.root.name,
         )
+        return [clip.name for clip in stale]
 
     # ------------------- storyboard from an idea (Mode B) ----------------- #
     def _resolve_idea(self) -> str:

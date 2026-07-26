@@ -54,7 +54,12 @@ from .clients.firebase_client import (
     FirebaseClient,
 )
 from .config import Config
-from .errors import InvalidProjectName, PipelineCancelled, PipelineError
+from .errors import (
+    InvalidProjectName,
+    PipelineCancelled,
+    PipelineError,
+    StoryboardError,
+)
 from .intake import (
     derive_project_name,
     ingested_orders,
@@ -63,7 +68,7 @@ from .intake import (
     read_order_record,
 )
 from .logging_setup import logger, setup_logging
-from .models import Storyboard
+from .models import Storyboard, changed_transition_ids
 from .options import RunOptions
 from .runner import Pipeline
 from .workspace import PROJECT_ROOT, PROJECTS_DIR, Workspace
@@ -801,6 +806,14 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
 
     @app.put("/api/projects/{name}/storyboard", dependencies=guarded)
     async def save_storyboard(name: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Overwrite the storyboard, marking clips the edits invalidated.
+
+        The save is compared against what is on disk first: a hand-edited
+        motion prompt or duration leaves its already-rendered clip showing
+        the OLD plan, so those clips are marked outdated (kept, never
+        auto-re-rendered — same contract as a re-plan). The returned
+        ``outdated`` list is what the panel offers to regenerate in one go.
+        """
         ws = _workspace(name)
         try:
             storyboard = Storyboard(**body)
@@ -808,9 +821,22 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
             raise HTTPException(
                 status_code=422, detail=f"Invalid storyboard: {exc}"
             ) from exc
+        try:
+            previous = (
+                Storyboard.load(ws.default_storyboard_json)
+                if ws.default_storyboard_json.exists() else None
+            )
+        except StoryboardError:
+            # Unreadable/hand-broken JSON on disk: there is nothing to diff
+            # against, so save without inventing staleness.
+            previous = None
+        changed = changed_transition_ids(previous, storyboard)
         storyboard.save(ws.default_storyboard_json)
+        outdated = _pipeline(ws).mark_clips_outdated(changed) if changed else []
         return {"ok": True, "frames": len(storyboard.frames),
-                "transitions": len(storyboard.transitions)}
+                "transitions": len(storyboard.transitions),
+                "changed": changed,
+                "outdated": [c.removesuffix(".mp4") for c in outdated]}
 
     @app.post("/api/projects/{name}/actions/{command}", dependencies=guarded)
     async def run_action(
