@@ -202,3 +202,40 @@ class TestIdentityPromptRules:
     def test_reword_keeps_identity_anchors(self):
         from ai_video_maker.clients import openai_client as oc
         assert "Identity anchors" in oc._REWORD_MOTION_SYSTEM
+
+
+class TestPaceAndBeatPromptRules:
+    """Pace/distance and beat-counting rules, pinned like the identity ones.
+
+    Two real clips sprinted because their prompt spanned a route ("stroll
+    side by side along the meadow trail until they stop beside the bench"),
+    and a third crammed six beats into 46 words — under the 60-word cap, so
+    the mechanical check let it through. Only word counts are enforced in
+    code; these rules live in the prompts, which makes them easy to lose in
+    a rewrite. Presence is pinned here, NOT model behaviour.
+    """
+
+    def test_planner_forbids_route_spanning_travel(self):
+        from ai_video_maker.clients import openai_client as oc
+        s = oc._MODE_A_SYSTEM
+        assert "PACE AND DISTANCE" in s
+        # The distance must shrink; a gentler verb is explicitly not enough.
+        assert "'stroll'" in s
+        assert "ARRIVAL" in s
+
+    def test_planner_requires_counting_beats_not_just_words(self):
+        from ai_video_maker.clients import openai_client as oc
+        s = oc._MODE_A_SYSTEM
+        assert "COUNT THE BEATS" in s
+        # The worked example is the real 46-word/six-beat prompt.
+        assert "46 words" in s
+
+    def test_condense_collapses_routes_into_the_arrival(self):
+        from ai_video_maker.clients import openai_client as oc
+        s = oc._CONDENSE_MOTION_SYSTEM
+        assert "ARRIVAL" in s
+        assert "sprinting" in s
+
+    def test_reword_keeps_pace_anchors(self):
+        from ai_video_maker.clients import openai_client as oc
+        assert "Pace anchors" in oc._REWORD_MOTION_SYSTEM
