@@ -179,7 +179,10 @@ class Pipeline:
         self.openai = OpenAIClient(config)
         # The state store lets interrupted fal renders resume by request_id
         # instead of re-billing (falreq:<clip> entries).
-        self.video_client = VideoClient(config, state=self.state)
+        self.video_client = VideoClient(
+            config, state=self.state,
+            should_cancel=self.cancel_event.is_set,
+        )
         self.audio_client = AudioClient(config)
         # Audio is on when config.audio_mode == "post", unless overridden by
         # --add-audio / --no-audio for a single run (the `audio` command
@@ -1215,6 +1218,10 @@ class Pipeline:
                         self.state.set(job_id, "done", output=str(dst))
                         self.summary.videos_created += 1
                     logger.info("Clip ready: %s", dst.name)
+                except PipelineCancelled:
+                    # Asked to stop, not a broken clip: don't file it as a
+                    # failure (the submitted job is still recoverable).
+                    raise
                 except Exception as exc:  # noqa: BLE001
                     with self._lock:
                         self.summary.videos_failed += 1

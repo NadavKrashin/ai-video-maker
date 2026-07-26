@@ -545,24 +545,26 @@ export default function ProjectDetail({ name, onBack }) {
 
   useEffect(() => { load().catch((e) => notify(`Load failed: ${e.message}`, 'red')); }, [load]);
 
-  // Poll while a job is queued/running, refresh once when it settles. The
-  // media version bumps with each tick so styled frames appear (and replaced
-  // ones refresh) DURING the job instead of only after it finishes.
+  // Poll while a job is queued/running, refresh once when it settles.
+  //
+  // The media version is bumped ONLY when a job settles — never per tick.
+  // Busting the cache every 3s re-downloaded every styled image and clip
+  // preview on each poll (17 images/tick was measured, ~6000 requests in an
+  // afternoon), which floods the single-worker origin through the tunnel and
+  // makes the whole panel feel frozen. It also isn't needed to watch frames
+  // arrive: a newly styled frame is a URL the browser has never fetched, so
+  // it loads anyway. Cache-busting only matters for files REPLACED in place,
+  // and once at the end covers that.
   const activeJobId = (snap?.jobs || []).find(
     (j) => ['queued', 'running', 'cancelling'].includes(j.state)
   )?.id || '';
   useEffect(() => {
     if (!activeJobId) {
-      // The job just settled: one last bump so the finished frames/clips
-      // aren't served from the cache of their half-done selves.
       setMediaV((v) => v + 1);
       return undefined;
     }
     setShowPhotos(true); // watching the frames arrive is the point of waiting
-    pollRef.current = setInterval(() => {
-      setMediaV((v) => v + 1);
-      load().catch(() => {});
-    }, 3000);
+    pollRef.current = setInterval(() => load().catch(() => {}), 3000);
     return () => clearInterval(pollRef.current);
   }, [activeJobId, load]);
 

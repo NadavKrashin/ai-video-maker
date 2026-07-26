@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from ..config import Config
+from ..errors import PipelineCancelled
 from ..logging_setup import logger
 from ..retry import is_moderation_error, with_reword_recovery
 from ..state import StateStore
@@ -37,12 +38,37 @@ SAFE_FALLBACK_MOTION_PROMPT = (
 )
 
 
+# Frame hashes, shared across VideoClient instances and keyed on identity +
+# mtime + size. The admin panel builds a fresh Pipeline (and VideoClient) for
+# every status poll, so the per-instance cache never hit: reporting pending
+# renders re-read and re-hashed multi-megabyte frames every few seconds. A
+# changed mtime or size only costs a recompute, so a lying mtime is harmless
+# here — unlike staleness decisions, which must stay content-based.
+_HASH_CACHE: dict[tuple[str, int, int], str] = {}
+
+
+def _file_hash_cached(path: Path) -> str:
+    stat = path.stat()
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    if key not in _HASH_CACHE:
+        _HASH_CACHE[key] = hashlib.sha1(path.read_bytes()).hexdigest()
+    return _HASH_CACHE[key]
+
+
 class VideoClient:
     """Renders one clip per consecutive frame pair via fal."""
 
-    def __init__(self, config: Config, state: Optional[StateStore] = None) -> None:
+    def __init__(
+        self,
+        config: Config,
+        state: Optional[StateStore] = None,
+        should_cancel: Optional[Callable[[], bool]] = None,
+    ) -> None:
         self.config = config
         self.state = state
+        # Checked between fal polls so a cancel reaches a clip that is already
+        # waiting, not just the gaps between clips.
+        self.should_cancel = should_cancel
         self.fal = FalSession(config)
         # Cache uploaded-image URLs so a frame shared by two consecutive clips
         # is only uploaded once per run.
@@ -58,7 +84,7 @@ class VideoClient:
 
     def _file_hash(self, path: Path) -> str:
         if path not in self._hash_cache:
-            self._hash_cache[path] = hashlib.sha1(path.read_bytes()).hexdigest()
+            self._hash_cache[path] = _file_hash_cached(path)
         return self._hash_cache[path]
 
     def fingerprint(
@@ -112,7 +138,13 @@ class VideoClient:
             return self.fal.wait_for_result(
                 self.config.fal_model_id, request_id,
                 description=f"fal resume {dst.name}",
+                should_cancel=self.should_cancel,
             )
+        except PipelineCancelled:
+            # A cancel is not a failed recovery: falling through here would
+            # submit (and pay for) a brand-new job in response to the user
+            # asking to stop. Keep the entry so the next run resumes it.
+            raise
         except Exception as exc:  # noqa: BLE001 - resume is best-effort
             logger.warning(
                 "Pending fal request for %s could not be recovered (%s) — "
@@ -202,6 +234,7 @@ class VideoClient:
                 return self.fal.wait_for_result(
                     self.config.fal_model_id, request_id,
                     description=f"fal generate {dst.name}",
+                    should_cancel=self.should_cancel,
                 )
 
             try:

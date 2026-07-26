@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from ai_video_maker.clients import video as video_mod
+from ai_video_maker.errors import PipelineCancelled
 from ai_video_maker.clients.video import VideoClient
 from ai_video_maker.state import StateStore
 
@@ -32,9 +33,12 @@ class FakeFal:
         return request_id
 
     def wait_for_result(
-        self, model_id: str, request_id: str, *, description: str
+        self, model_id: str, request_id: str, *, description: str,
+        should_cancel=None,
     ) -> dict:
         self.waits.append(request_id)
+        if should_cancel is not None and should_cancel():
+            raise PipelineCancelled("cancelled while waiting")
         out = self.results.get(
             request_id, {"video": {"url": f"https://fake.fal/{request_id}.mp4"}}
         )
@@ -157,3 +161,40 @@ class TestFingerprint:
         b.write_bytes(b"two")
         assert VideoClient(config).fingerprint(a, b, "walk", 5) == \
             VideoClient(config).fingerprint(a, b, "walk", 5)
+
+
+class TestCancelDuringWait:
+    """A cancel must reach a clip already waiting on fal.
+
+    Cancellation is checked between work items, but a single-clip render has
+    no such moment: the worker sits inside wait_for_result for up to the full
+    30-minute timeout, so "cancel" did nothing at all. Bailing out is safe —
+    the request_id is persisted, so the next run resumes the paid job.
+    """
+
+    def test_cancel_during_a_fresh_wait_keeps_the_receipt(self, clip_env, config):
+        client, state, start, end, dst, _ = clip_env
+        client.should_cancel = lambda: True
+        with pytest.raises(PipelineCancelled):
+            client.generate_clip(start, end, "walk", 5, dst)
+        entry = state.get(JOB_KEY)
+        assert entry is not None and entry["request_id"] == "req-0"
+        assert not dst.exists()
+
+    def test_cancel_during_resume_does_not_buy_a_replacement(self, clip_env):
+        # The dangerous case: _try_resume swallowing the cancel would submit
+        # (and bill) a brand-new job in response to the user asking to stop.
+        client, state, start, end, dst, _ = clip_env
+        fp = client.fingerprint(start, end, "walk", 5)
+        state.set(JOB_KEY, "pending", request_id="req-old", fingerprint=fp)
+        client.should_cancel = lambda: True
+        with pytest.raises(PipelineCancelled):
+            client.generate_clip(start, end, "walk", 5, dst)
+        assert client.fal.submits == []  # nothing re-bought
+        assert state.get(JOB_KEY)["request_id"] == "req-old"  # still resumable
+
+    def test_no_cancel_flag_behaves_as_before(self, clip_env):
+        client, state, start, end, dst, downloads = clip_env
+        client.should_cancel = lambda: False
+        client.generate_clip(start, end, "walk", 5, dst)
+        assert dst.exists() and state.get(JOB_KEY) is None

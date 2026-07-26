@@ -6,6 +6,7 @@ import re
 import time
 from typing import Callable, Optional, TypeVar
 
+from .errors import PipelineCancelled
 from .logging_setup import logger
 
 T = TypeVar("T")
@@ -87,6 +88,8 @@ def is_retryable_error(exc: BaseException) -> bool:
     so the plain backoff loop stops immediately; prompt-rewording recovery is
     handled one level up in the OpenAI client.
     """
+    if isinstance(exc, PipelineCancelled):
+        return False  # the user asked to stop; retrying defeats the point
     if is_moderation_error(exc):
         return False
     if is_quota_exhausted_error(exc):

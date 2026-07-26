@@ -2,13 +2,19 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from ai_video_maker.errors import PipelineError
-from ai_video_maker.server import _AuthThrottle, create_app
+from ai_video_maker.server import (
+    _AuthThrottle,
+    _install_access_log_redaction,
+    _RedactQueryStrings,
+    create_app,
+)
 
 TOKEN = "a-perfectly-long-admin-token"
 
@@ -119,3 +125,42 @@ class TestThrottle:
         assert res.status_code == 429
         # even the RIGHT token is locked out until the window passes
         assert app_client.get("/api/jobs", headers=_auth()).status_code == 429
+
+
+class TestAccessLogRedaction:
+    """The media route accepts ?token=, so the access log must never keep it.
+
+    Every <img>/<video> request wrote the full ADMIN_API_TOKEN into
+    serve.log in clear text — anyone able to read the file (or a backup)
+    had admin access.
+    """
+
+    def _record(self, path: str) -> logging.LogRecord:
+        rec = logging.LogRecord(
+            "uvicorn.access", logging.INFO, __file__, 1, '%s - "%s %s %s" %d',
+            ("127.0.0.1:0", "GET", path, "HTTP/1.1", 200), None,
+        )
+        _RedactQueryStrings().filter(rec)
+        return rec
+
+    def test_token_query_is_stripped(self):
+        rec = self._record("/api/projects/x/files/styled/a.png?token=SUPERSECRET")
+        assert "SUPERSECRET" not in str(rec.args)
+        assert "/api/projects/x/files/styled/a.png?<redacted>" in str(rec.args)
+
+    def test_every_query_is_dropped_not_just_token(self):
+        # Whole-query removal, so a future parameter cannot leak by omission.
+        rec = self._record("/api/jobs?project=x&token=SECRET&other=1")
+        assert "SECRET" not in str(rec.args) and "project=x" not in str(rec.args)
+
+    def test_paths_without_a_query_are_untouched(self):
+        rec = self._record("/api/health")
+        assert rec.args[2] == "/api/health"
+
+    def test_filter_is_installed_once(self):
+        access = logging.getLogger("uvicorn.access")
+        before = [f for f in access.filters if isinstance(f, _RedactQueryStrings)]
+        _install_access_log_redaction()
+        _install_access_log_redaction()
+        after = [f for f in access.filters if isinstance(f, _RedactQueryStrings)]
+        assert len(after) == max(1, len(before))

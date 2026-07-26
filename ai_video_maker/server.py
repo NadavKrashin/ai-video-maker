@@ -139,6 +139,35 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+class _RedactQueryStrings(logging.Filter):
+    """Strip query strings from uvicorn's access log.
+
+    The media route accepts ``?token=`` because <img>/<video> tags cannot send
+    headers — which meant every image request wrote the full ADMIN_API_TOKEN
+    into the access log in clear text. Anyone able to read the log file (or a
+    backup of it) had full admin access. The path is all that is worth
+    logging, so the query is dropped wholesale rather than pattern-matched:
+    no future query parameter can leak through by being forgotten here.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            path = args[2]
+            if "?" in path:
+                record.args = (
+                    *args[:2], path.split("?", 1)[0] + "?<redacted>", *args[3:],
+                )
+        return True
+
+
+def _install_access_log_redaction() -> None:
+    """Attach the query-string redactor to uvicorn's access logger (once)."""
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, _RedactQueryStrings) for f in access.filters):
+        access.addFilter(_RedactQueryStrings())
+
+
 def _outcome(pipeline: Pipeline) -> tuple[str, str, int]:
     """Turn a completed run into (state, error, failure count).
 
@@ -545,6 +574,8 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
     config = Config.load(config_path)
     jobs = JobRunner(config_path)
     throttle = _AuthThrottle()
+    # Before anything can serve a request that carries ?token=.
+    _install_access_log_redaction()
 
     app = FastAPI(title="ai-video-maker admin API", docs_url=None, redoc_url=None,
                   openapi_url=None)
