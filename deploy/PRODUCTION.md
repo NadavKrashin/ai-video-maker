@@ -100,6 +100,35 @@ in**. Also keep the machine awake:
 sudo pmset -a sleep 0 displaysleep 10 autorestart 1   # autorestart = boot after power loss
 ```
 
+### 3b. Two checkouts: development and production
+
+Production runs from **`~/production/ai-video-maker`** (branch `main`), a
+clone used by nothing else. The mini is *developed* in
+`~/Documents/code/ai-video-maker`, and the two must stay separate — they were
+the same directory until 2026-07-26, which caused three distinct failures in
+one day:
+
+- `deploy.sh` refuses a dirty tree, so one uncommitted file in the dev tree
+  broke every deploy — including deploys triggered from another machine.
+- A deploy force-checks-out `main`, switching branches under whoever was
+  working on the mini.
+- `admin_ui/dist/` is served from disk on every request, so rebuilding the
+  panel while developing changed what customers saw *instantly*, while the
+  Python kept running the old code until a restart. That mismatch produced a
+  batch-render button the backend did not understand, a false "paid renders
+  waiting" alarm, and a 405 on a brand-new endpoint.
+
+The production checkout needs the gitignored files that never travel through
+git — copy them once when setting it up:
+
+```bash
+cp -p .env firebase-service-account.json intro.mp4 ~/production/ai-video-maker/
+```
+
+`projects/` (the real customer movies) lives in the **production** checkout;
+the dev tree has a symlink to it, so both see the same data and there is only
+ever one copy. Each checkout has its own `.venv`.
+
 ### 4. GitHub: branches, protection, runner
 
 Branch flow: day-to-day work happens on **`dev`** (or feature branches merged
