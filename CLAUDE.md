@@ -174,6 +174,17 @@ Core design rules:
   people must stay recognizable as themselves inside a full cartoon look.
   Encoded in `style_prompt` / `scratch_style_prompt` (config.json); keep both
   the likeness and full-scene-cartoon language when touching them.
+- SUBJECTS OUTRANK BACKGROUND in styling (user call, 2026-07-26). A real
+  4-person photo against a stone wall + woodpile came back with the wall
+  and logs lovingly detailed while the faces went generic and one man's
+  wraparound sunglasses changed shape and colour. `style_prompt` now says
+  the detail budget goes to faces, each face in a group gets solo-portrait
+  care, and "approximate background + exact faces = SUCCESS; detailed
+  background + generic faces = FAILURE". It also tells the model to CROP IN
+  rather than invent scenery when reshaping a portrait photo to 16:9 —
+  extending the sides is what shrank the people and spent the budget on
+  background in the first place (`_IMAGE_API_SIZE` is 1536x1024, so a
+  portrait source is always reshaped).
 
 ## Working rules (the user's standing instructions)
 
