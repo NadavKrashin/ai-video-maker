@@ -302,9 +302,15 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
   (cmd_status prints it, the API returns it). `projects/<name>/order.json`
   (written by ingest) ties a project to its Cloudinary order folder; the
   watcher/`orders` listing use it to know what's already handled.
-- The user's `.venv` is a split install: `.venv/bin/python` → an anaconda
-  python3.12 with its own site-packages, `.venv/bin/pip` → python3.11.
-  Install packages with `.venv/bin/python -m pip`, never `.venv/bin/pip`.
+- Install packages with `.venv/bin/python -m pip`, never `.venv/bin/pip`
+  (the dev venv's `pip` shim points at a different interpreter).
+- **Two checkouts since 2026-07-26.** Production runs from
+  `~/production/ai-video-maker` on `main` (its own `.venv`, its own
+  `admin_ui/dist`, and it OWNS `projects/` — the dev tree symlinks to it).
+  Development happens here, in `~/Documents/code/ai-video-maker`. Editing or
+  building here no longer touches production: `npm run build` in the dev
+  tree is safe again. Deploys (`deploy/deploy.sh`, `REPO_DIR`) target the
+  production checkout only.
 - Long-term direction (agreed 2026-07-16): remaining phases — payment
   webhook from the frontend (exact photo_count completeness), delivery step
   (upload final + customer email), later move off the Mac to a VPS behind a

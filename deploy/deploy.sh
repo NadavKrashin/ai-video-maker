@@ -3,9 +3,15 @@
 # origin/main, reinstall, rebuild the panel, restart the launchd service,
 # and verify health. Run by .github/workflows/deploy.yml (self-hosted
 # runner) on every push to main — or by hand: bash deploy/deploy.sh
+#
+# REPO is a checkout used by NOTHING ELSE. It was once the same directory
+# the mini is developed in, which meant a single uncommitted file there
+# failed every deploy, a deploy switched that tree to main underneath
+# whoever was working, and rebuilding the panel while developing changed
+# what customers saw immediately. Keep production separate.
 set -euo pipefail
 
-REPO="${REPO_DIR:-$HOME/Documents/code/ai-video-maker}"
+REPO="${REPO_DIR:-$HOME/production/ai-video-maker}"
 SERVICE="com.animoments.pipeline"
 HEALTH_URL="http://127.0.0.1:8300/api/health"
 
