@@ -239,3 +239,38 @@ class TestPaceAndBeatPromptRules:
     def test_reword_keeps_pace_anchors(self):
         from ai_video_maker.clients import openai_client as oc
         assert "Pace anchors" in oc._REWORD_MOTION_SYSTEM
+
+
+class TestDistinguishingEpithetRules:
+    """Epithets must separate similar people, and staging must say where.
+
+    A real 16-clip movie had TWO bald men; 10 of its 16 prompts said only
+    "the bald man", and the model mixed them up throughout. Separately, a
+    pair that morphed under the collective "the right couple get out of the
+    frame" rendered cleanly when the leavers were named individually with
+    screen positions. Both live in the prompts, so both are pinned here.
+    """
+
+    def test_planner_bans_a_shared_feature_as_an_epithet(self):
+        from ai_video_maker.clients import openai_client as oc
+        s = oc._MODE_A_SYSTEM
+        assert "MUST DISTINGUISH" in s
+        assert "two bald men" in s
+        assert "in the light blue shirt" in s
+
+    def test_planner_requires_position_and_direction(self):
+        from ai_video_maker.clients import openai_client as oc
+        s = oc._MODE_A_SYSTEM
+        assert "SAY WHERE PEOPLE ARE" in s
+        assert "the right couple" in s  # the collective that failed
+        assert "INDIVIDUALLY" in s
+
+    def test_condense_will_not_shorten_an_epithet_into_ambiguity(self):
+        from ai_video_maker.clients import openai_client as oc
+        s = oc._CONDENSE_MOTION_SYSTEM
+        assert "NEVER" in s and "bald man in pink sunglasses" in s
+        assert "Cut scenery before identity." in s
+
+    def test_reword_keeps_the_distinguishing_part(self):
+        from ai_video_maker.clients import openai_client as oc
+        assert "bald man in pink sunglasses" in oc._REWORD_MOTION_SYSTEM
