@@ -197,9 +197,7 @@ _STORYBOARD_SYSTEM = (
     "describing the diegetic ambient sound and sound effects for the clip "
     "that animates this frame into the next one (e.g. 'waves lapping, gulls "
     "calling, soft wind'). Describe real on-screen/world sounds only — no "
-    "music, no speech, no narration. Also write one music_prompt for the "
-    "whole video: a short description of a single instrumental background "
-    "track (mood, genre, instrumentation, no vocals)."
+    "music, no speech, no narration."
 )
 
 # --- Mode A transition planning (vision) ----------------------------------- #
@@ -454,7 +452,6 @@ _STORYBOARD_SCHEMA: dict[str, Any] = {
         "style": {"type": "string"},
         "concept": {"type": "string"},
         "scenes": {"type": "array", "items": {"type": "string"}},
-        "music_prompt": {"type": "string"},
         "frames": {
             "type": "array",
             "items": {
@@ -476,7 +473,7 @@ _STORYBOARD_SCHEMA: dict[str, Any] = {
         },
     },
     "required": [
-        "project_title", "style", "concept", "scenes", "music_prompt", "frames",
+        "project_title", "style", "concept", "scenes", "frames",
     ],
     "additionalProperties": False,
 }
@@ -564,7 +561,6 @@ _STORYBOARD_JSON_SHAPE = (
     '  "style": str,                       // overall visual style sentence\n'
     '  "concept": str,                     // overall concept paragraph\n'
     '  "scenes": [str, ...],               // scene list\n'
-    '  "music_prompt": str,                // one instrumental bed for the whole video, no vocals\n'
     '  "frames": [\n'
     "    {\n"
     '      "id": "001",\n'
@@ -1026,7 +1022,6 @@ class OpenAIClient:
             target_height=self.config.target_height,
             concept=data.get("concept", ""),
             scenes=list(data.get("scenes", [])),
-            music_prompt=str(data.get("music_prompt", "") or ""),
             frames=frames,
             transitions=transitions,
         )

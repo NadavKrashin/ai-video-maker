@@ -840,10 +840,11 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
     async def upload_music(
         name: str, file: UploadFile = File(...)
     ) -> dict[str, Any]:
-        """Set a custom music bed (the UI twin of --music-file).
+        """Set the music bed (the UI twin of --music-file).
 
-        Saved as output/music_custom.mp3, which the pipeline uses instead of
-        generating a track — it wins over generation and survives --force.
+        Music is never generated: an uploaded track is the ONLY way a movie
+        gets a music bed. Saved as output/music_custom.mp3, which wins over
+        any older output/music.mp3 left on disk.
         """
         ws = _workspace(name)
         suffix = Path(file.filename or "").suffix.lower()
@@ -867,7 +868,7 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
 
     @app.delete("/api/projects/{name}/music", dependencies=guarded)
     async def delete_music(name: str) -> dict[str, Any]:
-        """Remove the custom music bed (revert to AI-generated music)."""
+        """Remove the music bed; the movie then has no music at all."""
         ws = _workspace(name)
         ws.custom_music_file.unlink(missing_ok=True)
         return {"ok": True}

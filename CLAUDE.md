@@ -11,7 +11,8 @@ your response). Keep it short and current; remove rules that no longer apply.
 A Python CLI pipeline that turns a folder of images (or a text idea) into a
 short 1920×1080 movie: OpenAI styles the images / plans a storyboard, fal.ai
 (Kling) renders a clip between each consecutive frame pair, optional fal audio
-adds per-clip SFX + a music bed, ffmpeg concatenates everything. It is being
+adds per-clip SFX, ffmpeg concatenates everything and mixes in a
+user-supplied music bed. It is being
 evolved into the backend of a future web app, so every CLI subcommand maps 1:1
 onto a `Pipeline.cmd_*` method (`ai_video_maker/runner.py`) that will become an
 API endpoint. Priorities, in order: workflow smoothness > code quality > cost >
@@ -56,6 +57,11 @@ Core design rules:
 - Resume is existence-based for files (styled images, clips) and
   state-based (`logs/state.json`) for in-place work (SFX, fades). When a clip
   is regenerated its `sfx:`/`fade:` state entries must be cleared.
+- **Music is NEVER generated** (removed 2026-07-26 at the user's request).
+  The bed is always a track the user supplies: `--music-file`, or an upload
+  in the panel's Audio step (`output/music_custom.mp3`). No music model, no
+  music prompt, no `Storyboard.music_prompt` — don't reintroduce them. No
+  track simply means a movie with SFX only, which is a normal outcome.
 - Transition motion prompts must describe in-world subject action, not camera
   moves (see `_MODE_A_SYSTEM` in `clients/openai_client.py`); the user
   explicitly rejects "zoom/pan/pull-back" slideshow-style prompts.

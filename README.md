@@ -76,7 +76,7 @@ the `ADMIN_API_TOKEN` from `.env`:
   no-analyze / frame-count options), regenerating a single styled image,
   reviewing and editing every transition (motion prompt, duration, sound
   prompt, global motion prompt), rendering all clips or regenerating one,
-  per-clip audio redo, uploading your own music track, combine/finalize with
+  per-clip audio redo, uploading the music track, combine/finalize with
   intro/credits/letter toggles, and `run` for the whole chain. Jobs stream
   their logs and can be cancelled from the panel.
   **Editing prompts in bulk:** saving your transition edits marks every
@@ -91,7 +91,7 @@ the `ADMIN_API_TOKEN` from `.env`:
   live — styled frames appear one by one as they come back, instead of only
   once the whole run finishes.
 - **API**: order list, per-project status, storyboard read/edit, photos, a
-  custom music-bed upload (`POST`/`DELETE /api/projects/<name>/music`), and
+  music-bed upload (`POST`/`DELETE /api/projects/<name>/music`), and
   clip playback, plus actions (ingest / storyboard / render / redo one clip /
   audio / combine / run) that run as **background jobs** — one at a time,
   with their logs available at `/api/jobs/<id>`. `POST /api/jobs/<id>/cancel`
@@ -379,8 +379,8 @@ re-rendered until you regenerate that clip yourself (`render --clip ID` / the
 panel's regenerate button).
 
 **Whole-movie guidance — `global_motion_prompt`:** the storyboard has a
-top-level `global_motion_prompt` field (empty by default, hand-edit it like
-`music_prompt`). Whatever you put there is prepended to *every* clip's motion
+top-level `global_motion_prompt` field (empty by default, hand-edited between
+steps). Whatever you put there is prepended to *every* clip's motion
 prompt at render time and given to the planner as context, so facts that hold
 across the whole movie live in one place instead of being repeated per clip —
 e.g. `"Two different children appear throughout: an older boy with glasses
@@ -470,7 +470,7 @@ project name as its first argument (except `orders`, which is project-less).
 | `init` | — |
 | `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--replan-clip ID` (repeatable; fresh motion prompt for that pair), `--restyle-frame NAME` (repeatable; re-style that frame, e.g. `2.png`, marking adjacent clips outdated), `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
 | `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 5\|10`, `--add-audio`, `--no-audio` |
-| `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-prompt`, `--music-file PATH` |
+| `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-file PATH` |
 | `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--add-audio`, `--no-audio`, `--final`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter` |
 | `status` | — |
 | `run` | everything above except `--clip`, plus `--no-combine` |
@@ -568,7 +568,7 @@ Everything below lives inside the project workspace, `projects/<name>/`:
 | `styled_images/` | Styled frames (`001_styled.png`, …) |
 | `generated_frames/` | Idea-based generated frames (`001.png`, …) |
 | `clips/` | Rendered clips (`001_to_002.mp4`, …) |
-| `output/` | `final_video.mp4` + `music.mp3` (the generated bed, when audio is on) + `music_custom.mp3` (an uploaded track, when you supply your own) |
+| `output/` | `final_video.mp4` + `music_custom.mp3` (the music track you uploaded, when you supplied one) |
 | `storyboard/` | `storyboard.json` (editable source of truth), `storyboard.md` (readable view), `preview.html` (visual contact sheet — open it in a browser) |
 | `logs/` | Run logs + `state.json` |
 | `failed_jobs/` | `failed_jobs.json` |
@@ -585,10 +585,11 @@ account). Two independent layers:
    model (default `fal-ai/mmaudio-v2`), which watches the clip and returns the
    **same clip with synchronized sound muxed in**. Because it reads the actual
    pixels, every clip gets its own motion-matched audio.
-2. **Music bed** — one instrumental track (default `fal-ai/elevenlabs/music`)
-   is generated from a single prompt and mixed across the whole final video,
-   **louder than the clip SFX** (the SFX is ducked under it). Tune the balance
-   with `music_volume` / `sfx_volume` in `config.json`.
+2. **Music bed** — one track **you supply**, mixed across the whole final
+   video, **louder than the clip SFX** (the SFX is ducked under it). Music is
+   never generated: upload a track in the panel's Audio step, or pass
+   `--music-file`. No track means the movie simply has no music. Tune the
+   balance with `music_volume` / `sfx_volume` in `config.json`.
 
 ### Turning it on
 
@@ -603,34 +604,31 @@ python pipeline.py run myfilm --add-audio
 # Already have silent clips? Add SFX + music and rebuild the final video:
 python pipeline.py audio myfilm
 
-# Use your own music track instead of generating one:
+# Add your music track (the only way to get a music bed):
 python pipeline.py audio myfilm --music-file ~/Music/mytrack.mp3
-
-# Override just the music prompt:
-python pipeline.py audio myfilm --music-prompt "Upbeat playful ukulele, no vocals"
 
 # Force-off for one run even if config has audio_mode: post
 python pipeline.py run myfilm --no-audio
 ```
 
-The music bed comes from `--music-file` if given, else an uploaded custom track
-(`output/music_custom.mp3` — dropped in via the panel's "Upload my own music",
-and used as-is for the whole movie: it wins over generation and survives
-`--force`), else the project's existing generated `output/music.mp3`, else it is
-generated from the music prompt (storyboard's `music_prompt`, or
-`--music-prompt`, or config).
+The music bed comes from `--music-file` if given, else an uploaded track
+(`output/music_custom.mp3` — dropped in via the panel's Audio step and used
+as-is for the whole movie), else a pre-existing `output/music.mp3`. If none of
+those exist the movie is built with sound effects only — that is a normal
+outcome, not an error.
 
-Cost is roughly **$0.20–0.50 per full video** (MMAudio is ~$0.001/s; music is
-one short call). Requires `ffmpeg`/`ffprobe` on your `PATH`.
+Cost is roughly **$0.20–0.50 per full video** (MMAudio is ~$0.001/s; the music
+bed costs nothing — it is your own file). Requires `ffmpeg`/`ffprobe` on your
+`PATH`.
 
 ### Where the prompts come from
 
 - **Image-based projects:** the frame analysis writes a per-clip `sound_prompt`
-  into each transition; blank ones fall back to `default_sfx_prompt`. The music
-  bed prompt comes from `config.json` (or `--music-prompt`).
+  into each transition; blank ones fall back to `default_sfx_prompt`.
 - **Idea-based projects:** the storyboard also plans a `sound_prompt` per
-  transition and one `music_prompt` for the whole video — all editable in
-  `storyboard.json` before rendering.
+  transition — editable in `storyboard.json` before rendering.
+- **The music bed has no prompt**: it is the file you upload (panel) or pass
+  with `--music-file`, never generated.
 
 ### Config keys
 
@@ -644,11 +642,8 @@ one short call). Requires `ffmpeg`/`ffprobe` on your `PATH`.
 | `sfx_extra_arguments` | Extra model-specific args merged into each SFX call. |
 | `sfx_fade_seconds` | Fade each clip's SFX in/out at its edges so hard cuts aren't abrupt (the music bed carries the dip). Sync-preserving; `0` disables. Default `0.2`. |
 | `sfx_volume` | `0..1`, how loud the per-clip SFX sits **under** the music (default `0.35`). |
-| `music_model_id` | fal text→music model. Default `fal-ai/elevenlabs/music`. |
-| `music_prompt` | Background-music description (fallback). |
 | `music_volume` | `0..1`, how loud the background bed plays (default `0.85`). |
 | `music_loop` | `false` (default): the track plays once; if the video is longer, the rest continues with SFX only. `true`: the track repeats for the whole video. A track longer than the video is trimmed either way. |
-| `music_extra_arguments` | Extra model-specific args for the music call. |
 
 Swap the SFX or music model by changing the id (e.g. `fal-ai/lyria2`,
 `cassetteai/music-generator`, `fal-ai/thinksound`) — no code changes. SFX and

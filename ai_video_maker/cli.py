@@ -198,11 +198,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Redo audio for only this clip (e.g. 003_to_004), even "
                          "if it already has SFX — use after editing its "
                          "sound_prompt in the storyboard. Repeatable.")
-    sp.add_argument("--music-prompt", default=None,
-                    help="Override the background-music prompt for this run.")
     sp.add_argument("--music-file", default=None,
-                    help="Use this audio file as the music bed instead of "
-                         "reusing/generating output/music.mp3.")
+                    help="Use this audio file as the music bed (music is "
+                         "never generated; supply a track or get none).")
 
     sp = command("combine",
                  "Concatenate the storyboard's clips into "
@@ -256,8 +254,6 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Skip the vision analysis of the styled frames.")
     sp.add_argument("--no-combine", action="store_true",
                     help="Stop after the clips; don't build the final video.")
-    sp.add_argument("--music-prompt", default=None,
-                    help="Override the background-music prompt.")
     sp.add_argument("--music-file", default=None,
                     help="Use this audio file as the music bed.")
     sp.add_argument("--idea", default=None,

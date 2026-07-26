@@ -268,7 +268,7 @@ def _save_slug_storyboard(workspace, names) -> Storyboard:
                    output_path=f"clips/{a}_to_{b}.mp4")
         for a, b in zip(names, names[1:])
     ]
-    sb = Storyboard(project_title="t", style="style", music_prompt="the tune",
+    sb = Storyboard(project_title="t", style="style",
                     global_motion_prompt="two separate kids, never merged",
                     frames=frames, transitions=transitions)
     sb.save(workspace.default_storyboard_json)
@@ -325,7 +325,6 @@ class TestReconcileStoryboard:
         assert sb.transitions[0].motion_prompt == "a real plan"
         assert stale == ["a_to_b"]  # confirm-gated deletion downstream
         # user-level fields carried over
-        assert sb.music_prompt == "the tune"
         assert sb.global_motion_prompt == "two separate kids, never merged"
 
     def test_inserted_frame_replans_only_its_two_pairs(self, make_pipeline, workspace):
@@ -804,24 +803,40 @@ class TestRestyleImages:
 
 
 class TestResolveMusicFile:
-    """Custom uploaded music beats generation and survives --force."""
+    """The bed is always a supplied track; nothing is ever generated."""
 
     def test_prefers_uploaded_custom_music(self, make_pipeline, workspace):
         p = make_pipeline()
-        _touch(workspace.music_file, b"generated")
+        _touch(workspace.music_file, b"older")
         _touch(workspace.custom_music_file, b"custom")
         assert p._resolve_music_file() == workspace.custom_music_file
 
     def test_custom_music_wins_even_under_force(self, make_pipeline, workspace):
         p = make_pipeline(force=True)
-        _touch(workspace.music_file, b"generated")
+        _touch(workspace.music_file, b"older")
         _touch(workspace.custom_music_file, b"custom")
         assert p._resolve_music_file() == workspace.custom_music_file
 
-    def test_falls_back_to_generated_music(self, make_pipeline, workspace):
+    def test_music_file_option_wins_over_everything(self, make_pipeline, workspace, tmp_path):
+        supplied = _touch(tmp_path / "mine.mp3", b"mine")
+        p = make_pipeline(music_file=str(supplied))
+        _touch(workspace.custom_music_file, b"custom")
+        assert p._resolve_music_file() == supplied
+
+    def test_missing_music_file_option_is_an_error(self, make_pipeline, tmp_path):
+        p = make_pipeline(music_file=str(tmp_path / "nope.mp3"))
+        with pytest.raises(PipelineError, match="--music-file not found"):
+            p._resolve_music_file()
+
+    def test_existing_track_on_disk_is_reused(self, make_pipeline, workspace):
         p = make_pipeline()
-        _touch(workspace.music_file, b"generated")
+        _touch(workspace.music_file, b"older")
         assert p._resolve_music_file() == workspace.music_file
+
+    def test_no_track_means_no_music_not_generation(self, make_pipeline):
+        # Nothing to generate from any more: the movie is simply built silent.
+        p = make_pipeline()
+        assert p._resolve_music_file() is None
 
 
 class TestSnapshotMusic:

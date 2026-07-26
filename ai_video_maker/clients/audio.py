@@ -18,7 +18,11 @@ from .fal import FalSession, extract_media_url
 
 
 class AudioClient:
-    """fal-backed per-clip SFX (video->audio) + a text->music track."""
+    """fal-backed per-clip SFX (video->audio).
+
+    The music bed is NOT generated — it is always a track the user supplies
+    (uploaded in the panel or passed with --music-file).
+    """
 
     def __init__(self, config: Config) -> None:
         self.config = config
@@ -49,15 +53,3 @@ class AudioClient:
             self.config.sfx_model_id, arguments, description="SFX generate"
         )
         self._download(extract_media_url(result, ("video",)), clip)
-
-    def generate_music(self, prompt: str, dst: Path) -> None:
-        """Generate one instrumental track from `prompt` and save it to `dst`."""
-        arguments: dict[str, Any] = {"prompt": prompt}
-        arguments.update(self.config.music_extra_arguments)
-        logger.info("Music job: %s (model=%s)", dst.name, self.config.music_model_id)
-        result = self.fal.subscribe(
-            self.config.music_model_id, arguments, description="music generate"
-        )
-        self._download(
-            extract_media_url(result, ("audio", "audio_file", "video")), dst
-        )

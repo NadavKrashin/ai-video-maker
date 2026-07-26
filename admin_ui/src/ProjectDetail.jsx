@@ -310,11 +310,8 @@ function RenderPanel({ ask, locked, info, onGenerateAll }) {
 }
 
 function AudioPanel({ ask, locked, info, onUploadMusic, onRemoveMusic, musicBusy }) {
-  const [musicPrompt, setMusicPrompt] = useState('');
   const musicInputRef = useRef(null);
   const start = () => {
-    const o = {};
-    if (musicPrompt.trim()) o.music_prompt = musicPrompt.trim();
     ask({
       title: 'Run audio?',
       lines: [
@@ -322,11 +319,11 @@ function AudioPanel({ ask, locked, info, onUploadMusic, onRemoveMusic, musicBusy
           ? `Adds synced sound effects to ${info.silentRendered} silent clip(s) (clips that already have SFX are skipped).`
           : 'All rendered clips already have SFX — they are skipped.',
         info.customMusic
-          ? 'Uses your uploaded music track for the background bed (no music is generated), then rebuilds the final video with everything mixed.'
-          : 'Generates the background music track if it doesn\'t exist yet, then rebuilds the final video with everything mixed.',
+          ? 'Uses your uploaded music track for the background bed, then rebuilds the final video with everything mixed.'
+          : 'No music track has been uploaded, so the movie is rebuilt with sound effects only — upload one below if you want a music bed.',
         'Audio jobs are much cheaper than clip renders.'
       ],
-      cost: 'fal', label: 'Run audio', command: 'audio', options: o
+      cost: 'fal', label: 'Run audio', command: 'audio'
     });
   };
   return (
@@ -337,10 +334,6 @@ function AudioPanel({ ask, locked, info, onUploadMusic, onRemoveMusic, musicBusy
         for a silent film.
       </PanelIntro>
       <Group align="flex-end">
-        <TextInput label="Music prompt override (optional)" style={{ flex: 1 }} miw={240}
-          placeholder={info.customMusic ? '(custom music uploaded — prompt unused)' : '(config music_prompt)'}
-          disabled={info.customMusic}
-          value={musicPrompt} onChange={(e) => setMusicPrompt(e.target.value)} />
         <Button disabled={locked} onClick={start}>Run audio…</Button>
       </Group>
       <input ref={musicInputRef} type="file" accept="audio/*"
@@ -350,7 +343,7 @@ function AudioPanel({ ask, locked, info, onUploadMusic, onRemoveMusic, musicBusy
         <Text size="sm" fw={600}>Background music:</Text>
         {info.customMusic ? (
           <>
-            <Badge variant="light" color="green">custom track uploaded</Badge>
+            <Badge variant="light" color="green">track uploaded</Badge>
             <Button variant="default" size="xs" loading={musicBusy}
               onClick={() => musicInputRef.current?.click()}>Replace</Button>
             <Button variant="subtle" color="red" size="xs" onClick={onRemoveMusic}>
@@ -359,15 +352,16 @@ function AudioPanel({ ask, locked, info, onUploadMusic, onRemoveMusic, musicBusy
           </>
         ) : (
           <>
-            <Text size="xs" c="dimmed">AI-generated from the music prompt</Text>
+            <Badge variant="light" color="gray">none — the movie will have no music</Badge>
             <Button variant="default" size="xs" loading={musicBusy}
-              onClick={() => musicInputRef.current?.click()}>Upload my own music…</Button>
+              onClick={() => musicInputRef.current?.click()}>Upload a music track…</Button>
           </>
         )}
       </Group>
       <Text size="xs" c="dimmed" mt={4}>
-        An uploaded track is used as-is for the whole movie and is never
-        regenerated. Applied on the next Audio or Combine run.
+        Music is never generated — the bed is whatever track you upload here
+        (mp3, wav, m4a…). It is used as-is for the whole movie and applied on
+        the next Audio or Combine run.
       </Text>
     </div>
   );
@@ -802,7 +796,7 @@ export default function ProjectDetail({ name, onBack }) {
     setMusicBusy(true);
     try {
       await api.uploadMusic(name, file);
-      notify('Custom music uploaded', 'green');
+      notify('Music track uploaded', 'green');
       await load();
     } catch (e) { notify(`Music upload failed: ${e.message}`, 'red'); }
     finally { setMusicBusy(false); }
@@ -810,17 +804,17 @@ export default function ProjectDetail({ name, onBack }) {
 
   const removeMusic = () => {
     ask({
-      title: 'Remove custom music?',
+      title: 'Remove the music track?',
       lines: [
         'Deletes the uploaded music track from this project.',
-        'The next Audio or Combine run generates a music bed from the music prompt instead.'
+        'The movie will then have no background music at all until you upload another track.'
       ],
       cost: 'free', danger: true,
       label: 'Remove music',
       action: async () => {
         try {
           await api.deleteMusic(name);
-          notify('Custom music removed');
+          notify('Music track removed');
           await load();
         } catch (e) { notify(`Remove failed: ${e.message}`, 'red'); }
       }

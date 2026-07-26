@@ -26,7 +26,6 @@ class RunOptions:
     duration: Optional[int] = None
     motion_prompt: Optional[str] = None
     style_prompt: Optional[str] = None
-    music_prompt: Optional[str] = None
     music_file: Optional[str] = None
     # Analyse the styled frames to plan per-clip motion + duration.
     analyze_frames: bool = True
@@ -82,7 +81,6 @@ class RunOptions:
             duration=get("duration"),
             motion_prompt=get("motion_prompt"),
             style_prompt=get("style_prompt"),
-            music_prompt=get("music_prompt"),
             music_file=get("music_file"),
             analyze_frames=not get("no_analyze", False),
             idea=get("idea"),

@@ -194,7 +194,6 @@ class Pipeline:
         else:
             self.audio_enabled = (config.audio_mode or "none").lower() == "post"
         # Resolved when a storyboard is loaded; falls back to config.
-        self._storyboard_music_prompt: str = ""
         # Concurrency for the I/O-bound generation steps.
         self.concurrency: int = max(
             1, options.concurrency or config.max_parallel_requests
@@ -767,7 +766,6 @@ class Pipeline:
             or (saved.duration_per_clip if saved else self.config.duration),
             target_width=self.config.target_width,
             target_height=self.config.target_height,
-            music_prompt=saved.music_prompt if saved else "",
             global_motion_prompt=saved.global_motion_prompt if saved else "",
             frames=frames,
             transitions=transitions,
@@ -947,7 +945,6 @@ class Pipeline:
         """
         storyboard = self._require_storyboard("render")
         self.summary.input_count = len(storyboard.frames)
-        self._storyboard_music_prompt = storyboard.music_prompt or ""
 
         self._generate_frames(storyboard)
 
@@ -1277,7 +1274,6 @@ class Pipeline:
         if sb_path.exists():
             try:
                 sb = Storyboard.load(sb_path)
-                self._storyboard_music_prompt = sb.music_prompt or ""
                 for tr in sb.transitions:
                     sound_map[Path(tr.output_path).name] = tr.sound_prompt
                 logger.info("Using per-clip sound prompts from %s", sb_path.name)
@@ -1768,22 +1764,15 @@ class Pipeline:
         )
         return dst
 
-    def _resolve_music_prompt(self) -> str:
-        return (
-            self.options.music_prompt
-            or self._storyboard_music_prompt
-            or self.config.music_prompt
-        )
-
     def _resolve_music_file(self) -> Optional[Path]:
         """Decide which music track to lay under the final video.
 
-        --music-file wins (and must exist). Next comes an uploaded custom track
-        (output/music_custom.mp3, e.g. from the panel) — it always wins over
-        generation and survives --force. Otherwise the project's
-        output/music.mp3 is reused when present (unless --force), and failing
-        that a track is generated from the resolved music prompt. Returns None
-        to proceed without music.
+        The music bed is always a track SUPPLIED by the user — nothing is
+        generated. In order: --music-file (must exist), then an uploaded
+        custom track (output/music_custom.mp3, e.g. from the panel), then a
+        pre-existing output/music.mp3 (a track left by an older run or
+        dropped in by hand). Returns None to finish the movie without music,
+        which is a normal outcome rather than a failure.
         """
         if self.options.music_file:
             supplied = Path(self.options.music_file).expanduser()
@@ -1796,28 +1785,14 @@ class Pipeline:
             logger.info("Using uploaded custom music: %s", custom)
             return custom
         default = self.workspace.music_file
-        if default.exists() and not self.force:
+        if default.exists():
             logger.info("Reusing music file: %s", default)
             return default
-        return self._generate_music_file(default)
-
-    def _generate_music_file(self, dst: Path) -> Optional[Path]:
-        """Generate a music track into `dst` from the resolved prompt.
-
-        Returns `dst` on success, or None when there's no prompt or generation
-        fails (the run still finishes, just without a music bed).
-        """
-        prompt = self._resolve_music_prompt().strip()
-        if not prompt:
-            logger.info("No music_prompt set; skipping music bed.")
-            return None
-        try:
-            self.audio_client.generate_music(prompt, dst)
-            return dst
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Music generation failed: %s", exc)
-            self.failed.record("music:final", "music", str(exc))
-            return None
+        logger.info(
+            "No music track supplied; the movie is built without a music bed. "
+            "Upload one in the panel, or pass --music-file PATH."
+        )
+        return None
 
     def _add_music(self, music_file: Optional[Path]) -> None:
         """Mix `music_file` over output/final_video.mp4 (louder than the SFX)."""
@@ -2131,7 +2106,6 @@ class Pipeline:
                 return
 
         self.summary.input_count = self.summary.input_count or len(storyboard.frames)
-        self._storyboard_music_prompt = storyboard.music_prompt or ""
         self._generate_frames(storyboard)
         pairs = self._pairs_from_storyboard(storyboard)
         self._render_pairs(pairs, set())

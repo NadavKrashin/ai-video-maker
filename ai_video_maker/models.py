@@ -47,11 +47,9 @@ class Storyboard(BaseModel):
     target_height: int = 1080
     concept: str = ""
     scenes: list[str] = Field(default_factory=list)
-    # Optional global background-music description for the audio step.
-    music_prompt: str = ""
     # Optional guidance that applies to EVERY clip: prepended to each
     # transition's motion prompt at render time and given to the planner as
-    # context (hand-edited between steps, like music_prompt). For facts that
+    # context (hand-edited between steps). For facts that
     # hold across the whole movie — e.g. "Two different children appear
     # throughout: an older boy with glasses and a younger girl; they are
     # separate people, never blend one into the other." Keep it to a sentence

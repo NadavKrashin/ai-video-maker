@@ -54,9 +54,10 @@ class Config(BaseModel):
     # Two layers:
     #   * SFX/ambient: a video->audio model runs on each silent clip and returns
     #     the SAME clip with synced sound muxed in (replaces the file).
-    #   * Music bed: one track from `music_prompt`, mixed across the whole
-    #     concatenated final video, louder than the per-clip SFX (which is
-    #     ducked under it). See music_volume / sfx_volume.
+    #   * Music bed: a track SUPPLIED BY THE USER (uploaded in the panel or
+    #     --music-file), mixed across the whole concatenated final video,
+    #     louder than the per-clip SFX (which is ducked under it). Never
+    #     generated. See music_volume / sfx_volume.
     # Leave audio_mode "none" to keep clips silent.
     audio_mode: str = "none"                # "none" | "post"
     # Video->audio model (returns video with synchronized audio).
@@ -75,12 +76,9 @@ class Config(BaseModel):
     # continuous music bed carries the dip) instead of switching abruptly. Sync
     # is preserved (the fade is inside the clip, no overlap). Set 0 to disable.
     sfx_fade_seconds: float = 0.2
-    # Music model (text -> a music track). ElevenLabs Music via fal by default;
-    # swap for fal-ai/lyria2, cassetteai/music-generator, beatoven/..., etc.
-    music_model_id: str = "fal-ai/elevenlabs/music"
-    music_prompt: str = (
-        "Soft cinematic instrumental underscore, gentle and warm, no vocals."
-    )
+    # The music bed is never generated — it is always a track the user
+    # supplies (uploaded in the panel, or --music-file). There is therefore no
+    # music model or music prompt to configure; only how it is mixed.
     # Relative levels when the music bed is mixed with the per-clip SFX. The
     # background music is meant to sit ON TOP of (louder than) the clip SFX, so
     # the SFX is ducked under it. Both are 0..1; what matters is the ratio
@@ -91,7 +89,6 @@ class Config(BaseModel):
     # False (default): the track plays once and the rest of the video continues
     # with SFX only. True: the track loops for the whole video length.
     music_loop: bool = False
-    music_extra_arguments: dict[str, Any] = Field(default_factory=dict)
 
     # --- Presentation extras (pure ffmpeg, free, all OFF by default) -------- #
     # credits_photos: after the last clip, the original photos play as a short
