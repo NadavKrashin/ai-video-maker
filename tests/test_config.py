@@ -26,6 +26,12 @@ class TestConfigLoad:
         cfg = Config.load(_write(tmp_path / "config.json", _BASE))
         assert cfg.style_prompt == "base style"
 
+    def test_background_watcher_is_opt_in(self, tmp_path):
+        # The user explicitly rejected background polling (2026-07-18):
+        # orders are fetched live by the panel; auto-ingest is opt-in.
+        cfg = Config.load(_write(tmp_path / "config.json", _BASE))
+        assert cfg.watch_enabled is False
+
     def test_missing_base_raises(self, tmp_path):
         with pytest.raises(ConfigError, match="not found"):
             Config.load(tmp_path / "nope.json")

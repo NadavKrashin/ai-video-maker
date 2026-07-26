@@ -11,7 +11,8 @@ your response). Keep it short and current; remove rules that no longer apply.
 A Python CLI pipeline that turns a folder of images (or a text idea) into a
 short 1920×1080 movie: OpenAI styles the images / plans a storyboard, fal.ai
 (Kling) renders a clip between each consecutive frame pair, optional fal audio
-adds per-clip SFX + a music bed, ffmpeg concatenates everything. It is being
+adds per-clip SFX, ffmpeg concatenates everything and mixes in a
+user-supplied music bed. It is being
 evolved into the backend of a future web app, so every CLI subcommand maps 1:1
 onto a `Pipeline.cmd_*` method (`ai_video_maker/runner.py`) that will become an
 API endpoint. Priorities, in order: workflow smoothness > code quality > cost >
@@ -37,13 +38,36 @@ Core design rules:
   shown by status/snapshot/panel). **Clips are NEVER auto-deleted or
   auto-re-rendered**: confirm gates don't protect server jobs (the admin
   API's confirm auto-answers yes — that combination deleted 26 rendered
-  clips on a real order), so redoing a clip is always an explicit per-clip
-  action (`render --clip ID`), which also clears the stale mark.
+  clips on a real order), so redoing a clip is always an explicit, named
+  action (`render --clip ID`, repeatable), which also clears the stale mark.
+  The panel's "Generate everything that needs it" batches outdated +
+  never-rendered clips into ONE render job, but stays inside that rule: the
+  clip ids are enumerated client-side from the snapshot and listed
+  individually in the confirmation modal — never a blanket "re-render all".
+- Saving a storyboard through the API (`PUT /api/projects/<n>/storyboard`)
+  DIFFS against the copy on disk and marks the rendered clips whose plan
+  changed as stale (`changed_transition_ids` in models.py). Motion prompt /
+  duration / start_frame / end_frame invalidate the clip; `sound_prompt`
+  does NOT (that only feeds the audio step); editing `global_motion_prompt`
+  invalidates every clip, because it is prepended to each prompt at render
+  time. Without this a hand edit lived only in the browser tab that made it,
+  so nothing downstream could know which clips to redo.
 - **No `input()` or other stdin use inside `ai_video_maker/`** — all
   interactivity lives in `cli.py` via the injected `confirm` callback.
 - Resume is existence-based for files (styled images, clips) and
   state-based (`logs/state.json`) for in-place work (SFX, fades). When a clip
   is regenerated its `sfx:`/`fade:` state entries must be cleared.
+- **Music is NEVER generated** (removed 2026-07-26 at the user's request).
+  The bed is always a track the user supplies: `--music-file`, or an upload
+  in the panel's Audio or Combine step, a URL (`--music-url` /
+  `POST /api/projects/<n>/music/url`) — all of which write
+  `output/music_custom.mp3`. No music model, no music prompt, no
+  `Storyboard.music_prompt` — don't reintroduce them. No track simply means
+  a movie with SFX only, which is a normal outcome. URL fetching
+  (`media/music_url.py`) takes a direct audio link via requests or extracts
+  a page's audio with yt-dlp; 60 MB cap, http(s) only. yt-dlp breaks when
+  YouTube changes and needs `pip install -U yt-dlp`. LICENSING is the
+  user's call and the panel says so at the input — these movies are sold.
 - Transition motion prompts must describe in-world subject action, not camera
   moves (see `_MODE_A_SYSTEM` in `clients/openai_client.py`); the user
   explicitly rejects "zoom/pan/pull-back" slideshow-style prompts.
@@ -97,16 +121,39 @@ Core design rules:
   changes), or one person visibly crossing in front of/behind the other.
   A swap rates difficulty ≥4; swap + setting change = 5. Enforced in
   `_MODE_A_SYSTEM` and the difficulty rubric.
+- PACE AND DISTANCE: a motion prompt that spans a ROUTE makes Kling cover
+  that route inside the clip — the people sprint or skate across the ground.
+  Two real clips died this way ("stroll side by side along the meadow trail
+  until they stop beside the bench"; "stroll down toward a green resort
+  lawn"). A gentler verb does NOT fix it — "stroll"/"amble"/"wander" still
+  say "cover this whole route now"; the DISTANCE has to shrink. Prompts
+  describe the ARRIVAL only ("takes the last few unhurried steps to the
+  bench and settles onto it") and name the pace. Genuinely far-apart frames
+  aren't a walking shot at all: rate 4-5 and stage exit-past-camera +
+  re-entry, or a world morph around a steady subject. Enforced in
+  `_MODE_A_SYSTEM`, `_CONDENSE_MOTION_SYSTEM` and `_REWORD_MOTION_SYSTEM`
+  (pace anchors are not "risky detail" to drop).
+- The WORD CAP DOES NOT CATCH BEAT OVERLOAD: a real 10s prompt ("they
+  laugh, step back from the edge, and stroll down toward a green resort
+  lawn where they change into white robes, set backpacks aside, and move
+  together into a relaxed selfie") was only 46 words — inside the 60-word
+  cap — but SIX beats, and rendered as a frantic sprint. `_MODE_A_SYSTEM`
+  therefore tells the planner to COUNT beats explicitly (chained
+  and/then/where/until = another beat) on top of the word cap. Beats are
+  not mechanically enforced — only word counts are.
 - Clip durations must LEAN SHORT, and prompt-side bias alone cannot deliver
   it: real plans came back all-5s under "prefer 5" and all-10s under a
   hard-transition checklist (in a photo-album movie nearly every pair
   changes setting or outfit). The planner therefore only RATES each pair's
   difficulty 1-5 (3 = one major change, 4 = two at once OR any transition
   that can't physically play out in 5s, 5 = shares almost nothing /
-  different people) and code derives durations: >=4 → 10s, capped
-  at 1/3 of clips (`_LONG_CLIP_MAX_FRACTION`, `_select_long_clips` in
-  clients/openai_client.py). A hard pair squeezed into 5s visibly teleports
-  (seen in a real render), so keep both sides of the balance.
+  different people) and code derives durations: >=4 → 10s, capped at
+  `config.long_clip_max_fraction` of the clips (default 0.5, was a hardcoded
+  1/3 until 2026-07-26 — the cap was demoting genuinely hard pairs to 5s;
+  `_select_long_clips` in clients/openai_client.py). A hard pair squeezed
+  into 5s visibly teleports (seen in a real render), so keep both sides of
+  the balance — raising the fraction also raises cost, since a 10s clip is
+  about twice a 5s one.
 - A RELOCATION WITHIN ONE SETTING (high chair → couch across the same room,
   subject prominent in both frames) is a difficulty-4 pair even though the
   setting/outfit don't change: exit + crossing + arrival can't compress
@@ -127,11 +174,34 @@ Core design rules:
   people must stay recognizable as themselves inside a full cartoon look.
   Encoded in `style_prompt` / `scratch_style_prompt` (config.json); keep both
   the likeness and full-scene-cartoon language when touching them.
+- SUBJECTS OUTRANK BACKGROUND in styling (user call, 2026-07-26). A real
+  4-person photo against a stone wall + woodpile came back with the wall
+  and logs lovingly detailed while the faces went generic and one man's
+  wraparound sunglasses changed shape and colour. `style_prompt` now says
+  the detail budget goes to faces, each face in a group gets solo-portrait
+  care, and "approximate background + exact faces = SUCCESS; detailed
+  background + generic faces = FAILURE". It also tells the model to CROP IN
+  rather than invent scenery when reshaping a portrait photo to 16:9 —
+  extending the sides is what shrank the people and spent the budget on
+  background in the first place (`_IMAGE_API_SIZE` is 1536x1024, so a
+  portrait source is always reshaped).
+- BALDNESS GETS "CORRECTED" BY THE IMAGE MODEL unless forbidden: a real
+  styling gave a cleanly bald man a horseshoe of dark hair around his ears
+  (frame 920acc69 on Ari&Michal), and changed wraparound mirrored
+  sunglasses into square white-framed ones. This is not only cosmetic — the
+  motion prompts identify people by visible appearance ("the bald man in
+  pink sunglasses"), so a styling that adds hair breaks the epithet Kling
+  is shown. `style_prompt` now forbids restoring/improving hair in either
+  direction and treats eyewear shape/colour as an identifying feature.
 
 ## Working rules (the user's standing instructions)
 
-1. **Before committing anything, ask which branch to work on** (unless the
-   user already said in this session). Do not assume `main`.
+1. **Branch flow (since 2026-07-18): work lands on `dev`** (or a feature
+   branch merged into `dev`); `main` is production — pushing `main`
+   auto-deploys to the Mac mini via the self-hosted runner
+   (`.github/workflows/deploy.yml`). Never commit straight to `main`;
+   releasing is a PR `dev` → `main`. If the user asks for something odd,
+   confirm the branch first.
 2. **Commit after each completed feature/fix** — small, focused commits with
    messages explaining *why*, not just *what*.
 3. **Run the tests before every commit:** `.venv/bin/python -m pytest tests/ -q`
@@ -184,16 +254,50 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
   in both Cloudinary folder modes), public_id-prefix as fallback. `orders`
   is the one project-less CLI command — special-cased in cli.py before
   workspace resolution.
-- `pipeline.py serve` (`server.py`) is the admin API + order watcher: FastAPI,
-  token auth via ADMIN_API_TOKEN in .env (Bearer header or `?token=` for
-  media tags), serial background JobRunner (one pipeline command at a time,
-  whitelisted commands/options), and a watcher thread that auto-ingests a
-  new order once uploads have been quiet `watch_quiet_minutes` (the frontend
-  confirms payment BEFORE photos finish uploading — never ingest on folder
-  existence alone). `watch_auto_storyboard` (default on) spends OpenAI
-  credits automatically per paid order — deliberate, user-approved. The
-  review surface is the animoments admin panel (frontend repo), which polls
-  this API; the user explicitly chose the panel over Telegram notifications.
+- `pipeline.py serve` (`server.py`) is the admin panel + API + order intake:
+  FastAPI, token auth via ADMIN_API_TOKEN in .env (Bearer header everywhere;
+  `?token=` is accepted ONLY on the media files route, for `<img>`/`<video>`
+  tags), serial background JobRunner (one pipeline command at a
+  time, whitelisted commands/options), and the panel's static build mounted
+  at `/`. Orders are fetched LIVE on request (/api/orders); the background
+  watcher thread is OPT-IN (`watch_enabled`, default False — the user
+  explicitly rejected background polling 2026-07-18: "a simple refresh to
+  the UI should just fetch the new orders"; intake is a button click in the
+  panel). Only when the watcher is enabled does `watch_auto_storyboard`
+  spend OpenAI credits automatically per paid order.
+- The **admin panel lives in THIS repo** (`admin_ui/`, React + Vite + Mantine; decided
+  2026-07-18 — it's the pipeline's own UI, deliberately decoupled from the
+  animoments storefront; the frontend repo's `admin-panel` branch is
+  superseded and should not be merged). Build with `cd admin_ui && npm
+  install && npm run build`; `serve` serves `admin_ui/dist` at `/` (API
+  routes win). `npm run dev` proxies `/api` to 127.0.0.1:8300. The panel
+  covers the full CLI surface (init/photo upload, storyboard incl. --idea
+  options, per-clip render/audio/re-plan, combine toggles, run) — keep that
+  parity when adding CLI features. The layout is a numbered pipeline stepper
+  (Storyboard → Render → Audio → Combine + a dashed "Run everything" tile),
+  and EVERY mutating action goes through a confirmation modal that lists
+  exactly what will change and whether money is spent (user requirement,
+  2026-07-18) — put new actions behind `ask({...})`, never a bare run.
+  Media (styled frames, clips, final video) is served under a stable
+  filename and REPLACED in place, so every `<img>`/`<video>` src carries a
+  `v=` cache-buster (`fileUrl`'s 4th argument, bumped by the panel's poll
+  and once more when a job settles); without it a regenerated frame kept
+  showing its previous version and looked like the button did nothing.
+- The **Firestore order ledger** (`clients/firebase_client.py`, REST +
+  google-auth, NOT the heavy firebase-admin SDK) is the watcher's order
+  source when a service-account key exists (FIREBASE_SERVICE_ACCOUNT in
+  .env, or firebase-service-account.json at the repo root — gitignored,
+  never commit it). The frontend writes one doc per paid order (collection
+  `orders`, doc id = `AM-...`: name/phone/email/packageId/musicMood/
+  blessing/folder/status "new"). The watcher checks photo completeness in
+  Cloudinary (exact `photoCount` if the doc ever carries one — today's
+  frontend doesn't save it — else the quiet period) and writes status back:
+  new → ingesting → ingested (+ `project`). "ingesting" still counts as
+  pending so a crashed ingest self-heals; statuses PAST "ingested" (a
+  future "delivered") are never downgraded. No key → pure Cloudinary
+  polling fallback, exactly the old behaviour.
+- Newer frontend versions append the music mood to the order folder leaf
+  (`..._HH-MM_warm-piano`); `_FOLDER_RE` in intake.py tolerates the suffix.
 - `Pipeline.snapshot()` is the single source of truth for project status
   (cmd_status prints it, the API returns it). `projects/<name>/order.json`
   (written by ingest) ties a project to its Cloudinary order folder; the
@@ -205,6 +309,29 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
   webhook from the frontend (exact photo_count completeness), delivery step
   (upload final + customer email), later move off the Mac to a VPS behind a
   tunnel. Keep review gates human; automate only the plumbing.
+
+## Production (since 2026-07-18)
+
+- **`deploy/PRODUCTION.md` is the runbook.** The server runs on the Mac mini
+  as a launchd LaunchAgent (`deploy/com.animoments.pipeline.plist`) bound to
+  **127.0.0.1 only — never 0.0.0.0, never a forwarded port**; the internet
+  reaches it exclusively through a Cloudflare Tunnel, with Cloudflare Access
+  (email OTP) in front of the app's own token — two auth layers. Server
+  logs: `~/Library/Logs/animoments/serve.log`.
+- CI (`.github/workflows/ci.yml`): offline tests + pyflakes + panel build on
+  every push/PR to dev/main. CD (`deploy.yml`): push to `main` → the mini's
+  self-hosted runner runs `deploy/deploy.sh` (refuses a dirty tree, ff-only
+  merge, retests on the machine, rebuilds the panel, kickstarts the service,
+  health-checks). **CI must stay keyless/offline — it can never be allowed
+  to spend API credits.**
+- Admin API security invariants (pinned by tests/test_server_auth.py):
+  constant-time token compare; ADMIN_API_TOKEN ≥ 16 chars enforced at boot;
+  per-address lockout (10 bad tokens / 15 min → 429; keyed on
+  CF-Connecting-IP behind the tunnel); `/docs`/`/openapi.json` disabled;
+  `admin_cors_origins` defaults to `[]` (the panel is same-origin); photo
+  uploads capped at 40 MB/file. When adding endpoints, use the `guarded`
+  (Bearer-only) dependency — `media_guarded` (also `?token=`) is reserved
+  for routes that feed media tags. Don't loosen any of these.
 
 ## Gotchas / facts sessions keep rediscovering
 
@@ -261,7 +388,12 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
   on the next run when the fingerprint (frames+prompt+duration+model) still
   matches, so interruptions recover the paid output instead of re-buying it.
   Keep the entry on transient failures; clear it only on moderation
-  rejection, fingerprint mismatch, or successful download. `subscribe` is
+  rejection, fingerprint mismatch, or successful download. NOTHING POLLS
+  THESE IN THE BACKGROUND — an uncollected job is only fetched by the next
+  `render` of that clip, so `Pipeline.pending_renders()` surfaces them in
+  snapshot/status/panel (with `recoverable`, i.e. does the fingerprint still
+  match), and saving a storyboard edit that invalidates one reports it as
+  `orphaned_renders` rather than losing the money silently. `subscribe` is
   still fine for the cheap audio jobs.
 - Clips are named `<startid>_to_<endid>.mp4`; bridged clips (a missing middle
   frame) get non-consecutive names like `003_to_005.mp4` and become "stray"

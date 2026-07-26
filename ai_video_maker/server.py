@@ -1,43 +1,65 @@
-"""FastAPI admin server: drive the pipeline remotely (the animoments admin panel).
+"""FastAPI admin server: drive the pipeline remotely (the admin panel).
 
-One process serves three things:
+One process serves four things:
 
+* the **admin panel** — the browser UI in ``admin_ui/`` (its ``dist/`` build
+  is mounted at ``/`` when present, so http://host:8300/ is the panel);
 * the **admin API** — orders, per-project status (``Pipeline.snapshot()``),
-  storyboard read/edit, media files, and actions (ingest/storyboard/render/
-  audio/combine) that run as background jobs;
+  storyboard read/edit, media files, photo upload, and actions (ingest/
+  storyboard/render/audio/combine/run) that run as background jobs;
 * the **job runner** — a single worker thread executing one pipeline command
   at a time (an order's steps take minutes and the volume is orders-per-day,
   so serial keeps things simple and safe);
-* the **watcher** — polls Cloudinary for new paid orders and auto-ingests
-  (+ optionally storyboards) the ones whose upload has gone quiet, so a new
-  order needs no PC interaction at all.
+* the **watcher** — tracks new paid orders and auto-ingests (+ optionally
+  storyboards) the complete ones, so a new order needs no PC interaction at
+  all. With Firebase configured (service-account key, see
+  ``clients/firebase_client.py``) the Firestore ``orders`` collection is the
+  source of truth and pipeline progress is written back into each order's
+  ``status``; otherwise it falls back to polling Cloudinary folders.
 
 Interactivity: pipeline confirm gates auto-proceed here (the API caller made
 the decision by pressing the button); nothing blocks on stdin.
 
 Auth: every /api route (except /api/health) requires the ``ADMIN_API_TOKEN``
-env value, as ``Authorization: Bearer <token>`` or ``?token=<token>`` — the
-query form exists because ``<img>``/``<video>`` tags can't send headers.
+env value as ``Authorization: Bearer <token>``. Only the media file route
+additionally accepts ``?token=<token>`` — ``<img>``/``<video>`` tags can't
+send headers. Comparisons are constant-time and repeated failures from one
+address are throttled (see ``_AuthThrottle``).
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import queue
+import secrets
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from .clients.cloudinary_client import CloudinaryClient
+from .clients.firebase_client import (
+    PENDING_STATUSES,
+    STATUS_INGESTED,
+    STATUS_INGESTING,
+    FirebaseClient,
+)
 from .config import Config
-from .errors import InvalidProjectName, PipelineCancelled, PipelineError
+from .errors import (
+    InvalidProjectName,
+    PipelineCancelled,
+    PipelineError,
+    StoryboardError,
+)
 from .intake import (
     derive_project_name,
     ingested_orders,
@@ -46,24 +68,157 @@ from .intake import (
     read_order_record,
 )
 from .logging_setup import logger, setup_logging
-from .models import Storyboard
+from .media.music_url import fetch_music
+from .models import Storyboard, changed_transition_ids
 from .options import RunOptions
 from .runner import Pipeline
-from .workspace import PROJECTS_DIR, Workspace
+from .workspace import PROJECT_ROOT, PROJECTS_DIR, Workspace
 
-# Pipeline commands the API may enqueue, and the RunOptions fields a request
-# body may set — an explicit whitelist so a request can't reach for
+# Pipeline commands the API may enqueue ("ingest" only via /api/orders/ingest),
+# and the RunOptions fields a request body may set — every per-run knob the
+# CLI has, but still an explicit whitelist so a request can't reach for
 # constructor internals.
-_ALLOWED_COMMANDS = {"ingest", "storyboard", "render", "audio", "combine"}
-_ALLOWED_OPTIONS = {
-    "force", "dry_run", "duration", "motion_prompt", "style_prompt",
-    "music_prompt", "music_file", "analyze_frames", "clips", "order",
-    "add_audio", "no_audio", "credits_photos", "closing_letter", "intro_clip",
-}
+_ALLOWED_COMMANDS = {"ingest", "storyboard", "render", "audio", "combine", "run"}
+_ALLOWED_OPTIONS = {f.name for f in dataclasses.fields(RunOptions)}
+
+# Uploads into input_images/ — the same formats a user would drop there.
+_PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".bmp", ".tif", ".tiff"}
+
+# Custom music-bed uploads. ffmpeg reads by content, not extension, so the
+# bytes are stored under a fixed name regardless of what was uploaded.
+_AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus"}
+
+# Per-file cap for photo uploads. Phone photos top out around 15-20 MB; this
+# only exists so an unauthenticated-looking-but-authenticated mistake (or a
+# stolen token) can't fill the disk through the panel.
+_MAX_UPLOAD_BYTES = 40 * 1024 * 1024
+
+# The token is the only thing between the internet and the pipeline once the
+# server sits behind a tunnel — refuse to boot with a guessable one.
+_MIN_TOKEN_LENGTH = 16
+
+
+class _AuthThrottle:
+    """Lock out an address after repeated bad tokens (online brute force).
+
+    In-memory and deliberately simple: `max_failures` bad attempts within
+    `window_seconds` → 429 for the remainder of the window. A correct token
+    clears the address. Behind cloudflared every TCP peer is 127.0.0.1, so the
+    caller passes the CF-Connecting-IP header value when present (fine to
+    trust: the only way to reach the port from outside IS the tunnel).
+    """
+
+    def __init__(self, max_failures: int = 10, window_seconds: float = 900.0) -> None:
+        self._max = max_failures
+        self._window = window_seconds
+        self._failures: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def _prune(self, key: str, now: float) -> list[float]:
+        kept = [t for t in self._failures.get(key, []) if now - t < self._window]
+        if kept:
+            self._failures[key] = kept
+        else:
+            self._failures.pop(key, None)
+        return kept
+
+    def blocked(self, key: str) -> bool:
+        with self._lock:
+            return len(self._prune(key, time.monotonic())) >= self._max
+
+    def record_failure(self, key: str) -> None:
+        with self._lock:
+            now = time.monotonic()
+            self._failures[key] = self._prune(key, now) + [now]
+
+    def clear(self, key: str) -> None:
+        with self._lock:
+            self._failures.pop(key, None)
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+class _RedactQueryStrings(logging.Filter):
+    """Strip query strings from uvicorn's access log.
+
+    The media route accepts ``?token=`` because <img>/<video> tags cannot send
+    headers — which meant every image request wrote the full ADMIN_API_TOKEN
+    into the access log in clear text. Anyone able to read the log file (or a
+    backup of it) had full admin access. The path is all that is worth
+    logging, so the query is dropped wholesale rather than pattern-matched:
+    no future query parameter can leak through by being forgotten here.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            path = args[2]
+            if "?" in path:
+                record.args = (
+                    *args[:2], path.split("?", 1)[0] + "?<redacted>", *args[3:],
+                )
+        return True
+
+
+def _install_access_log_redaction() -> None:
+    """Attach the query-string redactor to uvicorn's access logger (once)."""
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, _RedactQueryStrings) for f in access.filters):
+        access.addFilter(_RedactQueryStrings())
+
+
+def _outcome(pipeline: Pipeline) -> tuple[str, str, int]:
+    """Turn a completed run into (state, error, failure count).
+
+    A pipeline command deliberately survives individual failures — one clip
+    hitting a timeout must not abandon the other nineteen — so `execute()`
+    returning is NOT proof the work succeeded. Reporting it as "done"
+    regardless made a render whose every clip timed out look exactly like a
+    successful one. Anything that produced output alongside failures is
+    "partial"; a run that produced nothing at all is "failed".
+    """
+    failures = list(pipeline.failed.failures)
+    if not failures:
+        return "done", "", 0
+    s = pipeline.summary
+    produced = s.styled_created + s.videos_created + s.sfx_created
+    kinds: dict[str, int] = {}
+    for f in failures:
+        kind = f.get("kind", "item")
+        kinds[kind] = kinds.get(kind, 0) + 1
+    breakdown = ", ".join(f"{n} {kind}" for kind, n in sorted(kinds.items()))
+    first = str(failures[0].get("error", ""))[:200]
+    return (
+        "partial" if produced else "failed",
+        f"{len(failures)} failed ({breakdown}). First error: {first}",
+        len(failures),
+    )
+
+
+def apply_in_flight(
+    pending: list[dict[str, Any]], active_options: Optional[dict[str, Any]]
+) -> None:
+    """Mark which pending renders a currently-running job already owns.
+
+    A ``falreq:`` entry only records "submitted, not yet downloaded" — which
+    is equally true of a run that crashed an hour ago and of the render
+    polling fal right now. Only the job runner knows the difference, so it
+    is applied here: a clip the active job is handling collects itself and
+    is mere progress, while one left behind by an interrupted run is money
+    stranded on the provider that only the user can rescue. Reporting both
+    the same way turned every healthy render into a false alarm.
+
+    `active_options` is the running render/run job's options, or None when
+    no such job is running. A job given an explicit ``clips`` list owns only
+    those; one rendering the whole project may own any pending clip.
+    """
+    owned = (active_options or {}).get("clips")
+    for entry in pending:
+        entry["in_flight"] = (
+            active_options is not None and (not owned or entry["id"] in owned)
+        )
 
 
 # --------------------------------- jobs ------------------------------------- #
@@ -74,8 +229,15 @@ class Job:
     project: str
     command: str
     options: dict[str, Any]
-    state: str = "queued"  # queued | running | cancelling | done | failed | cancelled
+    # queued | running | cancelling | done | partial | failed | cancelled
+    # "partial" = the command ran to the end but some work items failed. The
+    # pipeline deliberately keeps going when one clip fails, so without this
+    # a render that produced nothing still reported "done" and read as
+    # success — a real 3-of-3 timeout looked like a completed render.
+    state: str = "queued"
     error: str = ""
+    # How many individual items (clips, frames, SFX) failed inside the run.
+    failures: int = 0
     log: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=_now)
     started_at: str = ""
@@ -91,6 +253,7 @@ class Job:
         return {
             "id": self.id, "project": self.project, "command": self.command,
             "state": self.state, "error": self.error,
+            "failures": self.failures,
             "created_at": self.created_at, "started_at": self.started_at,
             "finished_at": self.finished_at,
         }
@@ -219,7 +382,12 @@ class JobRunner:
                 cancel_event=job.cancel_event,
             )  # default confirm: always proceed
             pipeline.execute(job.command)
-            job.state = "done"
+            job.state, job.error, job.failures = _outcome(pipeline)
+            if job.state != "done":
+                logger.error(
+                    "Job %s (%s %s) finished with failures: %s",
+                    job.id, job.command, job.project, job.error,
+                )
         except PipelineCancelled as exc:
             job.state, job.error = "cancelled", str(exc)
             logger.info("Job %s (%s %s) cancelled.",
@@ -242,12 +410,31 @@ class JobRunner:
 # -------------------------------- watcher ----------------------------------- #
 
 class OrderWatcher:
-    """Poll Cloudinary; auto-ingest (+ storyboard) complete new orders."""
+    """Track paid orders; auto-ingest (+ storyboard) the complete new ones.
 
-    def __init__(self, config: Config, config_path: Path, jobs: JobRunner) -> None:
+    Firestore is the order source when a service-account key is configured
+    (the doc is written the moment the customer pays — the authoritative
+    signal), with Cloudinary consulted only to check the photos' upload
+    progress; pipeline progress is written back into each order doc's
+    ``status``. Without Firebase the legacy pure-Cloudinary folder poll runs.
+
+    The client factories are injectable for tests.
+    """
+
+    def __init__(
+        self,
+        config: Config,
+        config_path: Path,
+        jobs: JobRunner,
+        *,
+        cloudinary_factory=CloudinaryClient.from_config,
+        firebase_factory=FirebaseClient.from_config,
+    ) -> None:
         self._config = config
         self._config_path = config_path
         self._jobs = jobs
+        self._cloudinary_factory = cloudinary_factory
+        self._firebase_factory = firebase_factory
         self._thread = threading.Thread(
             target=self._loop, name="order-watcher", daemon=True
         )
@@ -257,7 +444,8 @@ class OrderWatcher:
 
     def _loop(self) -> None:
         logger.info(
-            "Order watcher: polling Cloudinary every %ds (quiet period %.0f min).",
+            "Order watcher: polling %s every %ds (quiet period %.0f min).",
+            "Firestore" if FirebaseClient.configured(self._config) else "Cloudinary",
             self._config.watch_poll_seconds, self._config.watch_quiet_minutes,
         )
         while True:
@@ -269,16 +457,84 @@ class OrderWatcher:
 
     def poll_once(self) -> list[str]:
         """One poll; returns the order folders enqueued for ingestion."""
-        client = CloudinaryClient.from_config(self._config)
-        handled = set(ingested_orders(PROJECTS_DIR))
-        handled |= self._jobs.active_ingest_orders()
+        if FirebaseClient.configured(self._config):
+            return self._poll_firestore()
+        return self._poll_cloudinary()
+
+    # ------------------------- shared poll pieces -------------------------- #
+
+    def _handled_and_names(self) -> tuple[dict[str, str], set[str], set[str]]:
+        handled = ingested_orders(PROJECTS_DIR)  # folder leaf -> project
+        active = self._jobs.active_ingest_orders()
         existing_names = {
             p.name for p in PROJECTS_DIR.iterdir() if p.is_dir()
         } if PROJECTS_DIR.exists() else set()
+        return handled, active, existing_names
+
+    def _enqueue_ingest(self, folder: str, existing_names: set[str]) -> str:
+        project = derive_project_name(folder, existing_names)
+        existing_names.add(project)
+        then = (
+            {"command": "storyboard", "options": {}}
+            if self._config.watch_auto_storyboard else None
+        )
+        self._jobs.enqueue(project, "ingest", {"order": folder}, then=then)
+        logger.info(
+            "Order %s: complete — ingesting as project '%s'%s.",
+            folder, project, " + storyboard" if then else "",
+        )
+        return project
+
+    # ------------------------------ sources -------------------------------- #
+
+    def _poll_firestore(self) -> list[str]:
+        firebase = self._firebase_factory(self._config)
+        cloudinary = self._cloudinary_factory(self._config)
+        handled, active, existing_names = self._handled_and_names()
+
+        enqueued: list[str] = []
+        for order in firebase.list_orders():
+            leaf = order.folder_leaf
+            if not leaf:
+                continue  # no photo folder recorded — nothing to ingest yet
+            if leaf in handled:
+                # Ingested locally (by the watcher, the panel, or the CLI) —
+                # make sure the ledger says so. Only pending statuses are
+                # bumped: a later stage (e.g. a future "delivered") must
+                # never be downgraded back to "ingested".
+                if order.status in PENDING_STATUSES:
+                    self._update_status(
+                        firebase, order.order_id,
+                        {"status": STATUS_INGESTED, "project": handled[leaf]},
+                    )
+                continue
+            if order.status not in PENDING_STATUSES or leaf in active:
+                continue
+            assets = cloudinary.list_order_assets(leaf)
+            if not is_order_complete(
+                assets, self._config.watch_quiet_minutes,
+                expected_count=order.photo_count,
+            ):
+                logger.info(
+                    "Order %s: %d photo(s) but upload still fresh — waiting.",
+                    leaf, len(assets),
+                )
+                continue
+            self._enqueue_ingest(leaf, existing_names)
+            self._update_status(
+                firebase, order.order_id, {"status": STATUS_INGESTING}
+            )
+            enqueued.append(leaf)
+        return enqueued
+
+    def _poll_cloudinary(self) -> list[str]:
+        client = self._cloudinary_factory(self._config)
+        handled, active, existing_names = self._handled_and_names()
+        skip = set(handled) | active
 
         enqueued: list[str] = []
         for folder in client.list_order_folders():
-            if folder in handled:
+            if folder in skip:
                 continue
             assets = client.list_order_assets(folder)
             if not is_order_complete(assets, self._config.watch_quiet_minutes):
@@ -287,20 +543,17 @@ class OrderWatcher:
                     folder, len(assets),
                 )
                 continue
-            project = derive_project_name(folder, existing_names)
-            existing_names.add(project)
-            then = (
-                {"command": "storyboard", "options": {}}
-                if self._config.watch_auto_storyboard else None
-            )
-            self._jobs.enqueue(project, "ingest", {"order": folder}, then=then)
-            logger.info(
-                "Order %s: complete (%d photos) — ingesting as project '%s'%s.",
-                folder, len(assets), project,
-                " + storyboard" if then else "",
-            )
+            self._enqueue_ingest(folder, existing_names)
             enqueued.append(folder)
         return enqueued
+
+    @staticmethod
+    def _update_status(firebase, order_id: str, fields: dict[str, Any]) -> None:
+        # A ledger write-back must never break ingestion itself.
+        try:
+            firebase.update_order(order_id, fields)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not update Firestore order %s: %s", order_id, exc)
 
 
 # ---------------------------------- app ------------------------------------- #
@@ -312,26 +565,77 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
             "ADMIN_API_TOKEN is not set. Add a long random value to .env — "
             "the admin panel authenticates with it."
         )
+    if len(token) < _MIN_TOKEN_LENGTH:
+        raise PipelineError(
+            f"ADMIN_API_TOKEN is too short ({len(token)} chars, minimum "
+            f"{_MIN_TOKEN_LENGTH}). It is the only credential on this API — "
+            "generate a strong one: python3 -c \"import secrets; "
+            "print(secrets.token_urlsafe(32))\""
+        )
     config = Config.load(config_path)
     jobs = JobRunner(config_path)
+    throttle = _AuthThrottle()
+    # Before anything can serve a request that carries ?token=.
+    _install_access_log_redaction()
 
-    app = FastAPI(title="ai-video-maker admin API")
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=config.admin_cors_origins,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    app = FastAPI(title="ai-video-maker admin API", docs_url=None, redoc_url=None,
+                  openapi_url=None)
+    if config.admin_cors_origins:  # same-origin panel needs no CORS at all
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=config.admin_cors_origins,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
+    def _client_key(request: Request) -> str:
+        # Behind cloudflared the TCP peer is always localhost; the tunnel adds
+        # the real address. Direct (LAN) hits fall back to the socket peer.
+        return (
+            request.headers.get("cf-connecting-ip")
+            or (request.client.host if request.client else "unknown")
+        )
+
+    def _check_token(request: Request, supplied: str) -> None:
+        key = _client_key(request)
+        if throttle.blocked(key):
+            raise HTTPException(
+                status_code=429,
+                detail="Too many failed attempts — try again later.",
+            )
+        if not secrets.compare_digest(supplied, token):
+            throttle.record_failure(key)
+            raise HTTPException(status_code=401, detail="Bad or missing token")
+        throttle.clear(key)
 
     async def require_token(request: Request) -> None:
-        supplied = request.query_params.get("token", "")
         auth = request.headers.get("authorization", "")
-        if auth.lower().startswith("bearer "):
-            supplied = auth[7:]
-        if supplied != token:
-            raise HTTPException(status_code=401, detail="Bad or missing token")
+        supplied = auth[7:] if auth.lower().startswith("bearer ") else ""
+        _check_token(request, supplied)
+
+    async def require_token_or_query(request: Request) -> None:
+        """Media-only variant: <img>/<video> tags can't send headers, so the
+        file route also accepts ?token=. Everywhere else the query form is
+        rejected — query strings end up in access logs and browser history."""
+        auth = request.headers.get("authorization", "")
+        supplied = (
+            auth[7:] if auth.lower().startswith("bearer ")
+            else request.query_params.get("token", "")
+        )
+        _check_token(request, supplied)
 
     guarded = [Depends(require_token)]
+    media_guarded = [Depends(require_token_or_query)]
 
     def _workspace(name: str) -> Workspace:
         try:
@@ -354,20 +658,104 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
 
     @app.get("/api/orders", dependencies=guarded)
     async def list_orders() -> dict[str, Any]:
-        client = CloudinaryClient.from_config(config)
+        """Paid orders, newest first.
+
+        With Firebase configured the Firestore ledger drives the listing
+        (customer/package metadata + status), and Cloudinary folders that
+        predate the ledger are appended; otherwise it's the pure Cloudinary
+        folder listing.
+        """
         ingested = ingested_orders(PROJECTS_DIR)
         pending_ingest = jobs.active_ingest_orders()
-        out = []
-        for folder in client.list_order_folders():
+        # Each order's most recent ingest job — the panel's success/failure
+        # feedback ("the button went back to normal like nothing happened"
+        # was a real complaint; a failed ingest must stay visible).
+        latest_ingest: dict[str, Job] = {}
+        for job in jobs.list():  # newest first
+            folder = job.options.get("order", "")
+            if job.command == "ingest" and folder and folder not in latest_ingest:
+                latest_ingest[folder] = job
+
+        def project_progress(project: str) -> Optional[dict[str, Any]]:
+            """The order's real pipeline position, from its project snapshot."""
+            try:
+                ws = Workspace.for_project(project)
+                if not ws.root.exists():
+                    return None
+                snap = _pipeline(ws).snapshot()
+            except Exception:  # noqa: BLE001 - a broken project can't hide its order
+                return None
+            clips = snap.get("clips") or []
+            return {
+                "photos": len(snap.get("input_images") or []),
+                "clips_total": len(clips),
+                "clips_rendered": sum(1 for c in clips if c.get("rendered")),
+                "clips_stale": sum(1 for c in clips if c.get("stale")),
+                "final": bool(snap.get("final_video")),
+                "next_step": snap.get("next_step", ""),
+                "placeholders": len(
+                    (snap.get("storyboard") or {}).get("placeholder_transitions")
+                    or []
+                ),
+            }
+
+        def active_job_on(project: str) -> Optional[dict[str, str]]:
+            for job in jobs.list(project=project):
+                if job.state in ("queued", "running", "cancelling"):
+                    return {"command": job.command, "state": job.state}
+            return None
+
+        def row(folder: str) -> dict[str, Any]:
             parsed = parse_order_folder(folder)
-            out.append({
+            job = latest_ingest.get(folder)
+            project = ingested.get(folder, "")
+            return {
                 "folder": folder,
                 "order_id": parsed["order_id"],
                 "customer": parsed["customer"],
                 "uploaded_at": parsed["stamp"],
-                "project": ingested.get(folder, ""),
+                "project": project,
+                "progress": project_progress(project) if project else None,
+                "active_job": active_job_on(project) if project else None,
                 "ingesting": folder in pending_ingest,
-            })
+                "ingest_state": job.state if job else "",
+                "ingest_error": job.error if job else "",
+                "ingest_job": job.id if job else "",
+            }
+
+        out: list[dict[str, Any]] = []
+        seen_folders: set[str] = set()
+        if FirebaseClient.configured(config):
+            for order in FirebaseClient.from_config(config).list_orders():
+                leaf = order.folder_leaf
+                seen_folders.add(leaf)
+                entry = row(leaf) if leaf else {
+                    "folder": "", "order_id": order.order_id,
+                    "customer": order.customer, "uploaded_at": "",
+                    "project": "", "progress": None, "active_job": None,
+                    "ingesting": False,
+                    "ingest_state": "", "ingest_error": "", "ingest_job": "",
+                }
+                entry.update({
+                    "order_id": order.order_id,
+                    "customer": order.customer or entry["customer"],
+                    "status": order.status,
+                    "email": order.email,
+                    "phone": order.phone,
+                    "package_id": order.package_id,
+                    "music_mood": order.music_mood,
+                    "blessing": order.blessing,
+                    "photo_count": order.photo_count,
+                    "created_at": order.created_at,
+                    "source": "firestore",
+                })
+                out.append(entry)
+
+        client = CloudinaryClient.from_config(config)
+        for folder in client.list_order_folders():
+            if folder in seen_folders:
+                continue
+            out.append({**row(folder), "source": "cloudinary"})
         return {"orders": out}
 
     @app.post("/api/orders/ingest", dependencies=guarded)
@@ -388,6 +776,129 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         job = jobs.enqueue(project, "ingest", {"order": folder}, then=then)
         return {"job": job.summary(), "project": project}
 
+    @app.post("/api/projects", dependencies=guarded)
+    async def create_project(body: dict[str, Any]) -> dict[str, Any]:
+        """The UI twin of `pipeline.py init`: create an empty workspace."""
+        name = str(body.get("name", "")).strip()
+        try:
+            ws = Workspace.for_project(name)
+        except InvalidProjectName as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if ws.root.exists():
+            raise HTTPException(
+                status_code=409, detail=f"Project '{ws.root.name}' already exists"
+            )
+        ws.mkdirs()
+        return {"ok": True, "project": ws.root.name}
+
+    @app.post("/api/projects/{name}/photos", dependencies=guarded)
+    async def upload_photos(
+        name: str, files: list[UploadFile] = File(...)
+    ) -> dict[str, Any]:
+        """Add photos to input_images/ (the UI twin of dropping files there).
+
+        Filenames are kept (movie order = sorted filenames, exactly like the
+        CLI workflow); an existing file of the same name is replaced.
+        """
+        ws = _workspace(name)
+        saved: list[str] = []
+        for upload in files:
+            filename = Path(upload.filename or "").name
+            if not filename or Path(filename).suffix.lower() not in _PHOTO_EXTENSIONS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Not an image file: {upload.filename!r} "
+                           f"(accepted: {', '.join(sorted(_PHOTO_EXTENSIONS))})",
+                )
+            data = await upload.read()
+            if len(data) > _MAX_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"{filename} is larger than "
+                           f"{_MAX_UPLOAD_BYTES // (1024 * 1024)} MB",
+                )
+            (ws.input_images_dir / filename).write_bytes(data)
+            saved.append(filename)
+        return {"saved": saved}
+
+    @app.delete("/api/projects/{name}/photos/{filename}", dependencies=guarded)
+    async def delete_photo(name: str, filename: str) -> dict[str, Any]:
+        """Remove one INPUT photo (the UI twin of deleting the file).
+
+        Only input_images/ is touchable — styled frames and rendered clips
+        are never deleted through the API.
+        """
+        ws = _workspace(name)
+        if Path(filename).name != filename:
+            raise HTTPException(status_code=404, detail="Not found")
+        path = ws.input_images_dir / filename
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Not found")
+        path.unlink()
+        return {"ok": True}
+
+    @app.post("/api/projects/{name}/music", dependencies=guarded)
+    async def upload_music(
+        name: str, file: UploadFile = File(...)
+    ) -> dict[str, Any]:
+        """Set the music bed (the UI twin of --music-file).
+
+        Music is never generated: an uploaded track is the ONLY way a movie
+        gets a music bed. Saved as output/music_custom.mp3, which wins over
+        any older output/music.mp3 left on disk.
+        """
+        ws = _workspace(name)
+        suffix = Path(file.filename or "").suffix.lower()
+        if suffix not in _AUDIO_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Not an audio file: {file.filename!r} "
+                       f"(accepted: {', '.join(sorted(_AUDIO_EXTENSIONS))})",
+            )
+        data = await file.read()
+        if len(data) > _MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Music file is larger than "
+                       f"{_MAX_UPLOAD_BYTES // (1024 * 1024)} MB",
+            )
+        dst = ws.custom_music_file
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(data)
+        return {"ok": True}
+
+    @app.post("/api/projects/{name}/music/url", dependencies=guarded)
+    async def fetch_music_from_url(
+        name: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Fetch the music bed from a URL instead of uploading a file.
+
+        Same destination as the upload (output/music_custom.mp3), so nothing
+        downstream can tell the difference. Runs inline rather than as a job:
+        a track is a few seconds' download, and the panel wants to show the
+        result immediately.
+
+        Licensing is not — and cannot be — checked here. See media/music_url.
+        """
+        ws = _workspace(name)
+        url = str((body or {}).get("url", "")).strip()
+        try:
+            fetch_music(url, ws.custom_music_file)
+        except PipelineError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - network/extractor surface
+            raise HTTPException(
+                status_code=502, detail=f"Fetching the track failed: {exc}"
+            ) from exc
+        return {"ok": True, "bytes": ws.custom_music_file.stat().st_size}
+
+    @app.delete("/api/projects/{name}/music", dependencies=guarded)
+    async def delete_music(name: str) -> dict[str, Any]:
+        """Remove the music bed; the movie then has no music at all."""
+        ws = _workspace(name)
+        ws.custom_music_file.unlink(missing_ok=True)
+        return {"ok": True}
+
     @app.get("/api/projects", dependencies=guarded)
     async def list_projects() -> dict[str, Any]:
         out = []
@@ -404,12 +915,25 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
                 out.append(snap)
         return {"projects": out}
 
+    def _mark_in_flight(project: str, pending: list[dict[str, Any]]) -> None:
+        """Flag pending renders that a RUNNING job is already waiting on."""
+        if not pending:
+            return
+        active = next(
+            (j for j in jobs.list(project=project)
+             if j.state in ("queued", "running", "cancelling")
+             and j.command in ("render", "run")),
+            None,
+        )
+        apply_in_flight(pending, None if active is None else active.options)
+
     @app.get("/api/projects/{name}", dependencies=guarded)
     async def project_detail(name: str) -> dict[str, Any]:
         ws = _workspace(name)
         snap = _pipeline(ws).snapshot()
         snap["order"] = read_order_record(ws.order_file)
         snap["jobs"] = [j.summary() for j in jobs.list(project=name, limit=10)]
+        _mark_in_flight(ws.root.name, snap.get("pending_renders", []))
         sb = ws.default_storyboard_json
         snap["storyboard_json"] = (
             sb.read_text(encoding="utf-8") if sb.exists() else ""
@@ -418,6 +942,14 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
 
     @app.put("/api/projects/{name}/storyboard", dependencies=guarded)
     async def save_storyboard(name: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Overwrite the storyboard, marking clips the edits invalidated.
+
+        The save is compared against what is on disk first: a hand-edited
+        motion prompt or duration leaves its already-rendered clip showing
+        the OLD plan, so those clips are marked outdated (kept, never
+        auto-re-rendered — same contract as a re-plan). The returned
+        ``outdated`` list is what the panel offers to regenerate in one go.
+        """
         ws = _workspace(name)
         try:
             storyboard = Storyboard(**body)
@@ -425,9 +957,39 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
             raise HTTPException(
                 status_code=422, detail=f"Invalid storyboard: {exc}"
             ) from exc
+        try:
+            previous = (
+                Storyboard.load(ws.default_storyboard_json)
+                if ws.default_storyboard_json.exists() else None
+            )
+        except StoryboardError:
+            # Unreadable/hand-broken JSON on disk: there is nothing to diff
+            # against, so save without inventing staleness.
+            previous = None
+        changed = changed_transition_ids(previous, storyboard)
+        pipeline = _pipeline(ws)
+        # A clip with a submitted-but-uncollected fal job is already paid for.
+        # Editing its plan means the next render can no longer reuse that job
+        # (the fingerprint stops matching), so the money is lost — say so
+        # rather than letting it happen silently.
+        pending_before = {
+            p["id"] for p in pipeline.pending_renders() if p["recoverable"]
+        }
         storyboard.save(ws.default_storyboard_json)
+        outdated = pipeline.mark_clips_outdated(changed) if changed else []
+        orphaned = sorted(pending_before.intersection(changed))
+        if orphaned:
+            logger.warning(
+                "Storyboard save discarded %d already-paid render(s) still "
+                "waiting on the provider: %s — their plan changed, so the "
+                "next render buys fresh clips.",
+                len(orphaned), ", ".join(orphaned),
+            )
         return {"ok": True, "frames": len(storyboard.frames),
-                "transitions": len(storyboard.transitions)}
+                "transitions": len(storyboard.transitions),
+                "changed": changed,
+                "outdated": [c.removesuffix(".mp4") for c in outdated],
+                "orphaned_renders": orphaned}
 
     @app.post("/api/projects/{name}/actions/{command}", dependencies=guarded)
     async def run_action(
@@ -474,7 +1036,8 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         "storyboard": lambda ws: ws.storyboard_dir,
     }
 
-    @app.get("/api/projects/{name}/files/{kind}/{filename}", dependencies=guarded)
+    @app.get("/api/projects/{name}/files/{kind}/{filename}",
+             dependencies=media_guarded)
     async def project_file(name: str, kind: str, filename: str) -> FileResponse:
         ws = _workspace(name)
         directory = _FILE_KINDS.get(kind)
@@ -493,5 +1056,16 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
 
     if watch and config.watch_enabled:
         OrderWatcher(config, config_path, jobs).start()
+
+    # The admin panel itself: admin_ui/dist mounted at / (after the /api
+    # routes, so they win). Build it with `npm run build` in admin_ui/.
+    dist = PROJECT_ROOT / "admin_ui" / "dist"
+    if dist.is_dir():
+        app.mount("/", StaticFiles(directory=dist, html=True), name="admin-ui")
+    else:
+        logger.info(
+            "admin_ui/dist not found — serving the API only. Build the panel "
+            "with: cd admin_ui && npm install && npm run build"
+        )
 
     return app

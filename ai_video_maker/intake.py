@@ -19,10 +19,11 @@ from typing import Optional
 
 from .clients.cloudinary_client import OrderAsset
 
-# `video-orders/<ORDER-ID>_<customer>-<dd.mm.yyyy_HH-MM>` — the leaf format
-# the animoments frontend creates (see its App.jsx `uploadFolderRef`).
+# `video-orders/<ORDER-ID>_<customer>-<dd.mm.yyyy_HH-MM>[_<music-mood>]` —
+# the leaf format the animoments frontend creates (see its App.jsx
+# `uploadFolderRef`; newer versions append the chosen music mood).
 _FOLDER_RE = re.compile(
-    r"^(?P<order_id>[^_]+)_(?P<customer>.*?)-(?P<stamp>\d{2}\.\d{2}\.\d{4}_\d{2}-\d{2})$"
+    r"^(?P<order_id>[^_]+)_(?P<customer>.*?)-(?P<stamp>\d{2}\.\d{2}\.\d{4}_\d{2}-\d{2})(?:_.*)?$"
 )
 
 
@@ -65,19 +66,25 @@ def derive_project_name(folder_leaf: str, existing: set[str]) -> str:
 
 
 def is_order_complete(
-    assets: list[OrderAsset], quiet_minutes: float, now: Optional[datetime] = None
+    assets: list[OrderAsset],
+    quiet_minutes: float,
+    now: Optional[datetime] = None,
+    expected_count: Optional[int] = None,
 ) -> bool:
     """True when an order's upload looks finished.
 
     The frontend confirms payment BEFORE the photos finish uploading (one at
     a time, with retries), so a folder's existence never means the order is
-    complete. Without a server-side expected count, the safe signal is a
-    quiet period: no new photo for `quiet_minutes`. Assets missing a
-    parseable timestamp count as fresh (not complete) rather than risking a
-    half-ingest.
+    complete. When the order ledger knows the exact photo count
+    (`expected_count`, from the Firestore order doc), reaching it IS
+    completeness. Otherwise the safe signal is a quiet period: no new photo
+    for `quiet_minutes`. Assets missing a parseable timestamp count as fresh
+    (not complete) rather than risking a half-ingest.
     """
     if not assets:
         return False
+    if expected_count is not None and expected_count > 0:
+        return len(assets) >= expected_count
     now = now or datetime.now(timezone.utc)
     newest: Optional[datetime] = None
     for asset in assets:

@@ -54,9 +54,10 @@ class Config(BaseModel):
     # Two layers:
     #   * SFX/ambient: a video->audio model runs on each silent clip and returns
     #     the SAME clip with synced sound muxed in (replaces the file).
-    #   * Music bed: one track from `music_prompt`, mixed across the whole
-    #     concatenated final video, louder than the per-clip SFX (which is
-    #     ducked under it). See music_volume / sfx_volume.
+    #   * Music bed: a track SUPPLIED BY THE USER (uploaded in the panel or
+    #     --music-file), mixed across the whole concatenated final video,
+    #     louder than the per-clip SFX (which is ducked under it). Never
+    #     generated. See music_volume / sfx_volume.
     # Leave audio_mode "none" to keep clips silent.
     audio_mode: str = "none"                # "none" | "post"
     # Video->audio model (returns video with synchronized audio).
@@ -75,12 +76,9 @@ class Config(BaseModel):
     # continuous music bed carries the dip) instead of switching abruptly. Sync
     # is preserved (the fade is inside the clip, no overlap). Set 0 to disable.
     sfx_fade_seconds: float = 0.2
-    # Music model (text -> a music track). ElevenLabs Music via fal by default;
-    # swap for fal-ai/lyria2, cassetteai/music-generator, beatoven/..., etc.
-    music_model_id: str = "fal-ai/elevenlabs/music"
-    music_prompt: str = (
-        "Soft cinematic instrumental underscore, gentle and warm, no vocals."
-    )
+    # The music bed is never generated — it is always a track the user
+    # supplies (uploaded in the panel, or --music-file). There is therefore no
+    # music model or music prompt to configure; only how it is mixed.
     # Relative levels when the music bed is mixed with the per-clip SFX. The
     # background music is meant to sit ON TOP of (louder than) the clip SFX, so
     # the SFX is ducked under it. Both are 0..1; what matters is the ratio
@@ -91,7 +89,6 @@ class Config(BaseModel):
     # False (default): the track plays once and the rest of the video continues
     # with SFX only. True: the track loops for the whole video length.
     music_loop: bool = False
-    music_extra_arguments: dict[str, Any] = Field(default_factory=dict)
 
     # --- Presentation extras (pure ffmpeg, free, all OFF by default) -------- #
     # credits_photos: after the last clip, the original photos play as a short
@@ -127,20 +124,42 @@ class Config(BaseModel):
     cloudinary_cloud_name: str = ""
     cloudinary_orders_folder: str = "video-orders"
 
+    # --- Firebase order ledger (Firestore) ---------------------------------- #
+    # The frontend also writes each paid order to Firestore (collection
+    # "orders": customer details, package, Cloudinary folder, status "new").
+    # When a service-account key is available (FIREBASE_SERVICE_ACCOUNT in
+    # .env, or firebase-service-account.json at the repo root) the watcher
+    # tracks orders THERE — the authoritative "someone paid" signal — and
+    # writes pipeline progress back into each doc's status; Cloudinary is then
+    # only the photo store. Without a key everything falls back to pure
+    # Cloudinary folder polling. project id defaults to the key file's own
+    # project_id, so these usually stay empty.
+    firebase_project_id: str = ""
+    firebase_credentials_file: str = ""
+    firebase_orders_collection: str = "orders"
+
     # --- Admin server & order watcher (`pipeline.py serve`) ---------------- #
-    # The watcher polls Cloudinary and auto-ingests a new order once its
-    # upload has gone quiet (the frontend confirms payment BEFORE photos
-    # finish uploading, so "folder exists" != "order complete").
-    watch_enabled: bool = True
+    # Orders are fetched LIVE whenever the panel asks (/api/orders reads
+    # Firestore/Cloudinary on demand), so no background process is needed to
+    # see or ingest them — that's the default, manual flow. watch_enabled
+    # turns on the optional background watcher, which re-checks every
+    # watch_poll_seconds and auto-ingests a new order once its upload is
+    # complete (quiet for watch_quiet_minutes — the frontend confirms payment
+    # BEFORE photos finish uploading, so "folder exists" != "order
+    # complete"), acting while nobody is looking at the panel.
+    watch_enabled: bool = False
     watch_poll_seconds: int = 300
     watch_quiet_minutes: float = 10.0
-    # Also run `storyboard` right after auto-ingest (spends OpenAI credits —
-    # styling ~8-30 images per order — so the storyboard is ready for review
-    # by the time you open the admin panel).
+    # With the watcher on, also run `storyboard` right after auto-ingest
+    # (spends OpenAI credits — styling ~8-30 images per order — so the
+    # storyboard is ready for review by the time you open the admin panel).
     watch_auto_storyboard: bool = True
-    # Origins allowed to call the admin API from a browser (the admin panel's
-    # URL). ["*"] = any origin; the token still gates every request.
-    admin_cors_origins: list[str] = Field(default_factory=lambda: ["*"])
+    # Origins allowed to call the admin API from a browser. The panel is
+    # served BY the API process (same origin), so the default is NO
+    # cross-origin access at all — the production-safe posture. Only add
+    # origins here if the panel is ever hosted elsewhere; the token still
+    # gates every request either way.
+    admin_cors_origins: list[str] = Field(default_factory=list)
 
     # How many image/clip/SFX API jobs to run at once. These steps are I/O-bound
     # (waiting on the provider), so a small thread pool runs them in parallel.
@@ -156,6 +175,14 @@ class Config(BaseModel):
     # (`moderation_blocked`), reword the prompt to be unambiguously safe-for-work
     # and try again, up to this many times. Set 0 to disable and fail fast.
     moderation_reword_attempts: int = 3
+
+    # Ceiling on how many of a movie's clips may be 10 seconds. The planner
+    # rates each pair's difficulty and code derives the durations; this cap
+    # stops an inflated set of ratings from turning the whole movie long and
+    # slow (real plans have come back all-10s under prompt guidance alone).
+    # Raise it when hard pairs are being squeezed into 5s and teleporting;
+    # remember a 10s clip costs about twice a 5s one.
+    long_clip_max_fraction: float = Field(default=0.5, ge=0.0, le=1.0)
 
     @classmethod
     def load(cls, path: Path, override_path: Path | None = None) -> "Config":

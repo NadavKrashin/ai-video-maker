@@ -268,7 +268,7 @@ def _save_slug_storyboard(workspace, names) -> Storyboard:
                    output_path=f"clips/{a}_to_{b}.mp4")
         for a, b in zip(names, names[1:])
     ]
-    sb = Storyboard(project_title="t", style="style", music_prompt="the tune",
+    sb = Storyboard(project_title="t", style="style",
                     global_motion_prompt="two separate kids, never merged",
                     frames=frames, transitions=transitions)
     sb.save(workspace.default_storyboard_json)
@@ -325,7 +325,6 @@ class TestReconcileStoryboard:
         assert sb.transitions[0].motion_prompt == "a real plan"
         assert stale == ["a_to_b"]  # confirm-gated deletion downstream
         # user-level fields carried over
-        assert sb.music_prompt == "the tune"
         assert sb.global_motion_prompt == "two separate kids, never merged"
 
     def test_inserted_frame_replans_only_its_two_pairs(self, make_pipeline, workspace):
@@ -338,6 +337,47 @@ class TestReconcileStoryboard:
         assert stale == []  # frames a/b/c themselves are unchanged
         kept = {t.id: t.motion_prompt for t in sb.transitions}
         assert kept["b_to_c"] == "motion b"  # hand-editable transition survived
+
+    def test_requested_replan_forces_fresh_plan_and_marks_stale(
+        self, make_pipeline, workspace
+    ):
+        # The panel's per-clip "re-plan prompt": frames unchanged, but the
+        # user wants a new plan for exactly this pair. --motion-prompt stands
+        # in for a successful vision plan; the old clip goes stale (marked,
+        # never deleted), the neighbour's hand-written prompt survives.
+        p = make_pipeline(
+            analyze_frames=False, motion_prompt="a fresh plan",
+            replan_clips=["a_to_b"],
+        )
+        pairs = _make_frame_pairs(workspace, ["a", "b", "c"])
+        saved = _save_slug_storyboard(workspace, ["a", "b", "c"])
+        sb, replanned, stale = p._reconcile_storyboard(saved, pairs)
+        assert replanned == ["a_to_b"] and stale == ["a_to_b"]
+        assert sb.transitions[0].motion_prompt == "a fresh plan"
+        assert sb.transitions[1].motion_prompt == "motion b"
+
+    def test_requested_replan_same_plan_is_not_stale(
+        self, make_pipeline, workspace
+    ):
+        # Re-plan came back identical (or fell back) -> the clip still
+        # matches its prompt; don't flag it outdated.
+        p = make_pipeline(
+            analyze_frames=False, motion_prompt="motion a",
+            replan_clips=["a_to_b"],
+        )
+        pairs = _make_frame_pairs(workspace, ["a", "b", "c"])
+        saved = _save_slug_storyboard(workspace, ["a", "b", "c"])
+        sb, replanned, stale = p._reconcile_storyboard(saved, pairs)
+        assert replanned == ["a_to_b"] and stale == []
+
+    def test_requested_replan_unknown_id_fails_loudly(
+        self, make_pipeline, workspace
+    ):
+        p = make_pipeline(analyze_frames=False, replan_clips=["nope_to_nada"])
+        pairs = _make_frame_pairs(workspace, ["a", "b", "c"])
+        saved = _save_slug_storyboard(workspace, ["a", "b", "c"])
+        with pytest.raises(PipelineError, match="nope_to_nada"):
+            p._reconcile_storyboard(saved, pairs)
 
     def test_removed_frame_replans_the_joined_pair(self, make_pipeline, workspace):
         p = self._pipeline(make_pipeline)
@@ -741,3 +781,197 @@ class TestClipName:
         a = workspace.styled_images_dir / "alpha.png"
         b = workspace.styled_images_dir / "002.png"
         assert pipeline._clip_name(a, b).name == "alpha_to_002.mp4"
+
+
+class TestRestyleImages:
+    """--restyle-frame / the panel's 'Regenerate image': force one styled frame."""
+
+    def test_restyle_forces_named_frame_only(self, make_pipeline, workspace):
+        pairs = _make_frame_pairs(workspace, ["a", "b", "c"])
+        images = [src for src, _ in pairs]
+        p = make_pipeline(dry_run=True, restyle_frames=["b.png"])
+        p._style_images(images, {})
+        assert p.summary.styled_created == 1  # b would be re-styled
+        assert p.summary.styled_skipped == 2  # a, c reused untouched
+
+    def test_unknown_restyle_frame_raises(self, make_pipeline, workspace):
+        pairs = _make_frame_pairs(workspace, ["a", "b"])
+        images = [src for src, _ in pairs]
+        p = make_pipeline(dry_run=True, restyle_frames=["z.png"])
+        with pytest.raises(PipelineError, match="z.png"):
+            p._style_images(images, {})
+
+
+class TestResolveMusicFile:
+    """The bed is always a supplied track; nothing is ever generated."""
+
+    def test_prefers_uploaded_custom_music(self, make_pipeline, workspace):
+        p = make_pipeline()
+        _touch(workspace.music_file, b"older")
+        _touch(workspace.custom_music_file, b"custom")
+        assert p._resolve_music_file() == workspace.custom_music_file
+
+    def test_custom_music_wins_even_under_force(self, make_pipeline, workspace):
+        p = make_pipeline(force=True)
+        _touch(workspace.music_file, b"older")
+        _touch(workspace.custom_music_file, b"custom")
+        assert p._resolve_music_file() == workspace.custom_music_file
+
+    def test_music_file_option_wins_over_everything(self, make_pipeline, workspace, tmp_path):
+        supplied = _touch(tmp_path / "mine.mp3", b"mine")
+        p = make_pipeline(music_file=str(supplied))
+        _touch(workspace.custom_music_file, b"custom")
+        assert p._resolve_music_file() == supplied
+
+    def test_missing_music_file_option_is_an_error(self, make_pipeline, tmp_path):
+        p = make_pipeline(music_file=str(tmp_path / "nope.mp3"))
+        with pytest.raises(PipelineError, match="--music-file not found"):
+            p._resolve_music_file()
+
+    def test_existing_track_on_disk_is_reused(self, make_pipeline, workspace):
+        p = make_pipeline()
+        _touch(workspace.music_file, b"older")
+        assert p._resolve_music_file() == workspace.music_file
+
+    def test_no_track_means_no_music_not_generation(self, make_pipeline):
+        # Nothing to generate from any more: the movie is simply built silent.
+        p = make_pipeline()
+        assert p._resolve_music_file() is None
+
+
+class TestSnapshotMusic:
+    def test_reports_custom_and_generated_music(self, pipeline, workspace):
+        snap = pipeline.snapshot()
+        assert snap["custom_music"] is False and snap["music"] is False
+        _touch(workspace.custom_music_file, b"custom")
+        _touch(workspace.music_file, b"generated")
+        snap = pipeline.snapshot()
+        assert snap["custom_music"] is True and snap["music"] is True
+
+
+class TestPendingRenders:
+    """Submitted-but-uncollected fal jobs — money spent, output not fetched.
+
+    Nothing polls for these in the background: the result is only fetched by
+    the next `render` of that clip, and only while the fingerprint still
+    matches. They were invisible everywhere before, so an abandoned paid
+    render was silent.
+    """
+
+    def _pipeline(self, make_pipeline):
+        return make_pipeline(analyze_frames=False)
+
+    def _project(self, workspace, p):
+        """A 2-frame project; returns the fingerprint render would compute.
+
+        Derived through _pairs_from_storyboard on purpose: that is what
+        applies the global motion prompt, so the fingerprint matches the
+        prompt generate_clip actually submits.
+        """
+        _make_frame_pairs(workspace, ["a", "b"])
+        sb = _save_slug_storyboard(workspace, ["a", "b"])
+        start, end, motion, duration, _ = p._pairs_from_storyboard(sb)[0]
+        return p.video_client.fingerprint(start, end, motion, duration)
+
+    def test_no_entries_means_nothing_pending(self, make_pipeline):
+        assert self._pipeline(make_pipeline).pending_renders() == []
+
+    def test_matching_fingerprint_is_recoverable(self, make_pipeline, workspace):
+        p = self._pipeline(make_pipeline)
+        fp = self._project(workspace, p)
+        p.state.set("falreq:a_to_b.mp4", "pending", request_id="req-1",
+                    fingerprint=fp)
+        pending = p.pending_renders()
+        assert len(pending) == 1
+        assert pending[0]["id"] == "a_to_b"
+        assert pending[0]["request_id"] == "req-1"
+        assert pending[0]["recoverable"] is True
+
+    def test_edited_prompt_makes_the_paid_job_unrecoverable(
+        self, make_pipeline, workspace
+    ):
+        # The money is already spent, but the job renders the OLD plan, so
+        # the next render discards it and buys a fresh clip. That has to be
+        # visible rather than silent.
+        p = self._pipeline(make_pipeline)
+        self._project(workspace, p)
+        p.state.set("falreq:a_to_b.mp4", "pending", request_id="req-1",
+                    fingerprint="a-fingerprint-from-the-old-plan")
+        assert p.pending_renders()[0]["recoverable"] is False
+
+    def test_entry_without_a_fingerprint_is_not_recoverable(
+        self, make_pipeline, workspace
+    ):
+        p = self._pipeline(make_pipeline)
+        self._project(workspace, p)
+        p.state.set("falreq:a_to_b.mp4", "pending", request_id="req-1")
+        assert p.pending_renders()[0]["recoverable"] is False
+
+    def test_snapshot_surfaces_pending_renders(self, make_pipeline, workspace):
+        p = self._pipeline(make_pipeline)
+        fp = self._project(workspace, p)
+        p.state.set("falreq:a_to_b.mp4", "pending", request_id="req-1",
+                    fingerprint=fp)
+        assert p.snapshot()["pending_renders"][0]["id"] == "a_to_b"
+
+    def test_collected_render_leaves_nothing_pending(
+        self, make_pipeline, workspace
+    ):
+        # generate_clip clears the entry once the mp4 is downloaded.
+        p = self._pipeline(make_pipeline)
+        fp = self._project(workspace, p)
+        p.state.set("falreq:a_to_b.mp4", "pending", request_id="req-1",
+                    fingerprint=fp)
+        p.state.clear("falreq:a_to_b.mp4")
+        assert p.pending_renders() == []
+
+
+class TestLocalTime:
+    """State timestamps are UTC; showing them raw read as hours in the past."""
+
+    def test_utc_timestamp_is_converted_to_local(self):
+        from ai_video_maker.runner import _local_time
+        import datetime as dt
+        iso = "2026-07-26T12:28:05.514357+00:00"
+        expected = (
+            dt.datetime.fromisoformat(iso).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        )
+        assert _local_time(iso) == expected
+
+    def test_empty_is_unknown(self):
+        from ai_video_maker.runner import _local_time
+        assert _local_time("") == "unknown"
+
+    def test_unparseable_falls_back_to_the_raw_prefix(self):
+        from ai_video_maker.runner import _local_time
+        assert _local_time("not a timestamp at all") == "not a timestamp at "
+
+
+class TestRecordedFailures:
+    """snapshot() carries the actual failures, not just "a file exists"."""
+
+    def test_no_file_means_no_failures(self, pipeline):
+        assert pipeline.snapshot()["failed_jobs"] == []
+
+    def test_failures_are_surfaced_with_kind_and_error(self, pipeline, workspace):
+        pipeline.failed.record("clip:a_to_b", "clip", "fal request still Queued")
+        pipeline.failed.flush()
+        failures = pipeline.snapshot()["failed_jobs"]
+        assert len(failures) == 1
+        assert failures[0]["id"] == "clip:a_to_b"
+        assert failures[0]["kind"] == "clip"
+        assert "still Queued" in failures[0]["error"]
+
+    def test_a_clean_run_clears_them(self, pipeline):
+        pipeline.failed.record("clip:a_to_b", "clip", "boom")
+        pipeline.failed.flush()
+        assert pipeline.snapshot()["failed_jobs"]
+        pipeline.failed.failures.clear()
+        pipeline.failed.flush()  # removes the stale report
+        assert pipeline.snapshot()["failed_jobs"] == []
+
+    def test_malformed_report_does_not_break_status(self, pipeline, workspace):
+        path = pipeline.failed.path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not json", encoding="utf-8")
+        assert pipeline.snapshot()["failed_jobs"] == []

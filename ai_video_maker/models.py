@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -46,11 +47,9 @@ class Storyboard(BaseModel):
     target_height: int = 1080
     concept: str = ""
     scenes: list[str] = Field(default_factory=list)
-    # Optional global background-music description for the audio step.
-    music_prompt: str = ""
     # Optional guidance that applies to EVERY clip: prepended to each
     # transition's motion prompt at render time and given to the planner as
-    # context (hand-edited between steps, like music_prompt). For facts that
+    # context (hand-edited between steps). For facts that
     # hold across the whole movie — e.g. "Two different children appear
     # throughout: an older boy with glasses and a younger girl; they are
     # separate people, never blend one into the other." Keep it to a sentence
@@ -77,3 +76,36 @@ class Storyboard(BaseModel):
             json.dumps(self.model_dump(), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+
+
+# Transition fields that shape the rendered video. `sound_prompt` is
+# deliberately absent: it only feeds the audio step, so editing it must not
+# invalidate a clip that is otherwise still correct.
+_CLIP_DEFINING_FIELDS = ("motion_prompt", "duration", "start_frame", "end_frame")
+
+
+def changed_transition_ids(
+    old: Optional["Storyboard"], new: "Storyboard"
+) -> list[str]:
+    """Ids of transitions whose already-rendered clip no longer matches `new`.
+
+    Hand-editing a motion prompt or duration invalidates the clip rendered
+    from the old plan in exactly the way a re-plan does, so the panel's save
+    can mark those clips outdated instead of leaving the edit invisible to
+    everything but the browser tab that made it. Editing the GLOBAL motion
+    prompt invalidates every transition, because it is prepended to each
+    clip's prompt at render time (`_with_global_motion`).
+
+    Transitions that are new in `new` are never listed: nothing was rendered
+    from them, so there is nothing to invalidate.
+    """
+    if old is None:
+        return []
+    if old.global_motion_prompt != new.global_motion_prompt:
+        return [t.id for t in new.transitions]
+    previous = {t.id: t for t in old.transitions}
+    return [
+        t.id for t in new.transitions
+        if (before := previous.get(t.id)) is not None
+        and any(getattr(before, f) != getattr(t, f) for f in _CLIP_DEFINING_FIELDS)
+    ]

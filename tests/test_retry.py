@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+from ai_video_maker import retry
 from ai_video_maker.retry import (
     is_moderation_error,
     is_quota_exhausted_error,
@@ -240,3 +241,95 @@ class TestWithRewordRecovery:
                 last_resort="generic fallback",
             )
         assert calls == ["p", "generic fallback"]  # not resubmitted verbatim
+
+
+# The verbatim rejection fal returned on project Commercial2 at 19:46:19,
+# one second before two sibling clips were accepted and rendered fine.
+_FAL_BALANCE = (
+    "User is locked. Reason: Exhausted balance. "
+    "Top up your balance at fal.ai/dashboard/billing."
+)
+
+
+class _Status(Exception):
+    def __init__(self, code: int, msg: str = "boom") -> None:
+        super().__init__(msg)
+        self.status_code = code
+
+
+class TestBalanceErrors:
+    """fal reports "exhausted balance" transiently as well as for real.
+
+    A real batch lost its first clip to this while the next two, submitted a
+    second later, went through — it was classified permanent (403) and got
+    zero retries. Bounded retries recover the blip without reintroducing the
+    minutes-long burn on a genuinely empty account.
+    """
+
+    def test_the_real_fal_message_is_recognised(self):
+        assert retry.is_balance_error(RuntimeError(_FAL_BALANCE))
+
+    def test_payment_required_status_is_recognised(self):
+        assert retry.is_balance_error(_Status(402))
+
+    def test_unrelated_errors_are_not_balance_errors(self):
+        for exc in (RuntimeError("connection reset"), _Status(500),
+                    RuntimeError("content_policy_violation")):
+            assert not retry.is_balance_error(exc)
+
+    def test_balance_errors_are_retryable_despite_being_4xx(self):
+        # The old classifier saw 403 -> permanent -> no retry at all.
+        exc = _Status(403, _FAL_BALANCE)
+        assert retry.is_retryable_error(exc)
+
+    def test_openai_hard_quota_stays_permanent(self):
+        # Different beast: waiting never fixes insufficient_quota.
+        exc = RuntimeError("Error code: 429 - insufficient_quota")
+        assert not retry.is_retryable_error(exc)
+
+    def test_a_transient_lock_recovers_on_the_next_attempt(self, monkeypatch):
+        monkeypatch.setattr(retry.time, "sleep", lambda _s: None)
+        calls = []
+
+        def flaky():
+            calls.append(1)
+            if len(calls) == 1:
+                raise _Status(403, _FAL_BALANCE)
+            return "clip"
+
+        out = retry.with_retries(
+            flaky, max_retries=5, base_delay=0.01, description="fal submit")
+        assert out == "clip" and len(calls) == 2
+
+    def test_a_real_empty_balance_gives_up_bounded(self, monkeypatch):
+        slept = []
+        monkeypatch.setattr(retry.time, "sleep", slept.append)
+        calls = []
+
+        def always_broke():
+            calls.append(1)
+            raise _Status(403, _FAL_BALANCE)
+
+        with pytest.raises(_Status):
+            retry.with_retries(always_broke, max_retries=5, base_delay=0.01,
+                               description="fal submit")
+        assert len(calls) == retry._BALANCE_MAX_RETRIES
+        # Bounded and short — not the patient rate-limit budget.
+        assert sum(slept) <= retry._BALANCE_MAX_DELAY * retry._BALANCE_MAX_RETRIES
+
+    def test_balance_retries_do_not_consume_the_normal_budget(self, monkeypatch):
+        # A balance blip followed by real transient errors must still get the
+        # full ordinary retry allowance.
+        monkeypatch.setattr(retry.time, "sleep", lambda _s: None)
+        calls = []
+
+        def mixed():
+            calls.append(1)
+            if len(calls) == 1:
+                raise _Status(403, _FAL_BALANCE)
+            if len(calls) < 4:
+                raise RuntimeError("network blip")
+            return "ok"
+
+        assert retry.with_retries(mixed, max_retries=4, base_delay=0.01,
+                                  description="fal submit") == "ok"

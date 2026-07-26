@@ -62,32 +62,108 @@ Settings → API Keys).
 ### The admin server (`serve`) — run the whole flow from a browser
 
 ```bash
-python pipeline.py serve            # admin API on 127.0.0.1:8300 + order watcher
+cd admin_ui && npm install && npm run build && cd ..   # once (and after UI changes)
+python pipeline.py serve            # panel + API on 127.0.0.1:8300 + order watcher
 ```
 
-One process gives the animoments **admin panel** everything it needs:
+One process serves the whole thing — open http://127.0.0.1:8300/ and enter
+the `ADMIN_API_TOKEN` from `.env`:
 
-- **API**: order list, per-project status, storyboard read/edit, photos and
-  clip playback, and actions (ingest / storyboard / render / redo one clip /
-  audio / combine) that run as **background jobs** — one at a time, with
-  their logs available at `/api/jobs/<id>`. `POST /api/jobs/<id>/cancel`
+- **Admin panel** (`admin_ui/`, a small React + Mantine app served from its `dist/`
+  build): everything the CLI can do, from a browser — order intake, creating
+  a project from scratch and uploading/removing photos (`init`), storyboards
+  from photos or from a typed idea (with style prompt / duration /
+  no-analyze / frame-count options), regenerating a single styled image,
+  reviewing and editing every transition (motion prompt, duration, sound
+  prompt, global motion prompt), rendering all clips or regenerating one,
+  per-clip audio redo, uploading the music track, combine/finalize with
+  intro/credits/letter toggles, and `run` for the whole chain. Jobs stream
+  their logs and can be cancelled from the panel.
+  **Editing prompts in bulk:** saving your transition edits marks every
+  already-rendered clip whose motion prompt / duration / frames changed as
+  OUTDATED (a sound-prompt-only edit doesn't — that's the audio step's
+  business), and then offers **“Generate everything that needs it”** — one
+  background job covering the edited clips *and* the ones never rendered, so
+  a round of prompt edits doesn't have to be clicked through clip by clip.
+  The confirmation lists every clip by name and which of the two groups it
+  is in before anything is spent; the same button lives in the Render step.
+  While a storyboard job runs, the Photos panel opens itself and fills in
+  live — styled frames appear one by one as they come back, instead of only
+  once the whole run finishes.
+- **API**: order list, per-project status, storyboard read/edit, photos, a
+  music-bed upload (`POST`/`DELETE /api/projects/<name>/music`), and
+  clip playback, plus actions (ingest / storyboard / render / redo one clip /
+  audio / combine / run) that run as **background jobs** — one at a time,
+  with their logs available at `/api/jobs/<id>`. `POST /api/jobs/<id>/cancel`
   cancels a job: a queued job is dropped immediately; a running one shows
   `cancelling` and stops between work items — whatever is mid-generation
   finishes and is kept (already-submitted API work bills either way), so
   re-running the same action later resumes instead of re-paying. Every route
-  (except `/api/health`) requires the `ADMIN_API_TOKEN` from `.env`, passed
-  as `Authorization: Bearer <token>` (or `?token=` for media tags).
-- **Order watcher**: polls Cloudinary every `watch_poll_seconds` and
-  auto-ingests a new order once its upload has been quiet for
-  `watch_quiet_minutes` (payment confirms *before* photos finish uploading,
-  so folder-exists ≠ order-complete). With `watch_auto_storyboard` (default
-  on) it also runs `storyboard` right away — **this spends OpenAI styling
-  credits automatically per paid order** — so the storyboard is waiting for
-  review by the time you open the panel. Disable with `--no-watch` or
-  `watch_enabled: false`.
+  (except `/api/health`) requires the `ADMIN_API_TOKEN` from `.env` (16+
+  chars — the server refuses to boot with a shorter one), passed as
+  `Authorization: Bearer <token>`. Only the media file route also accepts
+  `?token=` (for `<img>`/`<video>` tags); everywhere else the query form is
+  rejected. Token comparison is constant-time, and 10 failed attempts from
+  one address within 15 minutes lock it out (HTTP 429) for the rest of the
+  window. API docs endpoints (`/docs`, `/openapi.json`) are disabled, and
+  cross-origin access is off by default (`admin_cors_origins: []` — the
+  panel is same-origin; only set origins if you host it elsewhere).
+- **Orders, fetched live**: opening the panel's Orders tab (or `GET
+  /api/orders`) reads the sources *at that moment* — no background process
+  involved. With the **Firebase order ledger** configured (below) that
+  means the Firestore `orders` collection — the authoritative "someone
+  paid" record with the customer's details and `status`; without it, the
+  Cloudinary folder listing. Ingesting is one click ("Ingest + storyboard"),
+  and the pipeline writes progress back into the order doc's `status`
+  (`new → ingesting → ingested`).
+- **Optional background watcher** (off by default): set
+  `watch_enabled: true` to also have the server re-check every
+  `watch_poll_seconds` and auto-ingest a new order once its upload is
+  complete (exact `photoCount` when the order doc has one, else quiet for
+  `watch_quiet_minutes` — payment confirms *before* photos finish
+  uploading, so folder-exists ≠ order-complete). With
+  `watch_auto_storyboard` (default on) it also runs `storyboard` right
+  away — **this spends OpenAI styling credits automatically per paid
+  order** — so the storyboard is waiting for review by the time you open
+  the panel. Use it when you want orders handled while you're away from
+  the panel; `--no-watch` force-disables it for one run.
 
-To reach the panel away from home, expose the port with a tunnel
-(Cloudflare Tunnel / Tailscale) — don't bind `0.0.0.0` on an open network.
+For UI development, `cd admin_ui && npm run dev` serves the panel with hot
+reload, proxying `/api` to a locally running `pipeline.py serve`.
+
+### Production (the Mac mini)
+
+**[deploy/PRODUCTION.md](deploy/PRODUCTION.md) is the runbook.** The short
+version: the server runs as a launchd service bound to `127.0.0.1` only
+(`deploy/com.animoments.pipeline.plist`), and the internet reaches it
+exclusively through a **Cloudflare Tunnel** (see
+`deploy/cloudflared-config.example.yml`) with Cloudflare Access (email +
+one-time PIN) in front — two auth layers, zero open ports.
+
+Branch flow: work lands on **`dev`**, a PR into **`main`** is the release.
+CI (`.github/workflows/ci.yml`) runs the offline tests + lint + panel build
+on every push/PR to either branch; pushing `main` triggers
+`.github/workflows/deploy.yml`, which runs `deploy/deploy.sh` on the mini's
+self-hosted runner: fast-forward, reinstall, retest, rebuild the panel,
+restart the service, health-check. Never bind `0.0.0.0`; never port-forward.
+
+### The Firebase order ledger (optional, recommended)
+
+The web frontend writes every paid order to Firestore (collection `orders`:
+customer name/phone/email, package, music mood, blessing, the Cloudinary
+photo folder, and a `status` starting at `"new"`). To let the pipeline use
+and update that ledger:
+
+1. Firebase console → Project settings → Service accounts → **Generate new
+   private key** (this is a secret — it's gitignored).
+2. Save it as `firebase-service-account.json` at the repo root, or point
+   `FIREBASE_SERVICE_ACCOUNT` in `.env` at its path.
+
+That's all — the project id is read from the key file itself
+(`firebase_project_id` / `firebase_orders_collection` /
+`firebase_credentials_file` in `config.json` override when needed). The
+`orders` API/panel then shows the full customer context per order, and the
+watcher stops guessing completeness from folder timestamps alone.
 
 ### Editing cookbook
 
@@ -108,11 +184,12 @@ insertions, number in tens (`10.jpg, 20.jpg, 30.jpg`).
 | Edit | Commands | Cost |
 |------|----------|------|
 | Regenerate one clip (e.g. after tweaking its `motion_prompt` in `storyboard.json`) | `python pipeline.py render myfilm --clip 2_to_3` | 1 clip |
+| Ask the planner for a fresh motion prompt for one pair (don't like its plan) | `python pipeline.py storyboard myfilm --replan-clip 2_to_3` — its rendered clip (if any) is marked outdated, not redone | 1 small vision call |
 | Change one clip's sound (edit its `sound_prompt` first) | `python pipeline.py audio myfilm --clip 2_to_3` | ~1¢ |
 | Add an image between 2 and 3 | copy it in as `input_images/2a.jpg`, then:<br>`python pipeline.py storyboard myfilm`<br>`python pipeline.py render myfilm` | 1 styling + 2 clips |
 | Remove image 2 | `rm projects/myfilm/input_images/2.jpg projects/myfilm/styled_images/2.png`, then:<br>`python pipeline.py storyboard myfilm`<br>`python pipeline.py render myfilm` | 1 clip |
 | Swap image 2 for a different photo | overwrite `input_images/2.jpg` with the new file, then:<br>`python pipeline.py storyboard myfilm` (asks before re-styling)<br>`python pipeline.py render myfilm --clip 1_to_2 --clip 2_to_3` | 1 styling + 2 clips |
-| Re-style one image (new roll of the styling dice) | `rm projects/myfilm/styled_images/2.png`, then:<br>`python pipeline.py storyboard myfilm`<br>`python pipeline.py render myfilm --clip 1_to_2 --clip 2_to_3` | 1 styling + 2 clips |
+| Re-style one image (new roll of the styling dice) | `python pipeline.py storyboard myfilm --restyle-frame 2.png` — its adjacent clips are marked outdated, then:<br>`python pipeline.py render myfilm --clip 1_to_2 --clip 2_to_3` | 1 styling + 2 clips |
 | Rebuild the movie after any of the above | `python pipeline.py combine myfilm --force` | free (local) |
 | Redo all clips (e.g. after big storyboard edits) | `python pipeline.py render myfilm --force -y` | all clips |
 | Redo styling + analysis from scratch | `python pipeline.py storyboard myfilm --force` | all stylings + 1 analysis |
@@ -127,7 +204,9 @@ Notes:
   everything else verbatim. **Existing clips are never deleted or redone
   automatically**: a rendered clip whose transition changed is only marked
   OUTDATED (`status` and the admin panel flag it) — regenerate it yourself
-  with `render --clip ID` when you're ready to spend the credits. Old clips
+  with `render --clip ID` when you're ready to spend the credits (the panel's
+  “Generate everything that needs it” does the same for outdated + missing
+  clips in one confirmed job). Old clips
   whose pair no longer exists at all become "strays" — `combine` ignores
   them and `status` lists them for deletion.
 - **Preview before spending:** `render` prints a per-clip plan (render vs
@@ -169,6 +248,7 @@ python pipeline.py render robots          # generates the key frames, then the c
   `apt install ffmpeg` (Linux), then open a new terminal.
 - An OpenAI API key
 - A **fal.ai** key (image-to-video + audio) — from https://fal.ai/dashboard/keys
+- **Node.js 18+** (only for the admin panel — `admin_ui/` builds with Vite)
 
 ## Setup
 
@@ -199,6 +279,13 @@ FAL_KEY=your-fal-key
 # intake) — from the Cloudinary console, Settings -> API Keys:
 CLOUDINARY_API_KEY=...
 CLOUDINARY_API_SECRET=...
+
+# Admin server (`serve`) — any long random string; the panel logs in with it:
+ADMIN_API_TOKEN=...
+
+# Firebase order ledger (optional) — path to a Firestore service-account key;
+# defaults to firebase-service-account.json at the repo root when present:
+FIREBASE_SERVICE_ACCOUNT=firebase-service-account.json
 ```
 
 > **Auth:** OpenAI generates/edits the images and plans the storyboard; fal.ai
@@ -213,6 +300,14 @@ and `.env` is git-ignored.
 Edit `config.json` to change the style prompts, motion prompt, default duration,
 the fal model id, retry settings, etc. It is validated on startup (pydantic), so
 typos are caught early.
+
+**Clip length:** you don't set it per clip. The planner rates each frame pair's
+difficulty 1–5 and the code derives the duration — 4 and 5 get 10 seconds,
+everything else 5 — because prompt-side instructions alone came back either
+all-5s or all-10s. `long_clip_max_fraction` (default `0.5`) caps how many of a
+movie's clips may be long: raise it toward `1.0` if hard transitions are being
+squeezed into 5s and teleporting, lower it for a shorter, pacier movie.
+Remember a 10s clip costs roughly twice a 5s one.
 
 **Per-project overrides:** drop a `config.json` inside a project
 (`projects/<name>/config.json`) with just the keys you want to change for that
@@ -284,8 +379,8 @@ re-rendered until you regenerate that clip yourself (`render --clip ID` / the
 panel's regenerate button).
 
 **Whole-movie guidance — `global_motion_prompt`:** the storyboard has a
-top-level `global_motion_prompt` field (empty by default, hand-edit it like
-`music_prompt`). Whatever you put there is prepended to *every* clip's motion
+top-level `global_motion_prompt` field (empty by default, hand-edited between
+steps). Whatever you put there is prepended to *every* clip's motion
 prompt at render time and given to the planner as context, so facts that hold
 across the whole movie live in one place instead of being repeated per clip —
 e.g. `"Two different children appear throughout: an older boy with glasses
@@ -373,10 +468,10 @@ project name as its first argument (except `orders`, which is project-less).
 | `serve` | — (no project argument) `--host`, `--port`, `--no-watch` |
 | `ingest` | `<order>` (id / folder / unique fragment), `--force`, `--dry-run` |
 | `init` | — |
-| `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
+| `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--replan-clip ID` (repeatable; fresh motion prompt for that pair), `--restyle-frame NAME` (repeatable; re-style that frame, e.g. `2.png`, marking adjacent clips outdated), `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
 | `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 5\|10`, `--add-audio`, `--no-audio` |
-| `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-prompt`, `--music-file PATH` |
-| `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--add-audio`, `--no-audio`, `--final`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter` |
+| `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-file PATH`, `--music-url URL` |
+| `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--music-url URL`, `--add-audio`, `--no-audio`, `--final`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter` |
 | `status` | — |
 | `run` | everything above except `--clip`, plus `--no-combine` |
 
@@ -422,6 +517,15 @@ number. Dry-runs always run sequentially so the planned-work log stays ordered.
   submitting (and billing) a new one**. The saved request is only reused
   while the clip's frames, prompt, and duration are unchanged; if you edit
   the storyboard in between, a fresh job is submitted as expected.
+- **Nothing collects those jobs in the background.** A submitted render is
+  only fetched by the next `render` of that clip, so an interrupted run that
+  is never resumed leaves a paid result sitting on fal forever. `status` and
+  the admin panel now list them ("N paid render(s) waiting on the provider"),
+  saying for each whether it is still *recoverable* — i.e. whether the plan
+  is unchanged, so rendering fetches it for free — or whether an edit has
+  since invalidated it, meaning that render is lost and a new one will be
+  billed. Saving storyboard edits that invalidate a waiting render warns you
+  by name at the moment it happens.
 - Use `--force` to ignore saved state and redo everything, or
   `render --clip ID` to redo specific clips.
 - Anything that failed is written to `failed_jobs/failed_jobs.json` with the
@@ -464,7 +568,7 @@ Everything below lives inside the project workspace, `projects/<name>/`:
 | `styled_images/` | Styled frames (`001_styled.png`, …) |
 | `generated_frames/` | Idea-based generated frames (`001.png`, …) |
 | `clips/` | Rendered clips (`001_to_002.mp4`, …) |
-| `output/` | `final_video.mp4` + `music.mp3` (the generated bed, when audio is on) |
+| `output/` | `final_video.mp4` + `music_custom.mp3` (the music track you uploaded, when you supplied one) |
 | `storyboard/` | `storyboard.json` (editable source of truth), `storyboard.md` (readable view), `preview.html` (visual contact sheet — open it in a browser) |
 | `logs/` | Run logs + `state.json` |
 | `failed_jobs/` | `failed_jobs.json` |
@@ -481,10 +585,22 @@ account). Two independent layers:
    model (default `fal-ai/mmaudio-v2`), which watches the clip and returns the
    **same clip with synchronized sound muxed in**. Because it reads the actual
    pixels, every clip gets its own motion-matched audio.
-2. **Music bed** — one instrumental track (default `fal-ai/elevenlabs/music`)
-   is generated from a single prompt and mixed across the whole final video,
-   **louder than the clip SFX** (the SFX is ducked under it). Tune the balance
-   with `music_volume` / `sfx_volume` in `config.json`.
+2. **Music bed** — one track **you supply**, mixed across the whole final
+   video, **louder than the clip SFX** (the SFX is ducked under it). Music is
+   never generated. Supply it by uploading a file in the panel (Audio *or*
+   Combine step), pasting a URL there, `--music-file PATH`, or `--music-url
+   URL`. No track means the movie simply has no music. Tune the balance with
+   `music_volume` / `sfx_volume` in `config.json`.
+
+   `--music-url` takes either a **direct audio link** (`.../track.mp3` — what
+   royalty-free libraries hand out) or a **page URL** whose audio is extracted
+   with [yt-dlp](https://github.com/yt-dlp/yt-dlp). Downloads are capped at
+   60 MB. **These movies are sold to customers, so the track has to be one you
+   may actually use** — a royalty-free library, a CC-licensed track, or
+   something you licensed. Downloading a copyrighted song does not make it
+   usable, and the pipeline cannot check this for you. If a page URL stops
+   working, YouTube changed something: `.venv/bin/python -m pip install -U
+   yt-dlp`.
 
 ### Turning it on
 
@@ -499,31 +615,35 @@ python pipeline.py run myfilm --add-audio
 # Already have silent clips? Add SFX + music and rebuild the final video:
 python pipeline.py audio myfilm
 
-# Use your own music track instead of generating one:
+# Add your music track (the only way to get a music bed):
 python pipeline.py audio myfilm --music-file ~/Music/mytrack.mp3
 
-# Override just the music prompt:
-python pipeline.py audio myfilm --music-prompt "Upbeat playful ukulele, no vocals"
+# ...or fetch it from a URL (direct audio link, or a page to extract from):
+python pipeline.py audio myfilm --music-url https://example.com/track.mp3
 
 # Force-off for one run even if config has audio_mode: post
 python pipeline.py run myfilm --no-audio
 ```
 
-The music bed comes from `--music-file` if given, else the project's existing
-`output/music.mp3`, else it is generated from the music prompt (storyboard's
-`music_prompt`, or `--music-prompt`, or config).
+The music bed comes from `--music-url` if given (downloaded into the custom
+slot, so later runs reuse it), else `--music-file`, else an uploaded track
+(`output/music_custom.mp3` — dropped in via the panel's Audio step and used
+as-is for the whole movie), else a pre-existing `output/music.mp3`. If none of
+those exist the movie is built with sound effects only — that is a normal
+outcome, not an error.
 
-Cost is roughly **$0.20–0.50 per full video** (MMAudio is ~$0.001/s; music is
-one short call). Requires `ffmpeg`/`ffprobe` on your `PATH`.
+Cost is roughly **$0.20–0.50 per full video** (MMAudio is ~$0.001/s; the music
+bed costs nothing — it is your own file). Requires `ffmpeg`/`ffprobe` on your
+`PATH`.
 
 ### Where the prompts come from
 
 - **Image-based projects:** the frame analysis writes a per-clip `sound_prompt`
-  into each transition; blank ones fall back to `default_sfx_prompt`. The music
-  bed prompt comes from `config.json` (or `--music-prompt`).
+  into each transition; blank ones fall back to `default_sfx_prompt`.
 - **Idea-based projects:** the storyboard also plans a `sound_prompt` per
-  transition and one `music_prompt` for the whole video — all editable in
-  `storyboard.json` before rendering.
+  transition — editable in `storyboard.json` before rendering.
+- **The music bed has no prompt**: it is the file you upload (panel) or pass
+  with `--music-file`, never generated.
 
 ### Config keys
 
@@ -537,11 +657,8 @@ one short call). Requires `ffmpeg`/`ffprobe` on your `PATH`.
 | `sfx_extra_arguments` | Extra model-specific args merged into each SFX call. |
 | `sfx_fade_seconds` | Fade each clip's SFX in/out at its edges so hard cuts aren't abrupt (the music bed carries the dip). Sync-preserving; `0` disables. Default `0.2`. |
 | `sfx_volume` | `0..1`, how loud the per-clip SFX sits **under** the music (default `0.35`). |
-| `music_model_id` | fal text→music model. Default `fal-ai/elevenlabs/music`. |
-| `music_prompt` | Background-music description (fallback). |
 | `music_volume` | `0..1`, how loud the background bed plays (default `0.85`). |
 | `music_loop` | `false` (default): the track plays once; if the video is longer, the rest continues with SFX only. `true`: the track repeats for the whole video. A track longer than the video is trimmed either way. |
-| `music_extra_arguments` | Extra model-specific args for the music call. |
 
 Swap the SFX or music model by changing the id (e.g. `fal-ai/lyria2`,
 `cassetteai/music-generator`, `fal-ai/thinksound`) — no code changes. SFX and
@@ -587,12 +704,19 @@ ai_video_maker/
   media/
     images.py        # Pillow normalisation + image listing
     ffmpeg.py        # concat, ffprobe, edge fades, music mux
+  server.py          # FastAPI admin API + job runner + order watcher (`serve`)
+  intake.py          # web-order intake logic shared by orders/ingest/watcher
   clients/
     openai_client.py # image generation/editing + storyboard text (OpenAI)
     fal.py           # shared fal session: upload + subscribe + result parsing
     download.py      # shared atomic streaming download
     video.py         # VideoClient — image-to-video (fal)
     audio.py         # AudioClient — SFX + music (fal)
+    cloudinary_client.py # order photo listing/download (Cloudinary Admin API)
+    firebase_client.py   # Firestore order ledger (list orders, status write-back)
+admin_ui/            # the admin panel (React + Vite + Mantine); dist/ served at / by `serve`
+deploy/              # production: runbook, launchd plist, tunnel config, deploy script
+.github/workflows/   # CI (tests/lint/panel build) + CD (deploy to the Mac mini)
 pipeline.py          # entry-point shim
 pyproject.toml       # package metadata, deps, `ai-video-maker` console script
 ```

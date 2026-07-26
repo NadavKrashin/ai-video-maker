@@ -16,8 +16,10 @@ individually instead.
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -34,7 +36,7 @@ from .clients.openai_client import OpenAIClient
 from .clients.video import VideoClient
 from .config import Config
 from .errors import PipelineCancelled, PipelineError, StoryboardError
-from .intake import write_order_record
+from .intake import parse_order_folder, write_order_record
 from .logging_setup import logger
 from .media.ffmpeg import (
     apply_edge_fades,
@@ -49,6 +51,7 @@ from .media.ffmpeg import (
     render_photo_still,
 )
 from .media.letter import find_letter_font, render_letter_image
+from .media.music_url import fetch_music
 from .media.images import (
     SUPPORTED_IMAGE_EXTS,
     list_input_images,
@@ -86,6 +89,24 @@ def _with_global_motion(global_prompt: str, motion: str) -> str:
     if g[-1] not in ".!?":
         g += "."
     return f"{g} {motion}"
+
+
+def _local_time(iso: str) -> str:
+    """Render an ISO-8601 UTC timestamp in the machine's local time.
+
+    State timestamps are stored in UTC. Printing them raw next to
+    wall-clock expectations reads as three hours in the past on an
+    IDT machine, which made an in-flight render look long abandoned.
+    """
+    if not iso:
+        return "unknown"
+    try:
+        stamp = datetime.fromisoformat(iso)
+    except ValueError:
+        return iso[:19]
+    if stamp.tzinfo is not None:
+        stamp = stamp.astimezone()
+    return stamp.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _file_sha1(path: Path) -> str:
@@ -159,7 +180,10 @@ class Pipeline:
         self.openai = OpenAIClient(config)
         # The state store lets interrupted fal renders resume by request_id
         # instead of re-billing (falreq:<clip> entries).
-        self.video_client = VideoClient(config, state=self.state)
+        self.video_client = VideoClient(
+            config, state=self.state,
+            should_cancel=self.cancel_event.is_set,
+        )
         self.audio_client = AudioClient(config)
         # Audio is on when config.audio_mode == "post", unless overridden by
         # --add-audio / --no-audio for a single run (the `audio` command
@@ -171,7 +195,6 @@ class Pipeline:
         else:
             self.audio_enabled = (config.audio_mode or "none").lower() == "post"
         # Resolved when a storyboard is loaded; falls back to config.
-        self._storyboard_music_prompt: str = ""
         # Concurrency for the I/O-bound generation steps.
         self.concurrency: int = max(
             1, options.concurrency or config.max_parallel_requests
@@ -353,11 +376,36 @@ class Pipeline:
             order_folder=folder,
             photo_count=len(targets),
         )
+        self._sync_order_status(folder)
         logger.info(
             "Ingested %d photo(s) into %s", len(pending),
             self.workspace.input_images_dir,
         )
         logger.info("Next step:  %s", self._next_command("storyboard"))
+
+    def _sync_order_status(self, folder: str) -> None:
+        """Best-effort Firestore write-back after an ingest: status "ingested".
+
+        Every ingest path lands here (CLI, panel button, watcher job), so the
+        order ledger reflects progress without any background polling. The
+        doc id is the AM-... order id embedded in the folder leaf. A ledger
+        hiccup must never fail the ingest itself.
+        """
+        from .clients.firebase_client import STATUS_INGESTED, FirebaseClient
+
+        if not FirebaseClient.configured(self.config):
+            return
+        order_id = parse_order_folder(folder)["order_id"]
+        try:
+            FirebaseClient.from_config(self.config).update_order(
+                order_id,
+                {"status": STATUS_INGESTED, "project": self.workspace.root.name},
+            )
+            logger.info("Order %s marked '%s' in Firestore.", order_id, STATUS_INGESTED)
+        except Exception as exc:  # noqa: BLE001 - the ledger never sinks an ingest
+            logger.warning(
+                "Could not update Firestore order %s: %s", order_id, exc
+            )
 
     # --------------------------- storyboard step -------------------------- #
     def cmd_storyboard(self) -> None:
@@ -492,6 +540,21 @@ class Pipeline:
         targets = self._styled_targets(images)
         jobs = list(zip(images, targets))
 
+        # Explicitly requested re-styles (--restyle-frame / the panel's
+        # "Regenerate image" button): redo these frames from scratch even when
+        # the source is unchanged, with no confirm gate (an explicit request,
+        # like render --clip). A typo must fail loudly, not silently no-op.
+        restyle = set(self.options.restyle_frames or [])
+        if restyle:
+            valid = {dst.name for dst in targets}
+            unknown = restyle - valid
+            if unknown:
+                raise PipelineError(
+                    "No such styled frame(s) to regenerate: "
+                    f"{', '.join(sorted(unknown))}.\n"
+                    "Valid frames: " + ", ".join(sorted(valid))
+                )
+
         redo: dict[Path, str] = {}  # styled path -> reason
         if not self.force:
             for src, dst in jobs:
@@ -524,7 +587,7 @@ class Pipeline:
             src, dst = job
             job_id = f"style:{dst.name}"
 
-            if dst.exists() and not self.force and dst not in redo:
+            if dst.exists() and not self.force and dst not in redo and dst.name not in restyle:
                 with self._lock:
                     self.summary.styled_skipped += 1
                 logger.info("Skip styled (done): %s", dst.name)
@@ -626,6 +689,17 @@ class Pipeline:
             for t in (saved.transitions if saved else [])
         }
         pairs = list(zip(frames, frames[1:]))
+        # Explicitly requested re-plans (--replan-clip / the panel's
+        # "re-plan prompt" button): planned fresh even though nothing
+        # changed. A typo must fail loudly, not silently keep the old plan.
+        requested = set(self.options.replan_clips or [])
+        all_tids = {f"{a.id}_to_{b.id}" for a, b in pairs}
+        unknown = requested - all_tids
+        if unknown:
+            raise PipelineError(
+                f"No such transition(s) to re-plan: {', '.join(sorted(unknown))}.\n"
+                "Valid ids: " + ", ".join(f"{a.id}_to_{b.id}" for a, b in pairs)
+            )
         dirty: list[int] = []
         stale_tids: list[str] = []
         for i, (a, b) in enumerate(pairs):
@@ -642,7 +716,8 @@ class Pipeline:
                 prior is not None
                 and prior.motion_prompt == self.config.motion_prompt
             )
-            if saved is None or changed or prior is None or placeholder:
+            if (saved is None or changed or prior is None or placeholder
+                    or f"{a.id}_to_{b.id}" in requested):
                 dirty.append(i)
             if changed:
                 stale_tids.append(f"{a.id}_to_{b.id}")
@@ -661,11 +736,13 @@ class Pipeline:
                 prior = saved_tr.get((a.output_path, b.output_path))
                 if (
                     prior is not None
-                    and prior.motion_prompt == self.config.motion_prompt
                     and motion != prior.motion_prompt
+                    and (prior.motion_prompt == self.config.motion_prompt
+                         or tid in requested)
                 ):
-                    # A real plan just replaced a placeholder: any clip already
-                    # rendered from the placeholder gets flagged outdated
+                    # A genuinely new prompt landed where a clip may already
+                    # exist — a real plan replacing a placeholder, or an
+                    # explicitly requested re-plan. Flag the clip outdated
                     # downstream (marking only — regeneration stays manual).
                     stale_tids.append(tid)
                 transitions.append(
@@ -690,7 +767,6 @@ class Pipeline:
             or (saved.duration_per_clip if saved else self.config.duration),
             target_width=self.config.target_width,
             target_height=self.config.target_height,
-            music_prompt=saved.music_prompt if saved else "",
             global_motion_prompt=saved.global_motion_prompt if saved else "",
             frames=frames,
             transitions=transitions,
@@ -746,7 +822,15 @@ class Pipeline:
                     plans[i] = fallback
         return plans
 
-    def _mark_stale_clips(self, stale_tids: list[str]) -> None:
+    def mark_clips_outdated(self, tids: list[str]) -> list[str]:
+        """Public entry point for the admin API; returns the clip files marked.
+
+        Used when the panel saves hand-edited transitions: the same
+        "outdated, kept, never auto-rendered" contract as a re-plan.
+        """
+        return self._mark_stale_clips(tids)
+
+    def _mark_stale_clips(self, stale_tids: list[str]) -> list[str]:
         """Flag rendered clips that no longer match the updated storyboard.
 
         NEVER deletes and never triggers regeneration: rendered clips cost
@@ -763,11 +847,11 @@ class Pipeline:
             if (clip := self.workspace.clips_dir / f"{tid}.mp4").exists()
         ]
         if not stale:
-            return
+            return []
         if self.dry_run:
             for clip in stale:
                 logger.info("[dry-run] would mark clip %s outdated", clip.name)
-            return
+            return [clip.name for clip in stale]
         for clip in stale:
             self.state.set(f"stale:{clip.name}", "outdated")
         logger.info(
@@ -778,6 +862,7 @@ class Pipeline:
             len(stale), ", ".join(c.name for c in stale),
             self.workspace.root.name,
         )
+        return [clip.name for clip in stale]
 
     # ------------------- storyboard from an idea (Mode B) ----------------- #
     def _resolve_idea(self) -> str:
@@ -861,7 +946,6 @@ class Pipeline:
         """
         storyboard = self._require_storyboard("render")
         self.summary.input_count = len(storyboard.frames)
-        self._storyboard_music_prompt = storyboard.music_prompt or ""
 
         self._generate_frames(storyboard)
 
@@ -1132,6 +1216,10 @@ class Pipeline:
                         self.state.set(job_id, "done", output=str(dst))
                         self.summary.videos_created += 1
                     logger.info("Clip ready: %s", dst.name)
+                except PipelineCancelled:
+                    # Asked to stop, not a broken clip: don't file it as a
+                    # failure (the submitted job is still recoverable).
+                    raise
                 except Exception as exc:  # noqa: BLE001
                     with self._lock:
                         self.summary.videos_failed += 1
@@ -1187,7 +1275,6 @@ class Pipeline:
         if sb_path.exists():
             try:
                 sb = Storyboard.load(sb_path)
-                self._storyboard_music_prompt = sb.music_prompt or ""
                 for tr in sb.transitions:
                     sound_map[Path(tr.output_path).name] = tr.sound_prompt
                 logger.info("Using per-clip sound prompts from %s", sb_path.name)
@@ -1678,50 +1765,42 @@ class Pipeline:
         )
         return dst
 
-    def _resolve_music_prompt(self) -> str:
-        return (
-            self.options.music_prompt
-            or self._storyboard_music_prompt
-            or self.config.music_prompt
-        )
-
     def _resolve_music_file(self) -> Optional[Path]:
         """Decide which music track to lay under the final video.
 
-        --music-file wins (and must exist). Otherwise the project's
-        output/music.mp3 is reused when present (unless --force), and failing
-        that a track is generated from the resolved music prompt. Returns None
-        to proceed without music.
+        The music bed is always a track SUPPLIED by the user — nothing is
+        generated. In order: --music-url (downloaded into the custom slot),
+        --music-file (must exist), an uploaded custom track
+        (output/music_custom.mp3, e.g. from the panel), then a pre-existing
+        output/music.mp3 (a track left by an older run or dropped in by
+        hand). Returns None to finish the movie without music, which is a
+        normal outcome rather than a failure.
         """
+        if self.options.music_url:
+            # Stored in the custom slot so it behaves exactly like an upload
+            # and survives into later combine runs without re-downloading.
+            return fetch_music(
+                self.options.music_url, self.workspace.custom_music_file
+            )
         if self.options.music_file:
             supplied = Path(self.options.music_file).expanduser()
             if not supplied.exists():
                 raise PipelineError(f"--music-file not found: {supplied}")
             logger.info("Using music file: %s", supplied)
             return supplied
+        custom = self.workspace.custom_music_file
+        if custom.exists():
+            logger.info("Using uploaded custom music: %s", custom)
+            return custom
         default = self.workspace.music_file
-        if default.exists() and not self.force:
+        if default.exists():
             logger.info("Reusing music file: %s", default)
             return default
-        return self._generate_music_file(default)
-
-    def _generate_music_file(self, dst: Path) -> Optional[Path]:
-        """Generate a music track into `dst` from the resolved prompt.
-
-        Returns `dst` on success, or None when there's no prompt or generation
-        fails (the run still finishes, just without a music bed).
-        """
-        prompt = self._resolve_music_prompt().strip()
-        if not prompt:
-            logger.info("No music_prompt set; skipping music bed.")
-            return None
-        try:
-            self.audio_client.generate_music(prompt, dst)
-            return dst
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Music generation failed: %s", exc)
-            self.failed.record("music:final", "music", str(exc))
-            return None
+        logger.info(
+            "No music track supplied; the movie is built without a music bed. "
+            "Upload one in the panel, or pass --music-file PATH."
+        )
+        return None
 
     def _add_music(self, music_file: Optional[Path]) -> None:
         """Mix `music_file` over output/final_video.mp4 (louder than the SFX)."""
@@ -1842,10 +1921,101 @@ class Pipeline:
             "changed_frames": changed_frames,
             "clips": clips,
             "stray_clips": stray,
+            "pending_renders": self.pending_renders(),
             "final_video": ws.final_video.exists(),
+            "music": ws.music_file.exists(),
+            "custom_music": ws.custom_music_file.exists(),
             "has_failed_jobs": self.failed.path.exists(),
+            # The failures themselves, not just "a file exists": the panel had
+            # no way to show WHAT went wrong, so a run whose clips all failed
+            # was indistinguishable from a clean one without opening the log.
+            "failed_jobs": self._recorded_failures(),
             "next_step": next_step,
         }
+
+    def _recorded_failures(self) -> list[dict[str, Any]]:
+        """The last run's failures, from failed_jobs/failed_jobs.json.
+
+        The file is removed by a clean run, so whatever is here describes the
+        most recent run that had problems. Best-effort: a malformed file
+        reports nothing rather than breaking status.
+        """
+        path = self.failed.path
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return []
+        if not isinstance(data, list):
+            return []
+        return [
+            {
+                "id": str(f.get("job_id", "")),
+                "kind": str(f.get("kind", "")),
+                "error": str(f.get("error", ""))[:400],
+                "at": str(f.get("timestamp", "")),
+            }
+            for f in data if isinstance(f, dict)
+        ]
+
+    def pending_renders(self) -> list[dict[str, Any]]:
+        """Clip renders that were submitted to fal but never collected.
+
+        The request_id is persisted before the wait and cleared only once the
+        mp4 is downloaded, so a surviving ``falreq:`` entry means the job was
+        submitted — the money is spent — and its output is still sitting on
+        fal's queue. Nothing polls for these in the background: the result is
+        fetched on the next ``render`` of that clip, and only while its
+        fingerprint still matches the storyboard. Surfacing them is what
+        makes an abandoned paid render visible instead of silent.
+        """
+        pending = []
+        for job_id, entry in sorted(self.state.find("falreq:").items()):
+            clip = job_id.removeprefix("falreq:")
+            pending.append({
+                "clip": clip,
+                "id": clip.removesuffix(".mp4"),
+                "request_id": entry.get("request_id", ""),
+                "submitted_at": entry.get("updated_at", ""),
+                # Set by the admin server when a running job owns this clip;
+                # from here (a one-shot CLI process) there is no way to know.
+                "in_flight": False,
+                # False once the storyboard moved on: the pending job renders
+                # the old plan, so the next render discards it and re-buys.
+                "recoverable": self._pending_render_matches(clip, entry),
+            })
+        return pending
+
+    def _pending_render_matches(self, clip: str, entry: dict[str, Any]) -> bool:
+        """Would the next render still be able to reuse this paid job?
+
+        Mirrors VideoClient.fingerprint: the frames, prompt, duration and
+        model must all be unchanged since submission. Best-effort — a project
+        whose storyboard no longer describes this clip simply reports False.
+        """
+        fingerprint = entry.get("fingerprint")
+        if not fingerprint:
+            return False
+        path = self.workspace.default_storyboard_json
+        if not path.exists():
+            return False
+        try:
+            storyboard = Storyboard.load(path)
+        except StoryboardError:
+            return False
+        stem = clip.removesuffix(".mp4")
+        for start, end, motion, duration, _sound in self._pairs_from_storyboard(
+            storyboard
+        ):
+            if self._clip_name(start, end).stem != stem:
+                continue
+            if not (start.exists() and end.exists()):
+                return False
+            return self.video_client.fingerprint(
+                start, end, motion, duration
+            ) == fingerprint
+        return False
 
     def cmd_status(self) -> None:
         """Print where this project stands and what to run next."""
@@ -1896,6 +2066,26 @@ class Pipeline:
         if snap["stray_clips"]:
             print(f"  Stray clips      : {', '.join(snap['stray_clips'])}")
 
+        # Paid-for renders whose output was never collected. Nothing fetches
+        # these in the background — only the next render of that clip does.
+        for pending in snap["pending_renders"]:
+            if pending["recoverable"]:
+                print(
+                    f"  !! clip {pending['id']} has a PAID render waiting on "
+                    f"the provider (submitted "
+                    f"{_local_time(pending['submitted_at'])}). "
+                    f"Collect it with:\n     "
+                    f"{self._next_command('render', '--clip', pending['id'])}"
+                )
+            else:
+                print(
+                    f"  !! clip {pending['id']} has a paid render on the "
+                    "provider that NO LONGER matches the storyboard (its "
+                    "frames/prompt/duration changed since it was submitted). "
+                    "Rendering this clip will pay for a fresh one; the old "
+                    "job's output is lost."
+                )
+
         final = ws.final_video
         print(f"  Final video      : {'ready — ' + str(final) if final.exists() else 'not built'}")
         if snap["has_failed_jobs"]:
@@ -1924,7 +2114,6 @@ class Pipeline:
                 return
 
         self.summary.input_count = self.summary.input_count or len(storyboard.frames)
-        self._storyboard_music_prompt = storyboard.music_prompt or ""
         self._generate_frames(storyboard)
         pairs = self._pairs_from_storyboard(storyboard)
         self._render_pairs(pairs, set())

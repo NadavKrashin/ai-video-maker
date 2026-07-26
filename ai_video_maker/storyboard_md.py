@@ -13,8 +13,6 @@ def write_storyboard_markdown(storyboard: Storyboard, path: Path) -> None:
     lines.append(f"**Style:** {storyboard.style}\n")
     if storyboard.concept:
         lines.append(f"**Concept:** {storyboard.concept}\n")
-    if storyboard.music_prompt:
-        lines.append(f"**Music:** {storyboard.music_prompt}\n")
     if storyboard.global_motion_prompt:
         lines.append(
             f"**Global motion (every clip):** {storyboard.global_motion_prompt}\n"

@@ -53,6 +53,20 @@ class StateStore:
             }
             self._flush()
 
+    def find(self, prefix: str) -> dict[str, dict[str, Any]]:
+        """Every recorded entry whose job id starts with `prefix` (copies).
+
+        Lets callers enumerate a family of jobs without knowing the ids in
+        advance — e.g. ``falreq:`` for clip renders that were submitted (and
+        paid for) but whose output was never downloaded.
+        """
+        with self._lock:
+            return {
+                job_id: dict(entry)
+                for job_id, entry in self._data["jobs"].items()
+                if job_id.startswith(prefix)
+            }
+
     def clear(self, *job_ids: str) -> None:
         """Forget the given jobs (no-op for ids that aren't recorded).
 

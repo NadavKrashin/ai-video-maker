@@ -9,9 +9,10 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from ..config import Config
+from ..errors import PipelineCancelled
 from ..logging_setup import logger
 from ..retry import with_retries
 
@@ -108,7 +109,12 @@ class FalSession:
         return handle.request_id
 
     def wait_for_result(
-        self, model_id: str, request_id: str, *, description: str
+        self,
+        model_id: str,
+        request_id: str,
+        *,
+        description: str,
+        should_cancel: Optional[Callable[[], bool]] = None,
     ) -> dict[str, Any]:
         """Poll a queued job until it finishes and return its result dict.
 
@@ -117,11 +123,24 @@ class FalSession:
         result() raises (e.g. fal's content checker), which the retry wrapper
         classifies as permanent, so moderation errors propagate to the
         reword-recovery layer exactly as before.
+
+        `should_cancel` is checked between polls. Without it a cancel could
+        not touch a clip already waiting here — the pipeline only checks
+        between work items, and a single-clip render has no such moment, so
+        "cancel" did nothing for up to the full timeout. Abandoning the wait
+        loses nothing: the request_id is already persisted, so the next run
+        resumes this very job instead of paying again.
         """
         sdk = self._ensure_sdk()
         deadline = time.monotonic() + _POLL_TIMEOUT_SECONDS
         logged_running = False
         while True:
+            if should_cancel is not None and should_cancel():
+                raise PipelineCancelled(
+                    f"{description}: cancelled while waiting for fal request "
+                    f"{request_id}. The request_id is persisted, so re-running "
+                    "render fetches this job instead of paying for a new one."
+                )
             status = self._retry(
                 lambda: sdk.status(model_id, request_id, with_logs=False),
                 f"{description} (status)",

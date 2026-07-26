@@ -26,8 +26,8 @@ class RunOptions:
     duration: Optional[int] = None
     motion_prompt: Optional[str] = None
     style_prompt: Optional[str] = None
-    music_prompt: Optional[str] = None
     music_file: Optional[str] = None
+    music_url: Optional[str] = None
     # Analyse the styled frames to plan per-clip motion + duration.
     analyze_frames: bool = True
     # Storyboard-from-idea (instead of from input images).
@@ -36,6 +36,15 @@ class RunOptions:
     frame_count: Optional[int] = None
     # render: limit to (and force-redo) these clips, e.g. ["003_to_004"].
     clips: Optional[list[str]] = None
+    # storyboard: force a fresh vision plan for these transitions even though
+    # their frames didn't change (e.g. ["003_to_004"]) — the per-clip "write
+    # me a new motion prompt" knob. Hand edits elsewhere stay untouched.
+    replan_clips: Optional[list[str]] = None
+    # storyboard: re-style these frames from scratch (styled png names, e.g.
+    # ["beach.png"]) even when the source is unchanged — the per-frame
+    # "regenerate this image" knob. Reconcile then marks the adjacent clips
+    # outdated (never deletes them).
+    restyle_frames: Optional[list[str]] = None
     # ingest: which Cloudinary order to download (order id / folder name /
     # any unique fragment of it).
     order: Optional[str] = None
@@ -73,13 +82,15 @@ class RunOptions:
             duration=get("duration"),
             motion_prompt=get("motion_prompt"),
             style_prompt=get("style_prompt"),
-            music_prompt=get("music_prompt"),
             music_file=get("music_file"),
+            music_url=get("music_url"),
             analyze_frames=not get("no_analyze", False),
             idea=get("idea"),
             idea_file=get("idea_file"),
             frame_count=get("frame_count"),
             clips=get("clip"),
+            replan_clips=get("replan_clip"),
+            restyle_frames=get("restyle_frame"),
             order=get("order"),
             add_audio=bool(get("add_audio")),
             no_audio=bool(get("no_audio")),

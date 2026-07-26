@@ -30,16 +30,30 @@ class TestCoerceTransitionPlans:
                                 _item(2), _item(3)]}
         assert _durations(_plans(config, data, 6)) == [5, 5, 10, 10, 5, 5]
 
-    def test_long_clips_capped_at_a_third_highest_difficulty_wins(self, config):
-        # 5 of 6 pairs claim to be hard; only ceil(6/3)=2 stay long, and the
-        # difficulty-5 pairs outrank the 4s.
+    def test_long_clips_capped_by_fraction_highest_difficulty_wins(self, config):
+        # 5 of 6 pairs claim to be hard; only ceil(6*0.5)=3 stay long, and the
+        # difficulty-5 pairs outrank the 4s (earliest 4 takes the last slot).
         data = {"transitions": [_item(4), _item(5), _item(4), _item(5),
                                 _item(4), _item(1)]}
-        assert _durations(_plans(config, data, 6)) == [5, 10, 5, 10, 5, 5]
+        assert _durations(_plans(config, data, 6)) == [10, 10, 5, 10, 5, 5]
 
     def test_tie_break_prefers_earlier_pairs(self, config):
         data = {"transitions": [_item(4), _item(4), _item(4)]}
-        assert _durations(_plans(config, data, 3)) == [10, 5, 5]
+        assert _durations(_plans(config, data, 3)) == [10, 10, 5]
+
+    def test_long_clip_fraction_is_configurable(self, config):
+        # The cap is a knob because "how many 10s clips" is a taste/cost call:
+        # a real movie had hard pairs demoted to 5s and teleporting.
+        data = {"transitions": [_item(5), _item(5), _item(5), _item(5)]}
+        config.long_clip_max_fraction = 0.25
+        assert _durations(_plans(config, data, 4)) == [10, 5, 5, 5]
+        config.long_clip_max_fraction = 1.0
+        assert _durations(_plans(config, data, 4)) == [10, 10, 10, 10]
+
+    def test_long_clip_fraction_zero_forces_all_short(self, config):
+        data = {"transitions": [_item(5), _item(5)]}
+        config.long_clip_max_fraction = 0.0
+        assert _durations(_plans(config, data, 2)) == [5, 5]
 
     def test_default_duration_overrides_difficulty(self, config):
         data = {"transitions": [_item(5)]}
@@ -188,3 +202,75 @@ class TestIdentityPromptRules:
     def test_reword_keeps_identity_anchors(self):
         from ai_video_maker.clients import openai_client as oc
         assert "Identity anchors" in oc._REWORD_MOTION_SYSTEM
+
+
+class TestPaceAndBeatPromptRules:
+    """Pace/distance and beat-counting rules, pinned like the identity ones.
+
+    Two real clips sprinted because their prompt spanned a route ("stroll
+    side by side along the meadow trail until they stop beside the bench"),
+    and a third crammed six beats into 46 words — under the 60-word cap, so
+    the mechanical check let it through. Only word counts are enforced in
+    code; these rules live in the prompts, which makes them easy to lose in
+    a rewrite. Presence is pinned here, NOT model behaviour.
+    """
+
+    def test_planner_forbids_route_spanning_travel(self):
+        from ai_video_maker.clients import openai_client as oc
+        s = oc._MODE_A_SYSTEM
+        assert "PACE AND DISTANCE" in s
+        # The distance must shrink; a gentler verb is explicitly not enough.
+        assert "'stroll'" in s
+        assert "ARRIVAL" in s
+
+    def test_planner_requires_counting_beats_not_just_words(self):
+        from ai_video_maker.clients import openai_client as oc
+        s = oc._MODE_A_SYSTEM
+        assert "COUNT THE BEATS" in s
+        # The worked example is the real 46-word/six-beat prompt.
+        assert "46 words" in s
+
+    def test_condense_collapses_routes_into_the_arrival(self):
+        from ai_video_maker.clients import openai_client as oc
+        s = oc._CONDENSE_MOTION_SYSTEM
+        assert "ARRIVAL" in s
+        assert "sprinting" in s
+
+    def test_reword_keeps_pace_anchors(self):
+        from ai_video_maker.clients import openai_client as oc
+        assert "Pace anchors" in oc._REWORD_MOTION_SYSTEM
+
+
+class TestDistinguishingEpithetRules:
+    """Epithets must separate similar people, and staging must say where.
+
+    A real 16-clip movie had TWO bald men; 10 of its 16 prompts said only
+    "the bald man", and the model mixed them up throughout. Separately, a
+    pair that morphed under the collective "the right couple get out of the
+    frame" rendered cleanly when the leavers were named individually with
+    screen positions. Both live in the prompts, so both are pinned here.
+    """
+
+    def test_planner_bans_a_shared_feature_as_an_epithet(self):
+        from ai_video_maker.clients import openai_client as oc
+        s = oc._MODE_A_SYSTEM
+        assert "MUST DISTINGUISH" in s
+        assert "two bald men" in s
+        assert "in the light blue shirt" in s
+
+    def test_planner_requires_position_and_direction(self):
+        from ai_video_maker.clients import openai_client as oc
+        s = oc._MODE_A_SYSTEM
+        assert "SAY WHERE PEOPLE ARE" in s
+        assert "the right couple" in s  # the collective that failed
+        assert "INDIVIDUALLY" in s
+
+    def test_condense_will_not_shorten_an_epithet_into_ambiguity(self):
+        from ai_video_maker.clients import openai_client as oc
+        s = oc._CONDENSE_MOTION_SYSTEM
+        assert "NEVER" in s and "bald man in pink sunglasses" in s
+        assert "Cut scenery before identity." in s
+
+    def test_reword_keeps_the_distinguishing_part(self):
+        from ai_video_maker.clients import openai_client as oc
+        assert "bald man in pink sunglasses" in oc._REWORD_MOTION_SYSTEM

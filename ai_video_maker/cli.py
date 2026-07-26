@@ -150,6 +150,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-analyze", action="store_true",
                     help="Skip the vision analysis; use the single global motion "
                          "prompt and one duration for every clip.")
+    sp.add_argument("--replan-clip", action="append", metavar="ID",
+                    help="Ask the planner for a fresh motion prompt for this "
+                         "transition (e.g. 003_to_004) even though its frames "
+                         "didn't change; everything else is kept. If its clip "
+                         "is already rendered it gets marked outdated. "
+                         "Repeatable.")
+    sp.add_argument("--restyle-frame", action="append", metavar="NAME",
+                    help="Re-style this frame from scratch (styled png name, "
+                         "e.g. beach.png) even though its source is unchanged "
+                         "— spends image credits. The adjacent clips are marked "
+                         "outdated (never deleted). Repeatable.")
     sp.add_argument("--duration", type=int, choices=sorted(VALID_DURATIONS),
                     help="Force every clip to this length (5 or 10 seconds); "
                          "omit to let the planner mix lengths.")
@@ -187,11 +198,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Redo audio for only this clip (e.g. 003_to_004), even "
                          "if it already has SFX — use after editing its "
                          "sound_prompt in the storyboard. Repeatable.")
-    sp.add_argument("--music-prompt", default=None,
-                    help="Override the background-music prompt for this run.")
     sp.add_argument("--music-file", default=None,
-                    help="Use this audio file as the music bed instead of "
-                         "reusing/generating output/music.mp3.")
+                    help="Use this audio file as the music bed (music is "
+                         "never generated; supply a track or get none).")
 
     sp = command("combine",
                  "Concatenate the storyboard's clips into "
@@ -201,6 +210,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_audio_flags(sp)
     sp.add_argument("--music-file", default=None,
                     help="Use this audio file as the music bed.")
+    sp.add_argument("--music-url", default=None,
+                    help="Download the music bed from a URL (direct audio file "
+                         "or an extractable page). You are responsible for "
+                         "having the right to use it.")
     sp.add_argument("--credits-photos", action=argparse.BooleanOptionalAction,
                     default=None,
                     help="Append the original photos as an end-credits "
@@ -245,10 +258,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Skip the vision analysis of the styled frames.")
     sp.add_argument("--no-combine", action="store_true",
                     help="Stop after the clips; don't build the final video.")
-    sp.add_argument("--music-prompt", default=None,
-                    help="Override the background-music prompt.")
     sp.add_argument("--music-file", default=None,
                     help="Use this audio file as the music bed.")
+    sp.add_argument("--music-url", default=None,
+                    help="Download the music bed from a URL (direct audio file "
+                         "or an extractable page). You are responsible for "
+                         "having the right to use it.")
     sp.add_argument("--idea", default=None,
                     help="Build the storyboard from this idea instead of from "
                          "input images.")
