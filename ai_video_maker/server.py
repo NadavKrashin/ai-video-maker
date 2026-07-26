@@ -139,6 +139,30 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def apply_in_flight(
+    pending: list[dict[str, Any]], active_options: Optional[dict[str, Any]]
+) -> None:
+    """Mark which pending renders a currently-running job already owns.
+
+    A ``falreq:`` entry only records "submitted, not yet downloaded" — which
+    is equally true of a run that crashed an hour ago and of the render
+    polling fal right now. Only the job runner knows the difference, so it
+    is applied here: a clip the active job is handling collects itself and
+    is mere progress, while one left behind by an interrupted run is money
+    stranded on the provider that only the user can rescue. Reporting both
+    the same way turned every healthy render into a false alarm.
+
+    `active_options` is the running render/run job's options, or None when
+    no such job is running. A job given an explicit ``clips`` list owns only
+    those; one rendering the whole project may own any pending clip.
+    """
+    owned = (active_options or {}).get("clips")
+    for entry in pending:
+        entry["in_flight"] = (
+            active_options is not None and (not owned or entry["id"] in owned)
+        )
+
+
 # --------------------------------- jobs ------------------------------------- #
 
 @dataclass
@@ -792,12 +816,25 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
                 out.append(snap)
         return {"projects": out}
 
+    def _mark_in_flight(project: str, pending: list[dict[str, Any]]) -> None:
+        """Flag pending renders that a RUNNING job is already waiting on."""
+        if not pending:
+            return
+        active = next(
+            (j for j in jobs.list(project=project)
+             if j.state in ("queued", "running", "cancelling")
+             and j.command in ("render", "run")),
+            None,
+        )
+        apply_in_flight(pending, None if active is None else active.options)
+
     @app.get("/api/projects/{name}", dependencies=guarded)
     async def project_detail(name: str) -> dict[str, Any]:
         ws = _workspace(name)
         snap = _pipeline(ws).snapshot()
         snap["order"] = read_order_record(ws.order_file)
         snap["jobs"] = [j.summary() for j in jobs.list(project=name, limit=10)]
+        _mark_in_flight(ws.root.name, snap.get("pending_renders", []))
         sb = ws.default_storyboard_json
         snap["storyboard_json"] = (
             sb.read_text(encoding="utf-8") if sb.exists() else ""

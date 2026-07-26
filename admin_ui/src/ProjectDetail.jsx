@@ -21,6 +21,17 @@ function frameName(framesById, frameRef) {
 
 const CLIP_PRICE = '≈ $0.35 (5s) – $0.70 (10s) per clip';
 
+// State timestamps are stored in UTC. Rendering the raw string put an
+// in-flight render three hours in the past on an IDT machine, which read as
+// "abandoned long ago" — always show these in the viewer's own time.
+const localTime = (iso) => {
+  if (!iso) return 'unknown';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? iso.replace('T', ' ').slice(0, 19)
+    : d.toLocaleString();
+};
+
 // Every clip the CURRENT storyboard says is not up to date: never rendered,
 // or rendered before an edit/re-plan/re-style changed its plan ("outdated").
 // The backend marks the second kind when the panel saves storyboard edits, so
@@ -934,34 +945,61 @@ export default function ProjectDetail({ name, onBack }) {
         )}
       </Card>
 
-      {/* Renders that were submitted (and billed) but never collected.
-          Nothing fetches them in the background — only rendering that clip
-          again does, and only while its plan is unchanged. */}
-      {(snap.pending_renders || []).length > 0 && (
-        <Alert color={snap.pending_renders.some((r) => r.recoverable) ? 'blue' : 'red'}
-          variant="light"
-          title={`${snap.pending_renders.length} paid render(s) waiting on the provider`}>
-          <Stack gap={6}>
-            {snap.pending_renders.map((r) => (
-              <Group key={r.clip} gap="xs" wrap="nowrap">
-                <Text size="sm" fw={600}>{r.id}</Text>
-                <Text size="xs" c="dimmed" style={{ flex: 1 }}>
-                  {r.recoverable
-                    ? `submitted ${(r.submitted_at || '').replace('T', ' ').slice(0, 19)} — already paid for; rendering this clip fetches it instead of buying a new one`
-                    : 'its frames/prompt/duration changed since it was submitted, so this paid render can no longer be collected — rendering buys a fresh clip'}
-                </Text>
-                {r.recoverable && (
-                  <Button size="compact-xs" variant="light" disabled={locked}
-                    loading={busyAction === `render ${r.id}`}
-                    onClick={() => collectRender(r)}>
-                    Collect
-                  </Button>
-                )}
-              </Group>
-            ))}
-          </Stack>
-        </Alert>
-      )}
+      {/* Renders submitted (and billed) but not yet downloaded. Split by
+          in_flight: a clip the RUNNING job is polling for collects itself
+          and is just progress, while one left behind by an interrupted run
+          is money sitting on the provider that only you can rescue. Showing
+          both as "waiting" made every healthy render look like an alarm. */}
+      {(snap.pending_renders || []).length > 0 && (() => {
+        // The server decides this (it owns the job runner), but fall back to
+        // the active job when talking to a backend that predates the field:
+        // the panel is served from disk and can be newer than the process,
+        // so it must never depend on a field the API might not send yet.
+        const renderRunning = ['render', 'run'].includes(activeJob?.command);
+        const isInFlight = (r) =>
+          r.in_flight === undefined ? renderRunning : r.in_flight;
+        const inFlight = snap.pending_renders.filter(isInFlight);
+        const stranded = snap.pending_renders.filter((r) => !isInFlight(r));
+        return (
+          <Alert
+            color={stranded.some((r) => !r.recoverable) ? 'red'
+              : stranded.length ? 'blue' : 'gray'}
+            variant="light"
+            title={stranded.length
+              ? `${stranded.length} paid render(s) waiting to be collected`
+              : `${inFlight.length} clip(s) rendering on the provider`}>
+            <Stack gap={6}>
+              {inFlight.map((r) => (
+                <Group key={r.clip} gap="xs" wrap="nowrap">
+                  <Text size="sm" fw={600}>{r.id}</Text>
+                  <Text size="xs" c="dimmed" style={{ flex: 1 }}>
+                    rendering now (submitted {localTime(r.submitted_at)}) — the
+                    running job downloads it automatically when it finishes.
+                  </Text>
+                </Group>
+              ))}
+              {stranded.map((r) => (
+                <Group key={r.clip} gap="xs" wrap="nowrap">
+                  <Text size="sm" fw={600}>{r.id}</Text>
+                  <Text size="xs" c="dimmed" style={{ flex: 1 }}>
+                    {r.recoverable
+                      ? `submitted ${localTime(r.submitted_at)} — already paid for; collecting fetches it instead of buying a new one`
+                      : 'its frames/prompt/duration changed since it was submitted, so this paid render can no longer be collected — rendering buys a fresh clip'}
+                    {r.recoverable && locked && ' (another job is running — wait for it to finish)'}
+                  </Text>
+                  {r.recoverable && (
+                    <Button size="compact-xs" variant="light" disabled={locked}
+                      loading={busyAction === `render ${r.id}`}
+                      onClick={() => collectRender(r)}>
+                      Collect
+                    </Button>
+                  )}
+                </Group>
+              ))}
+            </Stack>
+          </Alert>
+        );
+      })()}
 
       {snap.final_video && (
         <Card withBorder padding="md">

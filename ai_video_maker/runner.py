@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -86,6 +87,24 @@ def _with_global_motion(global_prompt: str, motion: str) -> str:
     if g[-1] not in ".!?":
         g += "."
     return f"{g} {motion}"
+
+
+def _local_time(iso: str) -> str:
+    """Render an ISO-8601 UTC timestamp in the machine's local time.
+
+    State timestamps are stored in UTC. Printing them raw next to
+    wall-clock expectations reads as three hours in the past on an
+    IDT machine, which made an in-flight render look long abandoned.
+    """
+    if not iso:
+        return "unknown"
+    try:
+        stamp = datetime.fromisoformat(iso)
+    except ValueError:
+        return iso[:19]
+    if stamp.tzinfo is not None:
+        stamp = stamp.astimezone()
+    return stamp.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _file_sha1(path: Path) -> str:
@@ -1938,6 +1957,9 @@ class Pipeline:
                 "id": clip.removesuffix(".mp4"),
                 "request_id": entry.get("request_id", ""),
                 "submitted_at": entry.get("updated_at", ""),
+                # Set by the admin server when a running job owns this clip;
+                # from here (a one-shot CLI process) there is no way to know.
+                "in_flight": False,
                 # False once the storyboard moved on: the pending job renders
                 # the old plan, so the next render discards it and re-buys.
                 "recoverable": self._pending_render_matches(clip, entry),
@@ -2029,7 +2051,8 @@ class Pipeline:
             if pending["recoverable"]:
                 print(
                     f"  !! clip {pending['id']} has a PAID render waiting on "
-                    f"the provider (submitted {pending['submitted_at'][:19]}). "
+                    f"the provider (submitted "
+                    f"{_local_time(pending['submitted_at'])}). "
                     f"Collect it with:\n     "
                     f"{self._next_command('render', '--clip', pending['id'])}"
                 )

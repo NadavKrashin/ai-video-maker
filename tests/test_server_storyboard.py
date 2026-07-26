@@ -17,7 +17,7 @@ from ai_video_maker.config import Config
 from ai_video_maker.models import Storyboard
 from ai_video_maker.options import RunOptions
 from ai_video_maker.runner import Pipeline
-from ai_video_maker.server import create_app
+from ai_video_maker.server import apply_in_flight, create_app
 from ai_video_maker.state import StateStore
 from ai_video_maker.workspace import Workspace
 
@@ -172,3 +172,47 @@ class TestSaveStoryboardOrphansPaidRenders:
         self._pending("a-stale-fingerprint")
         res = _put(client, _storyboard(motion="a completely different action"))
         assert res.json()["orphaned_renders"] == []
+
+
+class TestPendingRendersInFlight:
+    """A running job's own clips must not look like abandoned paid work.
+
+    `falreq:` says "submitted, not downloaded" — equally true of a crashed
+    run and of the render polling fal right now. Only the job runner can
+    tell them apart, so the API marks the running job's clips in_flight.
+    Without it every healthy render raised a false alarm.
+    """
+
+    def _pending(self, *ids: str) -> list[dict]:
+        return [{"id": i, "in_flight": False} for i in ids]
+
+    def test_no_running_job_leaves_everything_stranded(self):
+        pending = self._pending("a_to_b", "b_to_c")
+        apply_in_flight(pending, None)
+        assert [p["in_flight"] for p in pending] == [False, False]
+
+    def test_render_owns_only_the_clips_it_was_given(self):
+        pending = self._pending("a_to_b", "b_to_c")
+        apply_in_flight(pending, {"clips": ["a_to_b"]})
+        # b_to_c was left behind by an earlier run: still stranded money.
+        assert [p["in_flight"] for p in pending] == [True, False]
+
+    def test_whole_project_render_owns_every_pending_clip(self):
+        pending = self._pending("a_to_b", "b_to_c")
+        apply_in_flight(pending, {})
+        assert [p["in_flight"] for p in pending] == [True, True]
+
+    def test_empty_clip_list_counts_as_whole_project(self):
+        pending = self._pending("a_to_b")
+        apply_in_flight(pending, {"clips": []})
+        assert pending[0]["in_flight"] is True
+
+    def test_api_reports_not_in_flight_when_idle(self, client):
+        ws = Workspace.for_project(PROJECT)
+        StateStore(ws.state_file).set(
+            "falreq:a_to_b.mp4", "pending", request_id="r", fingerprint="fp")
+        res = client.get(
+            f"/api/projects/{PROJECT}",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+        assert [p["in_flight"] for p in res.json()["pending_renders"]] == [False]

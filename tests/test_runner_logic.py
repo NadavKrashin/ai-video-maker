@@ -909,3 +909,24 @@ class TestPendingRenders:
                     fingerprint=fp)
         p.state.clear("falreq:a_to_b.mp4")
         assert p.pending_renders() == []
+
+
+class TestLocalTime:
+    """State timestamps are UTC; showing them raw read as hours in the past."""
+
+    def test_utc_timestamp_is_converted_to_local(self):
+        from ai_video_maker.runner import _local_time
+        import datetime as dt
+        iso = "2026-07-26T12:28:05.514357+00:00"
+        expected = (
+            dt.datetime.fromisoformat(iso).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        )
+        assert _local_time(iso) == expected
+
+    def test_empty_is_unknown(self):
+        from ai_video_maker.runner import _local_time
+        assert _local_time("") == "unknown"
+
+    def test_unparseable_falls_back_to_the_raw_prefix(self):
+        from ai_video_maker.runner import _local_time
+        assert _local_time("not a timestamp at all") == "not a timestamp at "
