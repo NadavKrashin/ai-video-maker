@@ -14,6 +14,7 @@ video later instead of paying for a second render.
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -97,16 +98,30 @@ class VideoClient:
         runs, the pending job renders the OLD plan and must not be resumed.
         The fingerprint uses the original (pre-reword) prompt, so a job whose
         prompt was reworded by moderation recovery is still recognised.
+
+        Config knobs that reshape the request (negative prompt, cfg_scale,
+        extra arguments) are part of the identity too, but only WHEN SET:
+        appending them unconditionally would change every fingerprint and
+        orphan pending jobs submitted before the knobs existed — a mismatch
+        forfeits an already-paid render.
         """
-        material = "|".join(
-            (
-                self.config.fal_model_id,
-                str(duration),
-                self._file_hash(start),
-                self._file_hash(end),
-                motion_prompt,
+        parts = [
+            self.config.fal_model_id,
+            str(duration),
+            self._file_hash(start),
+            self._file_hash(end),
+            motion_prompt,
+        ]
+        if self.config.fal_negative_prompt:
+            parts.append(f"neg={self.config.fal_negative_prompt}")
+        if self.config.fal_cfg_scale is not None:
+            parts.append(f"cfg={self.config.fal_cfg_scale}")
+        if self.config.fal_extra_arguments:
+            parts.append(
+                "extra=" + json.dumps(self.config.fal_extra_arguments,
+                                      sort_keys=True)
             )
-        )
+        material = "|".join(parts)
         return hashlib.sha1(material.encode("utf-8")).hexdigest()
 
     def _try_resume(
@@ -174,6 +189,11 @@ class VideoClient:
             args["resolution"] = c.fal_resolution
         if c.fal_aspect_ratio:
             args["aspect_ratio"] = c.fal_aspect_ratio
+        if c.fal_negative_prompt:
+            args["negative_prompt"] = c.fal_negative_prompt
+        if c.fal_cfg_scale is not None:
+            args["cfg_scale"] = c.fal_cfg_scale
+        # Last, so ad-hoc extra arguments can override anything above.
         args.update(c.fal_extra_arguments)
         return args
 

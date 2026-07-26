@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -48,6 +48,15 @@ class Config(BaseModel):
     fal_duration_as_string: bool = True   # fal Kling uses a string enum ("5"/"10")
     fal_resolution: str = ""              # e.g. "720p", "1080p"; only sent when set
     fal_aspect_ratio: str = ""            # e.g. "16:9"; only sent when set
+    # Sent as "negative_prompt" when non-empty: artifacts the video model
+    # should avoid (Kling supports it; harmless noise for models that don't).
+    # The shared config.json carries a curated preset targeting the failure
+    # modes seen on real renders (face distortion, morphing, on-screen text).
+    fal_negative_prompt: str = ""
+    # Sent as "cfg_scale" when set (Kling: 0..1, server default 0.5). Higher =
+    # stricter prompt adherence but more strain on motion coherence. Leave
+    # null to use the provider's default.
+    fal_cfg_scale: Optional[float] = None
     fal_extra_arguments: dict[str, Any] = Field(default_factory=dict)
 
     # --- Audio (post-generation sound), also fal (auth via FAL_KEY). ---

@@ -338,8 +338,20 @@ clip interpolates from one styled frame to the next):
 - **Kling 3.0 on fal:** set `fal_model_id` to
   `"fal-ai/kling-video/v3/pro/image-to-video"`, `fal_start_frame_field` to
   `"start_image_url"`, and `fal_end_frame_field` to `"end_image_url"`.
-- Add extra model-specific args via `fal_extra_arguments`
-  (e.g. `{"negative_prompt": "blur, distortion, low quality"}`).
+- `fal_negative_prompt` — sent as the model's `negative_prompt` when
+  non-empty. The shared config ships a preset targeting artifacts seen on
+  real renders (face distortion, morphing, on-screen text); set it to `""`
+  (globally or per project) to send none.
+- `fal_cfg_scale` — sent as `cfg_scale` when set (Kling: `0`–`1`, provider
+  default `0.5`). Higher = stricter prompt adherence, at some cost to motion
+  coherence. Leave `null` to use the provider default.
+- Add extra model-specific args via `fal_extra_arguments`; they are applied
+  last, so they override the fields above (handy for per-project
+  experiments).
+- Changing `fal_negative_prompt`, `fal_cfg_scale`, or `fal_extra_arguments`
+  changes the render **fingerprint**: a pending, not-yet-collected render
+  submitted under the old settings can no longer be resumed (the next render
+  buys a fresh clip). Collect pending renders before flipping these knobs.
 
 ---
 
