@@ -167,8 +167,13 @@ function PanelIntro({ children }) {
 // CHOSEN during combine, so it appears in both the Audio and Combine steps —
 // looking for it only under "Audio" made sense when a model wrote the music,
 // but now it is just a file the final movie needs.
-function MusicBed({ info, onUpload, onRemove, busy, note }) {
+function MusicBed({ info, onUpload, onRemove, onFetchUrl, busy, note }) {
   const inputRef = useRef(null);
+  const [url, setUrl] = useState('');
+  const submitUrl = () => {
+    if (!url.trim()) return;
+    onFetchUrl(url.trim(), () => setUrl(''));
+  };
   return (
     <>
       <input ref={inputRef} type="file" accept="audio/*" style={{ display: 'none' }}
@@ -177,9 +182,9 @@ function MusicBed({ info, onUpload, onRemove, busy, note }) {
         <Text size="sm" fw={600}>Background music:</Text>
         {info.customMusic ? (
           <>
-            <Badge variant="light" color="green">track uploaded</Badge>
+            <Badge variant="light" color="green">track set</Badge>
             <Button variant="default" size="xs" loading={busy}
-              onClick={() => inputRef.current?.click()}>Replace</Button>
+              onClick={() => inputRef.current?.click()}>Replace file</Button>
             <Button variant="subtle" color="red" size="xs" onClick={onRemove}>
               Remove
             </Button>
@@ -188,10 +193,25 @@ function MusicBed({ info, onUpload, onRemove, busy, note }) {
           <>
             <Badge variant="light" color="gray">none — the movie will have no music</Badge>
             <Button variant="default" size="xs" loading={busy}
-              onClick={() => inputRef.current?.click()}>Upload a music track…</Button>
+              onClick={() => inputRef.current?.click()}>Upload a file…</Button>
           </>
         )}
       </Group>
+      <Group mt="xs" gap="sm" align="flex-end">
+        <TextInput style={{ flex: 1 }} miw={260} size="xs"
+          label="…or fetch from a URL"
+          description="A direct audio link, or a video/track page to pull the audio from"
+          placeholder="https://…"
+          value={url} onChange={(e) => setUrl(e.currentTarget.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') submitUrl(); }} />
+        <Button variant="default" size="xs" mb={2} loading={busy}
+          disabled={!url.trim()} onClick={submitUrl}>Fetch</Button>
+      </Group>
+      <Text size="xs" c="dimmed" mt={6}>
+        These movies are sold to customers, so use music you have the right to
+        use — a royalty-free library, a CC-licensed track, or something you
+        licensed. Downloading a copyrighted song does not make it usable.
+      </Text>
       <Text size="xs" c="dimmed" mt={4}>{note}</Text>
     </>
   );
@@ -343,7 +363,7 @@ function RenderPanel({ ask, locked, info, onGenerateAll }) {
   );
 }
 
-function AudioPanel({ ask, locked, info, onUploadMusic, onRemoveMusic, musicBusy }) {
+function AudioPanel({ ask, locked, info, onUploadMusic, onRemoveMusic, onFetchMusicUrl, musicBusy }) {
   const start = () => {
     ask({
       title: 'Run audio?',
@@ -370,7 +390,7 @@ function AudioPanel({ ask, locked, info, onUploadMusic, onRemoveMusic, musicBusy
         <Button disabled={locked} onClick={start}>Run audio…</Button>
       </Group>
       <MusicBed info={info} onUpload={onUploadMusic} onRemove={onRemoveMusic}
-        busy={musicBusy}
+        onFetchUrl={onFetchMusicUrl} busy={musicBusy}
         note={'Music is never generated — the bed is whatever track you upload '
           + 'here (mp3, wav, m4a…). It is used as-is for the whole movie and '
           + 'mixed in when the movie is combined.'} />
@@ -388,7 +408,7 @@ function TriToggle({ value, onChange, label, title }) {
   );
 }
 
-function CombinePanel({ ask, locked, info, onUploadMusic, onRemoveMusic, musicBusy }) {
+function CombinePanel({ ask, locked, info, onUploadMusic, onRemoveMusic, onFetchMusicUrl, musicBusy }) {
   const [intro, setIntro] = useState(null);
   const [credits, setCredits] = useState(null);
   const [letter, setLetter] = useState(null);
@@ -439,7 +459,7 @@ function CombinePanel({ ask, locked, info, onUploadMusic, onRemoveMusic, musicBu
         <Button disabled={locked} onClick={() => start(false)}>Combine…</Button>
       </Group>
       <MusicBed info={info} onUpload={onUploadMusic} onRemove={onRemoveMusic}
-        busy={musicBusy}
+        onFetchUrl={onFetchMusicUrl} busy={musicBusy}
         note={'The music bed is laid under the finished movie by THIS step, so '
           + 'changing the track only needs another Combine — no re-render.'} />
     </div>
@@ -806,6 +826,19 @@ export default function ProjectDetail({ name, onBack }) {
     });
   };
 
+  // Fetching can take a few seconds (a page URL is extracted + transcoded
+  // server-side), so it shares the same busy flag as the file upload.
+  const fetchMusicUrl = async (url, onDone) => {
+    setMusicBusy(true);
+    try {
+      await api.fetchMusicUrl(name, url);
+      notify('Music track fetched', 'green');
+      onDone?.();
+      await load();
+    } catch (e) { notify(`Fetch failed: ${e.message}`, 'red'); }
+    finally { setMusicBusy(false); }
+  };
+
   const uploadMusic = async (file) => {
     if (!file) return;
     setMusicBusy(true);
@@ -895,9 +928,11 @@ export default function ProjectDetail({ name, onBack }) {
     render: <RenderPanel ask={ask} locked={locked} info={info}
       onGenerateAll={() => { if (!needsSave()) generateAll(snap); }} />,
     audio: <AudioPanel ask={ask} locked={locked} info={info}
-      onUploadMusic={uploadMusic} onRemoveMusic={removeMusic} musicBusy={musicBusy} />,
+      onUploadMusic={uploadMusic} onRemoveMusic={removeMusic}
+      onFetchMusicUrl={fetchMusicUrl} musicBusy={musicBusy} />,
     combine: <CombinePanel ask={ask} locked={locked} info={info}
-      onUploadMusic={uploadMusic} onRemoveMusic={removeMusic} musicBusy={musicBusy} />,
+      onUploadMusic={uploadMusic} onRemoveMusic={removeMusic}
+      onFetchMusicUrl={fetchMusicUrl} musicBusy={musicBusy} />,
     runall: <RunAllPanel ask={ask} locked={locked} info={info} />
   };
 

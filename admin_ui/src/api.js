@@ -57,6 +57,10 @@ export const api = {
       method: 'POST', body: fd
     });
   },
+  fetchMusicUrl: (name, url) =>
+    request(`/api/projects/${encodeURIComponent(name)}/music/url`, {
+      method: 'POST', body: JSON.stringify({ url })
+    }),
   deleteMusic: (name) =>
     request(`/api/projects/${encodeURIComponent(name)}/music`, { method: 'DELETE' }),
   saveStoryboard: (name, storyboard) =>

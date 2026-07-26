@@ -470,8 +470,8 @@ project name as its first argument (except `orders`, which is project-less).
 | `init` | — |
 | `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--replan-clip ID` (repeatable; fresh motion prompt for that pair), `--restyle-frame NAME` (repeatable; re-style that frame, e.g. `2.png`, marking adjacent clips outdated), `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
 | `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 5\|10`, `--add-audio`, `--no-audio` |
-| `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-file PATH` |
-| `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--add-audio`, `--no-audio`, `--final`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter` |
+| `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-file PATH`, `--music-url URL` |
+| `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--music-url URL`, `--add-audio`, `--no-audio`, `--final`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter` |
 | `status` | — |
 | `run` | everything above except `--clip`, plus `--no-combine` |
 
@@ -587,9 +587,20 @@ account). Two independent layers:
    pixels, every clip gets its own motion-matched audio.
 2. **Music bed** — one track **you supply**, mixed across the whole final
    video, **louder than the clip SFX** (the SFX is ducked under it). Music is
-   never generated: upload a track in the panel's Audio step, or pass
-   `--music-file`. No track means the movie simply has no music. Tune the
-   balance with `music_volume` / `sfx_volume` in `config.json`.
+   never generated. Supply it by uploading a file in the panel (Audio *or*
+   Combine step), pasting a URL there, `--music-file PATH`, or `--music-url
+   URL`. No track means the movie simply has no music. Tune the balance with
+   `music_volume` / `sfx_volume` in `config.json`.
+
+   `--music-url` takes either a **direct audio link** (`.../track.mp3` — what
+   royalty-free libraries hand out) or a **page URL** whose audio is extracted
+   with [yt-dlp](https://github.com/yt-dlp/yt-dlp). Downloads are capped at
+   60 MB. **These movies are sold to customers, so the track has to be one you
+   may actually use** — a royalty-free library, a CC-licensed track, or
+   something you licensed. Downloading a copyrighted song does not make it
+   usable, and the pipeline cannot check this for you. If a page URL stops
+   working, YouTube changed something: `.venv/bin/python -m pip install -U
+   yt-dlp`.
 
 ### Turning it on
 
@@ -607,11 +618,15 @@ python pipeline.py audio myfilm
 # Add your music track (the only way to get a music bed):
 python pipeline.py audio myfilm --music-file ~/Music/mytrack.mp3
 
+# ...or fetch it from a URL (direct audio link, or a page to extract from):
+python pipeline.py audio myfilm --music-url https://example.com/track.mp3
+
 # Force-off for one run even if config has audio_mode: post
 python pipeline.py run myfilm --no-audio
 ```
 
-The music bed comes from `--music-file` if given, else an uploaded track
+The music bed comes from `--music-url` if given (downloaded into the custom
+slot, so later runs reuse it), else `--music-file`, else an uploaded track
 (`output/music_custom.mp3` — dropped in via the panel's Audio step and used
 as-is for the whole movie), else a pre-existing `output/music.mp3`. If none of
 those exist the movie is built with sound effects only — that is a normal

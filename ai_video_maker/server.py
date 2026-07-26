@@ -68,6 +68,7 @@ from .intake import (
     read_order_record,
 )
 from .logging_setup import logger, setup_logging
+from .media.music_url import fetch_music
 from .models import Storyboard, changed_transition_ids
 from .options import RunOptions
 from .runner import Pipeline
@@ -865,6 +866,31 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_bytes(data)
         return {"ok": True}
+
+    @app.post("/api/projects/{name}/music/url", dependencies=guarded)
+    async def fetch_music_from_url(
+        name: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Fetch the music bed from a URL instead of uploading a file.
+
+        Same destination as the upload (output/music_custom.mp3), so nothing
+        downstream can tell the difference. Runs inline rather than as a job:
+        a track is a few seconds' download, and the panel wants to show the
+        result immediately.
+
+        Licensing is not — and cannot be — checked here. See media/music_url.
+        """
+        ws = _workspace(name)
+        url = str((body or {}).get("url", "")).strip()
+        try:
+            fetch_music(url, ws.custom_music_file)
+        except PipelineError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - network/extractor surface
+            raise HTTPException(
+                status_code=502, detail=f"Fetching the track failed: {exc}"
+            ) from exc
+        return {"ok": True, "bytes": ws.custom_music_file.stat().st_size}
 
     @app.delete("/api/projects/{name}/music", dependencies=guarded)
     async def delete_music(name: str) -> dict[str, Any]:

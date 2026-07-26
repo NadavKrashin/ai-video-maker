@@ -59,9 +59,15 @@ Core design rules:
   is regenerated its `sfx:`/`fade:` state entries must be cleared.
 - **Music is NEVER generated** (removed 2026-07-26 at the user's request).
   The bed is always a track the user supplies: `--music-file`, or an upload
-  in the panel's Audio step (`output/music_custom.mp3`). No music model, no
-  music prompt, no `Storyboard.music_prompt` — don't reintroduce them. No
-  track simply means a movie with SFX only, which is a normal outcome.
+  in the panel's Audio or Combine step, a URL (`--music-url` /
+  `POST /api/projects/<n>/music/url`) — all of which write
+  `output/music_custom.mp3`. No music model, no music prompt, no
+  `Storyboard.music_prompt` — don't reintroduce them. No track simply means
+  a movie with SFX only, which is a normal outcome. URL fetching
+  (`media/music_url.py`) takes a direct audio link via requests or extracts
+  a page's audio with yt-dlp; 60 MB cap, http(s) only. yt-dlp breaks when
+  YouTube changes and needs `pip install -U yt-dlp`. LICENSING is the
+  user's call and the panel says so at the input — these movies are sold.
 - Transition motion prompts must describe in-world subject action, not camera
   moves (see `_MODE_A_SYSTEM` in `clients/openai_client.py`); the user
   explicitly rejects "zoom/pan/pull-back" slideshow-style prompts.

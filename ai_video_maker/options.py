@@ -27,6 +27,7 @@ class RunOptions:
     motion_prompt: Optional[str] = None
     style_prompt: Optional[str] = None
     music_file: Optional[str] = None
+    music_url: Optional[str] = None
     # Analyse the styled frames to plan per-clip motion + duration.
     analyze_frames: bool = True
     # Storyboard-from-idea (instead of from input images).
@@ -82,6 +83,7 @@ class RunOptions:
             motion_prompt=get("motion_prompt"),
             style_prompt=get("style_prompt"),
             music_file=get("music_file"),
+            music_url=get("music_url"),
             analyze_frames=not get("no_analyze", False),
             idea=get("idea"),
             idea_file=get("idea_file"),

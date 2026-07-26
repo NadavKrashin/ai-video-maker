@@ -256,3 +256,43 @@ class TestJobOutcome:
         failures = [self._fail("clip"), self._fail("clip"), self._fail("sfx")]
         _, error, _ = _outcome(self._Pipeline(failures, 0))
         assert "2 clip" in error and "1 sfx" in error
+
+
+class TestMusicFromUrlEndpoint:
+    """POST /music/url writes the same file the upload does."""
+
+    def _post(self, client: TestClient, url: str):
+        return client.post(
+            f"/api/projects/{PROJECT}/music/url", json={"url": url},
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+
+    def test_fetched_track_lands_in_the_custom_music_slot(self, client, monkeypatch):
+        def fake_fetch(url, dst):
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(b"a-track")
+            return dst
+
+        monkeypatch.setattr("ai_video_maker.server.fetch_music", fake_fetch)
+        res = self._post(client, "https://x.test/t.mp3")
+        assert res.status_code == 200 and res.json()["bytes"] == 7
+        assert Workspace.for_project(PROJECT).custom_music_file.read_bytes() == b"a-track"
+
+    def test_bad_url_is_a_400_not_a_500(self, client):
+        res = self._post(client, "ftp://x.test/t.mp3")
+        assert res.status_code == 400
+        assert "music URL" in res.json()["detail"]
+
+    def test_network_failure_is_reported_as_502(self, client, monkeypatch):
+        def boom(url, dst):
+            raise RuntimeError("connection reset")
+
+        monkeypatch.setattr("ai_video_maker.server.fetch_music", boom)
+        res = self._post(client, "https://x.test/t.mp3")
+        assert res.status_code == 502
+        assert "connection reset" in res.json()["detail"]
+
+    def test_endpoint_requires_the_token(self, client):
+        res = client.post(f"/api/projects/{PROJECT}/music/url",
+                          json={"url": "https://x.test/t.mp3"})
+        assert res.status_code == 401

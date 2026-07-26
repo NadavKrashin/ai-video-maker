@@ -51,6 +51,7 @@ from .media.ffmpeg import (
     render_photo_still,
 )
 from .media.letter import find_letter_font, render_letter_image
+from .media.music_url import fetch_music
 from .media.images import (
     SUPPORTED_IMAGE_EXTS,
     list_input_images,
@@ -1768,12 +1769,19 @@ class Pipeline:
         """Decide which music track to lay under the final video.
 
         The music bed is always a track SUPPLIED by the user — nothing is
-        generated. In order: --music-file (must exist), then an uploaded
-        custom track (output/music_custom.mp3, e.g. from the panel), then a
-        pre-existing output/music.mp3 (a track left by an older run or
-        dropped in by hand). Returns None to finish the movie without music,
-        which is a normal outcome rather than a failure.
+        generated. In order: --music-url (downloaded into the custom slot),
+        --music-file (must exist), an uploaded custom track
+        (output/music_custom.mp3, e.g. from the panel), then a pre-existing
+        output/music.mp3 (a track left by an older run or dropped in by
+        hand). Returns None to finish the movie without music, which is a
+        normal outcome rather than a failure.
         """
+        if self.options.music_url:
+            # Stored in the custom slot so it behaves exactly like an upload
+            # and survives into later combine runs without re-downloading.
+            return fetch_music(
+                self.options.music_url, self.workspace.custom_music_file
+            )
         if self.options.music_file:
             supplied = Path(self.options.music_file).expanduser()
             if not supplied.exists():

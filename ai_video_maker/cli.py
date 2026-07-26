@@ -210,6 +210,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_audio_flags(sp)
     sp.add_argument("--music-file", default=None,
                     help="Use this audio file as the music bed.")
+    sp.add_argument("--music-url", default=None,
+                    help="Download the music bed from a URL (direct audio file "
+                         "or an extractable page). You are responsible for "
+                         "having the right to use it.")
     sp.add_argument("--credits-photos", action=argparse.BooleanOptionalAction,
                     default=None,
                     help="Append the original photos as an end-credits "
@@ -256,6 +260,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Stop after the clips; don't build the final video.")
     sp.add_argument("--music-file", default=None,
                     help="Use this audio file as the music bed.")
+    sp.add_argument("--music-url", default=None,
+                    help="Download the music bed from a URL (direct audio file "
+                         "or an extractable page). You are responsible for "
+                         "having the right to use it.")
     sp.add_argument("--idea", default=None,
                     help="Build the storyboard from this idea instead of from "
                          "input images.")
