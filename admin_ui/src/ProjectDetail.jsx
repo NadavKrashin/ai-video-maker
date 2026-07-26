@@ -163,6 +163,40 @@ function PanelIntro({ children }) {
   return <Text size="sm" c="dimmed" mb="md">{children}</Text>;
 }
 
+// The music bed: always a track the user uploads, never generated. It is
+// CHOSEN during combine, so it appears in both the Audio and Combine steps —
+// looking for it only under "Audio" made sense when a model wrote the music,
+// but now it is just a file the final movie needs.
+function MusicBed({ info, onUpload, onRemove, busy, note }) {
+  const inputRef = useRef(null);
+  return (
+    <>
+      <input ref={inputRef} type="file" accept="audio/*" style={{ display: 'none' }}
+        onChange={(e) => { onUpload(e.target.files?.[0]); e.target.value = ''; }} />
+      <Group mt="md" gap="sm" align="center">
+        <Text size="sm" fw={600}>Background music:</Text>
+        {info.customMusic ? (
+          <>
+            <Badge variant="light" color="green">track uploaded</Badge>
+            <Button variant="default" size="xs" loading={busy}
+              onClick={() => inputRef.current?.click()}>Replace</Button>
+            <Button variant="subtle" color="red" size="xs" onClick={onRemove}>
+              Remove
+            </Button>
+          </>
+        ) : (
+          <>
+            <Badge variant="light" color="gray">none — the movie will have no music</Badge>
+            <Button variant="default" size="xs" loading={busy}
+              onClick={() => inputRef.current?.click()}>Upload a music track…</Button>
+          </>
+        )}
+      </Group>
+      <Text size="xs" c="dimmed" mt={4}>{note}</Text>
+    </>
+  );
+}
+
 function StoryboardPanel({ ask, locked, info }) {
   const [idea, setIdea] = useState('');
   const [frameCount, setFrameCount] = useState('');
@@ -310,7 +344,6 @@ function RenderPanel({ ask, locked, info, onGenerateAll }) {
 }
 
 function AudioPanel({ ask, locked, info, onUploadMusic, onRemoveMusic, musicBusy }) {
-  const musicInputRef = useRef(null);
   const start = () => {
     ask({
       title: 'Run audio?',
@@ -336,33 +369,11 @@ function AudioPanel({ ask, locked, info, onUploadMusic, onRemoveMusic, musicBusy
       <Group align="flex-end">
         <Button disabled={locked} onClick={start}>Run audio…</Button>
       </Group>
-      <input ref={musicInputRef} type="file" accept="audio/*"
-        style={{ display: 'none' }}
-        onChange={(e) => { onUploadMusic(e.target.files?.[0]); e.target.value = ''; }} />
-      <Group mt="md" gap="sm" align="center">
-        <Text size="sm" fw={600}>Background music:</Text>
-        {info.customMusic ? (
-          <>
-            <Badge variant="light" color="green">track uploaded</Badge>
-            <Button variant="default" size="xs" loading={musicBusy}
-              onClick={() => musicInputRef.current?.click()}>Replace</Button>
-            <Button variant="subtle" color="red" size="xs" onClick={onRemoveMusic}>
-              Remove
-            </Button>
-          </>
-        ) : (
-          <>
-            <Badge variant="light" color="gray">none — the movie will have no music</Badge>
-            <Button variant="default" size="xs" loading={musicBusy}
-              onClick={() => musicInputRef.current?.click()}>Upload a music track…</Button>
-          </>
-        )}
-      </Group>
-      <Text size="xs" c="dimmed" mt={4}>
-        Music is never generated — the bed is whatever track you upload here
-        (mp3, wav, m4a…). It is used as-is for the whole movie and applied on
-        the next Audio or Combine run.
-      </Text>
+      <MusicBed info={info} onUpload={onUploadMusic} onRemove={onRemoveMusic}
+        busy={musicBusy}
+        note={'Music is never generated — the bed is whatever track you upload '
+          + 'here (mp3, wav, m4a…). It is used as-is for the whole movie and '
+          + 'mixed in when the movie is combined.'} />
     </div>
   );
 }
@@ -377,7 +388,7 @@ function TriToggle({ value, onChange, label, title }) {
   );
 }
 
-function CombinePanel({ ask, locked, info }) {
+function CombinePanel({ ask, locked, info, onUploadMusic, onRemoveMusic, musicBusy }) {
   const [intro, setIntro] = useState(null);
   const [credits, setCredits] = useState(null);
   const [letter, setLetter] = useState(null);
@@ -412,8 +423,8 @@ function CombinePanel({ ask, locked, info }) {
     <div>
       <PanelIntro>
         Stitches the rendered clips (in storyboard order) into the final
-        1920×1080 movie, with the music bed when audio is on. Free and
-        repeatable — rerun it any time a clip changes.
+        1920×1080 movie, mixing in your uploaded music track. Free and
+        repeatable — rerun it any time a clip or the music changes.
       </PanelIntro>
       <Group>
         <TriToggle value={intro} onChange={setIntro} label="Intro clip"
@@ -427,6 +438,10 @@ function CombinePanel({ ask, locked, info }) {
           title="The delivery preset: intro + photo credits + rebuild">Finalize…</Button>
         <Button disabled={locked} onClick={() => start(false)}>Combine…</Button>
       </Group>
+      <MusicBed info={info} onUpload={onUploadMusic} onRemove={onRemoveMusic}
+        busy={musicBusy}
+        note={'The music bed is laid under the finished movie by THIS step, so '
+          + 'changing the track only needs another Combine — no re-render.'} />
     </div>
   );
 }
@@ -881,7 +896,8 @@ export default function ProjectDetail({ name, onBack }) {
       onGenerateAll={() => { if (!needsSave()) generateAll(snap); }} />,
     audio: <AudioPanel ask={ask} locked={locked} info={info}
       onUploadMusic={uploadMusic} onRemoveMusic={removeMusic} musicBusy={musicBusy} />,
-    combine: <CombinePanel ask={ask} locked={locked} info={info} />,
+    combine: <CombinePanel ask={ask} locked={locked} info={info}
+      onUploadMusic={uploadMusic} onRemoveMusic={removeMusic} musicBusy={musicBusy} />,
     runall: <RunAllPanel ask={ask} locked={locked} info={info} />
   };
 
