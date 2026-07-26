@@ -292,6 +292,37 @@ class TestMergeCast:
         assert _merge_cast(existing, None) == existing
 
 
+class TestInSceneTextIsPreserved:
+    """Text that is IN the photo stays; only generated text is unwanted.
+
+    User call (2026-07-26): a shop sign, a birthday banner or a logo on a
+    shirt is part of the scene and must survive the clip — the pipeline may
+    only suppress text the video model invents. Easy to undo by tightening
+    an artifact list, so both halves are pinned.
+    """
+
+    def test_planner_protects_text_already_in_the_frames(self):
+        from ai_video_maker.clients import openai_client as oc
+        s = oc._MODE_A_SYSTEM
+        assert "no NEW text appearing on screen" in s
+        assert "birthday banner" in s
+
+    def test_shipped_negative_prompt_targets_overlays_not_scene_text(self):
+        # The repo's live config is the one that renders real orders, so it
+        # is what this rule has to hold for. A bare "text"/"on-screen text"
+        # term would tell the model to erase a sign that is in the photo.
+        import json
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        negative = json.loads(
+            (root / "config.json").read_text(encoding="utf-8")
+        )["fal_negative_prompt"]
+        terms = {t.strip() for t in negative.split(",")}
+        assert "text overlay" in terms and "watermark" in terms
+        assert "text" not in terms and "on-screen text" not in terms
+
+
 class TestCastPromptRules:
     """The CAST LIST contract lives in the planner prompt; pin its presence
     the way the other hard-won identity rules are pinned."""

@@ -16,7 +16,7 @@
   "fal_duration_as_string": true,
   "fal_resolution": "",
   "fal_aspect_ratio": "",
-  "fal_negative_prompt": "blurry, low quality, distorted face, warped features, morphing, extra limbs, extra fingers, flickering, jittery movement, on-screen text, subtitles, watermark, sudden cuts",
+  "fal_negative_prompt": "blurry, low quality, distorted face, warped features, morphing, extra limbs, extra fingers, flickering, jittery movement, text overlay, subtitles, captions, watermark, sudden cuts",
   "fal_cfg_scale": null,
   "fal_extra_arguments": {},
   "audio_mode": "post",

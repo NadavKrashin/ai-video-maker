@@ -378,6 +378,15 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
   `Entebbe`, `Hila`) — treat their contents as user data: don't delete,
   regenerate, or overwrite without asking. `ai_video_maker.egg-info/` is
   generated packaging metadata; ignore it.
+- TEXT THAT IS IN THE PHOTO STAYS (user call, 2026-07-26). Only text the
+  video model INVENTS is unwanted; a shop sign, birthday banner or shirt
+  logo is scenery and must survive the clip. So `fal_negative_prompt` names
+  overlay terms only (`text overlay`, `subtitles`, `captions`, `watermark`)
+  and must never carry a bare `text`/`on-screen text`, and `_MODE_A_SYSTEM`
+  says "no NEW text appearing on screen" while explicitly protecting text
+  already in the frames. (Consistent with `avoid_text_only_frames`, which
+  bans text-ONLY frames, not text within a real scene.) Pinned by
+  TestInSceneTextIsPreserved, which reads the repo's live config.json.
 - Clip requests carry `fal_negative_prompt` (curated artifact preset in the
   shared config) and optional `fal_cfg_scale`; `fal_extra_arguments` is
   applied last and overrides both. All three join the render FINGERPRINT,

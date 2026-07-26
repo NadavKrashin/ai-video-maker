@@ -340,8 +340,11 @@ clip interpolates from one styled frame to the next):
   `"start_image_url"`, and `fal_end_frame_field` to `"end_image_url"`.
 - `fal_negative_prompt` — sent as the model's `negative_prompt` when
   non-empty. The shared config ships a preset targeting artifacts seen on
-  real renders (face distortion, morphing, on-screen text); set it to `""`
-  (globally or per project) to send none.
+  real renders (face distortion, morphing, flicker); set it to `""`
+  (globally or per project) to send none. It names only *generated overlay*
+  text (`text overlay`, `subtitles`, `captions`, `watermark`) — never a bare
+  `text`, because text that is genuinely in a photo (a shop sign, a birthday
+  banner, a logo on a shirt) is part of the scene and must survive the clip.
 - `fal_cfg_scale` — sent as `cfg_scale` when set (Kling: `0`–`1`, provider
   default `0.5`). Higher = stricter prompt adherence, at some cost to motion
   coherence. Leave `null` to use the provider default.
