@@ -1911,12 +1911,68 @@ class Pipeline:
             "changed_frames": changed_frames,
             "clips": clips,
             "stray_clips": stray,
+            "pending_renders": self.pending_renders(),
             "final_video": ws.final_video.exists(),
             "music": ws.music_file.exists(),
             "custom_music": ws.custom_music_file.exists(),
             "has_failed_jobs": self.failed.path.exists(),
             "next_step": next_step,
         }
+
+    def pending_renders(self) -> list[dict[str, Any]]:
+        """Clip renders that were submitted to fal but never collected.
+
+        The request_id is persisted before the wait and cleared only once the
+        mp4 is downloaded, so a surviving ``falreq:`` entry means the job was
+        submitted — the money is spent — and its output is still sitting on
+        fal's queue. Nothing polls for these in the background: the result is
+        fetched on the next ``render`` of that clip, and only while its
+        fingerprint still matches the storyboard. Surfacing them is what
+        makes an abandoned paid render visible instead of silent.
+        """
+        pending = []
+        for job_id, entry in sorted(self.state.find("falreq:").items()):
+            clip = job_id.removeprefix("falreq:")
+            pending.append({
+                "clip": clip,
+                "id": clip.removesuffix(".mp4"),
+                "request_id": entry.get("request_id", ""),
+                "submitted_at": entry.get("updated_at", ""),
+                # False once the storyboard moved on: the pending job renders
+                # the old plan, so the next render discards it and re-buys.
+                "recoverable": self._pending_render_matches(clip, entry),
+            })
+        return pending
+
+    def _pending_render_matches(self, clip: str, entry: dict[str, Any]) -> bool:
+        """Would the next render still be able to reuse this paid job?
+
+        Mirrors VideoClient.fingerprint: the frames, prompt, duration and
+        model must all be unchanged since submission. Best-effort — a project
+        whose storyboard no longer describes this clip simply reports False.
+        """
+        fingerprint = entry.get("fingerprint")
+        if not fingerprint:
+            return False
+        path = self.workspace.default_storyboard_json
+        if not path.exists():
+            return False
+        try:
+            storyboard = Storyboard.load(path)
+        except StoryboardError:
+            return False
+        stem = clip.removesuffix(".mp4")
+        for start, end, motion, duration, _sound in self._pairs_from_storyboard(
+            storyboard
+        ):
+            if self._clip_name(start, end).stem != stem:
+                continue
+            if not (start.exists() and end.exists()):
+                return False
+            return self.video_client.fingerprint(
+                start, end, motion, duration
+            ) == fingerprint
+        return False
 
     def cmd_status(self) -> None:
         """Print where this project stands and what to run next."""
@@ -1966,6 +2022,25 @@ class Pipeline:
                 print(f"    clip {clip['id']:<12} MISSING")
         if snap["stray_clips"]:
             print(f"  Stray clips      : {', '.join(snap['stray_clips'])}")
+
+        # Paid-for renders whose output was never collected. Nothing fetches
+        # these in the background — only the next render of that clip does.
+        for pending in snap["pending_renders"]:
+            if pending["recoverable"]:
+                print(
+                    f"  !! clip {pending['id']} has a PAID render waiting on "
+                    f"the provider (submitted {pending['submitted_at'][:19]}). "
+                    f"Collect it with:\n     "
+                    f"{self._next_command('render', '--clip', pending['id'])}"
+                )
+            else:
+                print(
+                    f"  !! clip {pending['id']} has a paid render on the "
+                    "provider that NO LONGER matches the storyboard (its "
+                    "frames/prompt/duration changed since it was submitted). "
+                    "Rendering this clip will pay for a fresh one; the old "
+                    "job's output is lost."
+                )
 
         final = ws.final_video
         print(f"  Final video      : {'ready — ' + str(final) if final.exists() else 'not built'}")

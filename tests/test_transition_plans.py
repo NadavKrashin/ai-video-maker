@@ -30,16 +30,30 @@ class TestCoerceTransitionPlans:
                                 _item(2), _item(3)]}
         assert _durations(_plans(config, data, 6)) == [5, 5, 10, 10, 5, 5]
 
-    def test_long_clips_capped_at_a_third_highest_difficulty_wins(self, config):
-        # 5 of 6 pairs claim to be hard; only ceil(6/3)=2 stay long, and the
-        # difficulty-5 pairs outrank the 4s.
+    def test_long_clips_capped_by_fraction_highest_difficulty_wins(self, config):
+        # 5 of 6 pairs claim to be hard; only ceil(6*0.5)=3 stay long, and the
+        # difficulty-5 pairs outrank the 4s (earliest 4 takes the last slot).
         data = {"transitions": [_item(4), _item(5), _item(4), _item(5),
                                 _item(4), _item(1)]}
-        assert _durations(_plans(config, data, 6)) == [5, 10, 5, 10, 5, 5]
+        assert _durations(_plans(config, data, 6)) == [10, 10, 5, 10, 5, 5]
 
     def test_tie_break_prefers_earlier_pairs(self, config):
         data = {"transitions": [_item(4), _item(4), _item(4)]}
-        assert _durations(_plans(config, data, 3)) == [10, 5, 5]
+        assert _durations(_plans(config, data, 3)) == [10, 10, 5]
+
+    def test_long_clip_fraction_is_configurable(self, config):
+        # The cap is a knob because "how many 10s clips" is a taste/cost call:
+        # a real movie had hard pairs demoted to 5s and teleporting.
+        data = {"transitions": [_item(5), _item(5), _item(5), _item(5)]}
+        config.long_clip_max_fraction = 0.25
+        assert _durations(_plans(config, data, 4)) == [10, 5, 5, 5]
+        config.long_clip_max_fraction = 1.0
+        assert _durations(_plans(config, data, 4)) == [10, 10, 10, 10]
+
+    def test_long_clip_fraction_zero_forces_all_short(self, config):
+        data = {"transitions": [_item(5), _item(5)]}
+        config.long_clip_max_fraction = 0.0
+        assert _durations(_plans(config, data, 2)) == [5, 5]
 
     def test_default_duration_overrides_difficulty(self, config):
         data = {"transitions": [_item(5)]}

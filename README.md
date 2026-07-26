@@ -301,6 +301,14 @@ Edit `config.json` to change the style prompts, motion prompt, default duration,
 the fal model id, retry settings, etc. It is validated on startup (pydantic), so
 typos are caught early.
 
+**Clip length:** you don't set it per clip. The planner rates each frame pair's
+difficulty 1–5 and the code derives the duration — 4 and 5 get 10 seconds,
+everything else 5 — because prompt-side instructions alone came back either
+all-5s or all-10s. `long_clip_max_fraction` (default `0.5`) caps how many of a
+movie's clips may be long: raise it toward `1.0` if hard transitions are being
+squeezed into 5s and teleporting, lower it for a shorter, pacier movie.
+Remember a 10s clip costs roughly twice a 5s one.
+
 **Per-project overrides:** drop a `config.json` inside a project
 (`projects/<name>/config.json`) with just the keys you want to change for that
 movie — e.g. its own `style_prompt` or a different `fal_model_id`. It is merged
@@ -509,6 +517,15 @@ number. Dry-runs always run sequentially so the planned-work log stays ordered.
   submitting (and billing) a new one**. The saved request is only reused
   while the clip's frames, prompt, and duration are unchanged; if you edit
   the storyboard in between, a fresh job is submitted as expected.
+- **Nothing collects those jobs in the background.** A submitted render is
+  only fetched by the next `render` of that clip, so an interrupted run that
+  is never resumed leaves a paid result sitting on fal forever. `status` and
+  the admin panel now list them ("N paid render(s) waiting on the provider"),
+  saying for each whether it is still *recoverable* — i.e. whether the plan
+  is unchanged, so rendering fetches it for free — or whether an edit has
+  since invalidated it, meaning that render is lost and a new one will be
+  billed. Saving storyboard edits that invalidate a waiting render warns you
+  by name at the moment it happens.
 - Use `--force` to ignore saved state and redo everything, or
   `render --clip ID` to redo specific clips.
 - Anything that failed is written to `failed_jobs/failed_jobs.json` with the

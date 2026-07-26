@@ -659,6 +659,16 @@ export default function ProjectDetail({ name, onBack }) {
       notify(marked
         ? `Storyboard saved — ${marked} rendered clip(s) marked outdated`
         : 'Storyboard saved', 'green');
+      // Editing a clip that had a paid render still waiting on the provider
+      // throws that render away (its fingerprint no longer matches), so the
+      // loss is called out rather than absorbed silently.
+      const orphaned = res.orphaned_renders || [];
+      if (orphaned.length) {
+        notify(
+          `${orphaned.length} already-paid render(s) can no longer be collected: `
+          + `${orphaned.join(', ')} — your edit changed their plan, so rendering `
+          + 'them now buys fresh clips.', 'red');
+      }
       const data = await load();
       // Saving edits is normally step one of "now re-render them", so offer
       // the whole batch straight away. It is still a confirmation modal:
@@ -700,6 +710,25 @@ export default function ProjectDetail({ name, onBack }) {
       cost: 'fal', danger: exists,
       label: exists ? 'Regenerate' : 'Render',
       action: () => run('render', { clips: [clipId] }, `render ${clipId}`)
+    });
+  };
+
+  // Fetch a render that was already submitted and billed. It runs the same
+  // render action, but the pipeline resumes the persisted request_id instead
+  // of submitting again — so this costs nothing as long as the plan is
+  // unchanged, and the modal must not claim otherwise.
+  const collectRender = (pending) => {
+    if (needsSave()) return;
+    ask({
+      title: `Collect the finished render for ${pending.id}?`,
+      lines: [
+        'This clip was already submitted to the video provider and paid for; its result is waiting to be downloaded.',
+        'Rendering it now fetches that result instead of buying a new clip — as long as its frames, prompt and duration are still unchanged.',
+        'Editing the storyboard first would invalidate it and force a fresh (paid) render.'
+      ],
+      cost: 'free',
+      label: 'Collect',
+      action: () => run('render', { clips: [pending.id] }, `render ${pending.id}`)
     });
   };
 
@@ -904,6 +933,35 @@ export default function ProjectDetail({ name, onBack }) {
           </>
         )}
       </Card>
+
+      {/* Renders that were submitted (and billed) but never collected.
+          Nothing fetches them in the background — only rendering that clip
+          again does, and only while its plan is unchanged. */}
+      {(snap.pending_renders || []).length > 0 && (
+        <Alert color={snap.pending_renders.some((r) => r.recoverable) ? 'blue' : 'red'}
+          variant="light"
+          title={`${snap.pending_renders.length} paid render(s) waiting on the provider`}>
+          <Stack gap={6}>
+            {snap.pending_renders.map((r) => (
+              <Group key={r.clip} gap="xs" wrap="nowrap">
+                <Text size="sm" fw={600}>{r.id}</Text>
+                <Text size="xs" c="dimmed" style={{ flex: 1 }}>
+                  {r.recoverable
+                    ? `submitted ${(r.submitted_at || '').replace('T', ' ').slice(0, 19)} — already paid for; rendering this clip fetches it instead of buying a new one`
+                    : 'its frames/prompt/duration changed since it was submitted, so this paid render can no longer be collected — rendering buys a fresh clip'}
+                </Text>
+                {r.recoverable && (
+                  <Button size="compact-xs" variant="light" disabled={locked}
+                    loading={busyAction === `render ${r.id}`}
+                    onClick={() => collectRender(r)}>
+                    Collect
+                  </Button>
+                )}
+              </Group>
+            ))}
+          </Stack>
+        </Alert>
+      )}
 
       {snap.final_video && (
         <Card withBorder padding="md">

@@ -26,12 +26,14 @@ T = TypeVar("T")
 # ~512px anyway, so anything bigger is pure upload weight.
 _VISION_MAX_EDGE = 768
 
-# At most this fraction of a video's clips may get the long (10s) duration.
-# The planner rates each pair's difficulty and code derives durations from it
-# (_coerce_transition_plans); the cap keeps the movie leaning on short, pacy
-# clips even when the model inflates its ratings — real plans have come back
-# all-5s and all-10s under prompt-side guidance alone.
-_LONG_CLIP_MAX_FRACTION = 1 / 3
+# Fallback ceiling on how many of a movie's clips may get the long (10s)
+# duration; `config.long_clip_max_fraction` overrides it. The planner rates
+# each pair's difficulty and code derives durations from it
+# (_coerce_transition_plans); the cap keeps the movie from turning long and
+# slow when the model inflates its ratings — real plans have come back all-5s
+# and all-10s under prompt-side guidance alone. Raised from 1/3 to 1/2 on
+# 2026-07-26: hard pairs were being demoted to 5s by the cap and teleporting.
+_LONG_CLIP_MAX_FRACTION = 0.5
 
 # Hard word budgets for motion prompts, by clip duration. Kling drops or fakes
 # beats it can't fit (a real 84-word 5s prompt rendered as a whip-pan blur —
@@ -65,7 +67,13 @@ _CONDENSE_MOTION_SYSTEM = (
     "everyone holding still; (4) a brief final clause "
     "landing on the same end state the original ends on. Cut secondary "
     "gestures, scenery and wardrobe inventories, and camera directions — the "
-    "two frames already carry the visual detail. Every remaining action must "
+    "two frames already carry the visual detail. Collapse route-spanning "
+    "travel into the ARRIVAL: 'strolls along the meadow trail until they "
+    "stop beside the bench' becomes 'takes the last few unhurried steps to "
+    "the bench and settles onto it'. A clip cannot cover a whole route in "
+    "its length and the video model compensates by sprinting the people "
+    "across the ground, so keep the destination and an unhurried pace but "
+    "drop the journey. Every remaining action must "
     "be performed by a visible person under their own power: remove actions "
     "done to the subject by anyone off-screen (being lifted, carried, set "
     "down). No editing terms (crossfade, dissolve, morph, transition). "
@@ -118,7 +126,11 @@ _REWORD_MOTION_SYSTEM = (
     "visible-appearance epithet ('the bald man', 'the younger man with "
     "brown hair') and any exit/re-enter or trading-places staging — never "
     "collapse named individuals into a collective 'they' or swap their "
-    "epithets for names or relationship words. Keep it one to three short "
+    "epithets for names or relationship words. Pace anchors are not risky "
+    "detail either: keep wording that limits how far people travel ('the "
+    "last few unhurried steps') and never widen it back out into a journey "
+    "across a route — that makes the video model sprint them along the "
+    "ground. Keep it one to three short "
     "sentences of continuous physical motion "
     "in present tense; no editing effects, no morphing between people. Return "
     "ONLY the rewritten motion prompt, with no preamble or quotes."
@@ -224,6 +236,29 @@ _MODE_A_SYSTEM = (
     "around them (light, background, and surroundings flow into the new "
     "scene). Describe visible travel only when one of the two frames "
     "already shows the subject small or far away. "
+    "PACE AND DISTANCE: a clip can only cover as much ground as its length "
+    "allows at a calm, natural pace — roughly a few unhurried steps in 5 "
+    "seconds, a short approach in 10. The video model holds the two frames "
+    "as fixed endpoints, so a prompt that spans a ROUTE forces it to cover "
+    "that whole route within the clip: the people sprint, skate across the "
+    "ground, or blur together. Two real clips were ruined exactly this way "
+    "— 'stroll side by side along the meadow trail until they stop beside "
+    "the bench' and 'stroll down toward a green resort lawn' both rendered "
+    "as a frantic sprint. NEVER write travel that names a route or a "
+    "destination reached from far off ('walks along the path to ...', "
+    "'makes her way across the park to ...', 'heads down toward the ...'). "
+    "Write the ARRIVAL instead — only the last few steps and the settling: "
+    "'the bald man and the woman with the pink headband take the last few "
+    "unhurried steps to the bench and settle onto it side by side'. Name "
+    "the pace whenever people move ('unhurried', 'slowly', 'at an easy "
+    "pace') and keep the described distance short enough that the pace is "
+    "physically possible in the time. A gentler VERB is not enough: "
+    "'stroll', 'amble', and 'wander' still tell the model to cover the "
+    "whole route, just as 'walk' does — it is the distance that has to "
+    "shrink, not the wording. If the two frames really are far apart in "
+    "space, that is not a walking shot at all: rate it 4-5 and stage "
+    "exit-past-camera plus re-entry, or hold the subject steady while the "
+    "world transforms around them. "
     "NO OFF-SCREEN HANDS: every action must be performed by a person "
     "visible in the frames, under their own power. NEVER write actions done "
     "TO the subject by an unseen agent — 'is lifted out', 'is carried', "
@@ -301,7 +336,20 @@ _MODE_A_SYSTEM = (
     "and may lose the wrong detail, so stay under the cap yourself. A "
     "prompt with more beats than the clip can hold does not get compressed "
     "— the model drops or fakes the beats, typically by swapping in a "
-    "different-looking subject mid-clip. Keep every motion_prompt in "
+    "different-looking subject mid-clip. "
+    "COUNT THE BEATS BEFORE YOU WRITE — the word cap will NOT do it for "
+    "you. A beat is any distinct action a subject performs, and a prompt "
+    "can sit comfortably under the word cap while stacking far too many of "
+    "them. A real 10-second prompt — 'they laugh, step back from the edge, "
+    "and stroll down toward a green resort lawn where they change into "
+    "white robes, set backpacks aside, and move together into a relaxed "
+    "selfie near lounge chairs' — is only 46 words but SIX beats, and it "
+    "rendered as a frantic sprint through all of them instead of the calm "
+    "moment it described. Chained verbs are the tell: every extra 'and', "
+    "'then', 'where', 'until', or comma-joined verb is another beat. Keep "
+    "to ONE (5s) or TWO (10s) and simply drop the rest — the end frame "
+    "already shows where everything lands, so the prompt never has to "
+    "narrate the way there. Keep every motion_prompt in "
     "present tense; preserve each person's identity, wardrobe, and "
     "environment except for the changes visible between the frames; no hard "
     "cuts, no people who appear in neither frame, no on-screen text. Do not "
@@ -861,8 +909,9 @@ class OpenAIClient:
     def _select_long_clips(self, items: list[Any], count: int) -> set[int]:
         """Pick which pairs get the long duration from their difficulty ratings.
 
-        Difficulty >= 4 qualifies; if more than a third of the pairs qualify,
-        only the highest-rated (earliest on ties) keep the long clip.
+        Difficulty >= 4 qualifies; if more qualify than
+        ``config.long_clip_max_fraction`` allows, only the highest-rated
+        (earliest on ties) keep the long clip.
         """
         def rating(i: int) -> int:
             item = items[i] if i < len(items) and isinstance(items[i], dict) else {}
@@ -873,7 +922,10 @@ class OpenAIClient:
             return min(5, max(1, d))
 
         candidates = [i for i in range(count) if rating(i) >= 4]
-        cap = math.ceil(count * _LONG_CLIP_MAX_FRACTION)
+        fraction = getattr(
+            self.config, "long_clip_max_fraction", _LONG_CLIP_MAX_FRACTION
+        )
+        cap = math.ceil(count * fraction)
         candidates.sort(key=lambda i: (-rating(i), i))
         return set(candidates[:cap])
 

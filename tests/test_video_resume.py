@@ -85,7 +85,7 @@ class TestQueueFlow:
 
     def test_resume_fetches_pending_job_without_resubmitting(self, clip_env):
         client, state, start, end, dst, downloads = clip_env
-        fp = client._fingerprint(start, end, "walk", 5)
+        fp = client.fingerprint(start, end, "walk", 5)
         state.set(JOB_KEY, "pending", request_id="req-old", fingerprint=fp)
         client.generate_clip(start, end, "walk", 5, dst)
         assert client.fal.submits == []  # nothing re-bought
@@ -104,7 +104,7 @@ class TestQueueFlow:
 
     def test_unrecoverable_pending_job_falls_back_to_fresh_submit(self, clip_env):
         client, state, start, end, dst, _ = clip_env
-        fp = client._fingerprint(start, end, "walk", 5)
+        fp = client.fingerprint(start, end, "walk", 5)
         state.set(JOB_KEY, "pending", request_id="req-old", fingerprint=fp)
         client.fal.results["req-old"] = RuntimeError("request expired")
         client.generate_clip(start, end, "walk", 5, dst)
@@ -145,15 +145,15 @@ class TestFingerprint:
         b = tmp_path / "b.png"
         b.write_bytes(b"two")
         client = VideoClient(config)
-        base = client._fingerprint(a, b, "walk", 5)
-        assert client._fingerprint(a, b, "walk", 10) != base
-        assert client._fingerprint(a, b, "run", 5) != base
-        assert client._fingerprint(b, a, "walk", 5) != base
+        base = client.fingerprint(a, b, "walk", 5)
+        assert client.fingerprint(a, b, "walk", 10) != base
+        assert client.fingerprint(a, b, "run", 5) != base
+        assert client.fingerprint(b, a, "walk", 5) != base
 
     def test_stable_for_same_inputs(self, config, tmp_path):
         a = tmp_path / "a.png"
         a.write_bytes(b"one")
         b = tmp_path / "b.png"
         b.write_bytes(b"two")
-        assert VideoClient(config)._fingerprint(a, b, "walk", 5) == \
-            VideoClient(config)._fingerprint(a, b, "walk", 5)
+        assert VideoClient(config).fingerprint(a, b, "walk", 5) == \
+            VideoClient(config).fingerprint(a, b, "walk", 5)

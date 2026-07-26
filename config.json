@@ -5,6 +5,7 @@
   "scratch_style_prompt": "Create Pixar-style 3D animated cartoon visuals — every frame must look like a still from a high-end 3D animated feature film, never photorealistic: soft cinematic lighting, expressive character design, clean rounded shapes, rich saturated colors, smooth stylized cartoon skin, simplified painterly backgrounds, and high-quality animation-studio rendering. Keep the visual identity consistent across all frames.",
   "motion_prompt": "Natural, continuous in-scene motion connecting the start frame to the end frame: the characters and environment move and evolve believably, with camera movement only as needed to follow the action. Preserve each person's identity, environment, colors, and composition. If the people in the two frames are different individuals, the first person exits the frame or passes behind something while the other enters or is revealed — never transform or morph one person into another. If the same people appear in both frames but in different positions, each person physically moves to their new position — never swap or blend one person into another in place. No sudden cuts, no text, no distortion, no camera shake. The final frame should closely match the provided end image.",
   "duration": 5,
+  "long_clip_max_fraction": 0.5,
   "default_frame_count": 8,
   "avoid_text_only_frames": true,
   "openai_image_model": "gpt-image-2",

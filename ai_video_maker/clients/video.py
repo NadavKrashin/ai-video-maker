@@ -61,7 +61,7 @@ class VideoClient:
             self._hash_cache[path] = hashlib.sha1(path.read_bytes()).hexdigest()
         return self._hash_cache[path]
 
-    def _fingerprint(
+    def fingerprint(
         self, start: Path, end: Path, motion_prompt: str, duration: int
     ) -> str:
         """Identity of one render job, from everything that shapes its output.
@@ -172,7 +172,7 @@ class VideoClient:
         (moderation) or no longer matches the storyboard (fingerprint).
         """
         job_key = f"falreq:{dst.name}"
-        fingerprint = self._fingerprint(start_frame, end_frame, motion_prompt, duration)
+        fingerprint = self.fingerprint(start_frame, end_frame, motion_prompt, duration)
 
         result = self._try_resume(job_key, fingerprint, dst)
         if result is None:

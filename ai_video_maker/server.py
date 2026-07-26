@@ -831,12 +831,29 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
             # against, so save without inventing staleness.
             previous = None
         changed = changed_transition_ids(previous, storyboard)
+        pipeline = _pipeline(ws)
+        # A clip with a submitted-but-uncollected fal job is already paid for.
+        # Editing its plan means the next render can no longer reuse that job
+        # (the fingerprint stops matching), so the money is lost — say so
+        # rather than letting it happen silently.
+        pending_before = {
+            p["id"] for p in pipeline.pending_renders() if p["recoverable"]
+        }
         storyboard.save(ws.default_storyboard_json)
-        outdated = _pipeline(ws).mark_clips_outdated(changed) if changed else []
+        outdated = pipeline.mark_clips_outdated(changed) if changed else []
+        orphaned = sorted(pending_before.intersection(changed))
+        if orphaned:
+            logger.warning(
+                "Storyboard save discarded %d already-paid render(s) still "
+                "waiting on the provider: %s — their plan changed, so the "
+                "next render buys fresh clips.",
+                len(orphaned), ", ".join(orphaned),
+            )
         return {"ok": True, "frames": len(storyboard.frames),
                 "transitions": len(storyboard.transitions),
                 "changed": changed,
-                "outdated": [c.removesuffix(".mp4") for c in outdated]}
+                "outdated": [c.removesuffix(".mp4") for c in outdated],
+                "orphaned_renders": orphaned}
 
     @app.post("/api/projects/{name}/actions/{command}", dependencies=guarded)
     async def run_action(

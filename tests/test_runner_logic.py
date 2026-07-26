@@ -832,3 +832,80 @@ class TestSnapshotMusic:
         _touch(workspace.music_file, b"generated")
         snap = pipeline.snapshot()
         assert snap["custom_music"] is True and snap["music"] is True
+
+
+class TestPendingRenders:
+    """Submitted-but-uncollected fal jobs — money spent, output not fetched.
+
+    Nothing polls for these in the background: the result is only fetched by
+    the next `render` of that clip, and only while the fingerprint still
+    matches. They were invisible everywhere before, so an abandoned paid
+    render was silent.
+    """
+
+    def _pipeline(self, make_pipeline):
+        return make_pipeline(analyze_frames=False)
+
+    def _project(self, workspace, p):
+        """A 2-frame project; returns the fingerprint render would compute.
+
+        Derived through _pairs_from_storyboard on purpose: that is what
+        applies the global motion prompt, so the fingerprint matches the
+        prompt generate_clip actually submits.
+        """
+        _make_frame_pairs(workspace, ["a", "b"])
+        sb = _save_slug_storyboard(workspace, ["a", "b"])
+        start, end, motion, duration, _ = p._pairs_from_storyboard(sb)[0]
+        return p.video_client.fingerprint(start, end, motion, duration)
+
+    def test_no_entries_means_nothing_pending(self, make_pipeline):
+        assert self._pipeline(make_pipeline).pending_renders() == []
+
+    def test_matching_fingerprint_is_recoverable(self, make_pipeline, workspace):
+        p = self._pipeline(make_pipeline)
+        fp = self._project(workspace, p)
+        p.state.set("falreq:a_to_b.mp4", "pending", request_id="req-1",
+                    fingerprint=fp)
+        pending = p.pending_renders()
+        assert len(pending) == 1
+        assert pending[0]["id"] == "a_to_b"
+        assert pending[0]["request_id"] == "req-1"
+        assert pending[0]["recoverable"] is True
+
+    def test_edited_prompt_makes_the_paid_job_unrecoverable(
+        self, make_pipeline, workspace
+    ):
+        # The money is already spent, but the job renders the OLD plan, so
+        # the next render discards it and buys a fresh clip. That has to be
+        # visible rather than silent.
+        p = self._pipeline(make_pipeline)
+        self._project(workspace, p)
+        p.state.set("falreq:a_to_b.mp4", "pending", request_id="req-1",
+                    fingerprint="a-fingerprint-from-the-old-plan")
+        assert p.pending_renders()[0]["recoverable"] is False
+
+    def test_entry_without_a_fingerprint_is_not_recoverable(
+        self, make_pipeline, workspace
+    ):
+        p = self._pipeline(make_pipeline)
+        self._project(workspace, p)
+        p.state.set("falreq:a_to_b.mp4", "pending", request_id="req-1")
+        assert p.pending_renders()[0]["recoverable"] is False
+
+    def test_snapshot_surfaces_pending_renders(self, make_pipeline, workspace):
+        p = self._pipeline(make_pipeline)
+        fp = self._project(workspace, p)
+        p.state.set("falreq:a_to_b.mp4", "pending", request_id="req-1",
+                    fingerprint=fp)
+        assert p.snapshot()["pending_renders"][0]["id"] == "a_to_b"
+
+    def test_collected_render_leaves_nothing_pending(
+        self, make_pipeline, workspace
+    ):
+        # generate_clip clears the entry once the mp4 is downloaded.
+        p = self._pipeline(make_pipeline)
+        fp = self._project(workspace, p)
+        p.state.set("falreq:a_to_b.mp4", "pending", request_id="req-1",
+                    fingerprint=fp)
+        p.state.clear("falreq:a_to_b.mp4")
+        assert p.pending_renders() == []

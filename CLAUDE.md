@@ -109,16 +109,39 @@ Core design rules:
   changes), or one person visibly crossing in front of/behind the other.
   A swap rates difficulty ≥4; swap + setting change = 5. Enforced in
   `_MODE_A_SYSTEM` and the difficulty rubric.
+- PACE AND DISTANCE: a motion prompt that spans a ROUTE makes Kling cover
+  that route inside the clip — the people sprint or skate across the ground.
+  Two real clips died this way ("stroll side by side along the meadow trail
+  until they stop beside the bench"; "stroll down toward a green resort
+  lawn"). A gentler verb does NOT fix it — "stroll"/"amble"/"wander" still
+  say "cover this whole route now"; the DISTANCE has to shrink. Prompts
+  describe the ARRIVAL only ("takes the last few unhurried steps to the
+  bench and settles onto it") and name the pace. Genuinely far-apart frames
+  aren't a walking shot at all: rate 4-5 and stage exit-past-camera +
+  re-entry, or a world morph around a steady subject. Enforced in
+  `_MODE_A_SYSTEM`, `_CONDENSE_MOTION_SYSTEM` and `_REWORD_MOTION_SYSTEM`
+  (pace anchors are not "risky detail" to drop).
+- The WORD CAP DOES NOT CATCH BEAT OVERLOAD: a real 10s prompt ("they
+  laugh, step back from the edge, and stroll down toward a green resort
+  lawn where they change into white robes, set backpacks aside, and move
+  together into a relaxed selfie") was only 46 words — inside the 60-word
+  cap — but SIX beats, and rendered as a frantic sprint. `_MODE_A_SYSTEM`
+  therefore tells the planner to COUNT beats explicitly (chained
+  and/then/where/until = another beat) on top of the word cap. Beats are
+  not mechanically enforced — only word counts are.
 - Clip durations must LEAN SHORT, and prompt-side bias alone cannot deliver
   it: real plans came back all-5s under "prefer 5" and all-10s under a
   hard-transition checklist (in a photo-album movie nearly every pair
   changes setting or outfit). The planner therefore only RATES each pair's
   difficulty 1-5 (3 = one major change, 4 = two at once OR any transition
   that can't physically play out in 5s, 5 = shares almost nothing /
-  different people) and code derives durations: >=4 → 10s, capped
-  at 1/3 of clips (`_LONG_CLIP_MAX_FRACTION`, `_select_long_clips` in
-  clients/openai_client.py). A hard pair squeezed into 5s visibly teleports
-  (seen in a real render), so keep both sides of the balance.
+  different people) and code derives durations: >=4 → 10s, capped at
+  `config.long_clip_max_fraction` of the clips (default 0.5, was a hardcoded
+  1/3 until 2026-07-26 — the cap was demoting genuinely hard pairs to 5s;
+  `_select_long_clips` in clients/openai_client.py). A hard pair squeezed
+  into 5s visibly teleports (seen in a real render), so keep both sides of
+  the balance — raising the fraction also raises cost, since a 10s clip is
+  about twice a 5s one.
 - A RELOCATION WITHIN ONE SETTING (high chair → couch across the same room,
   subject prominent in both frames) is a difficulty-4 pair even though the
   setting/outfit don't change: exit + crossing + arrival can't compress
@@ -334,7 +357,12 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
   on the next run when the fingerprint (frames+prompt+duration+model) still
   matches, so interruptions recover the paid output instead of re-buying it.
   Keep the entry on transient failures; clear it only on moderation
-  rejection, fingerprint mismatch, or successful download. `subscribe` is
+  rejection, fingerprint mismatch, or successful download. NOTHING POLLS
+  THESE IN THE BACKGROUND — an uncollected job is only fetched by the next
+  `render` of that clip, so `Pipeline.pending_renders()` surfaces them in
+  snapshot/status/panel (with `recoverable`, i.e. does the fingerprint still
+  match), and saving a storyboard edit that invalidates one reports it as
+  `orphaned_renders` rather than losing the money silently. `subscribe` is
   still fine for the cheap audio jobs.
 - Clips are named `<startid>_to_<endid>.mp4`; bridged clips (a missing middle
   frame) get non-consecutive names like `003_to_005.mp4` and become "stray"
