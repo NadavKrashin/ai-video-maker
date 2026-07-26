@@ -185,6 +185,14 @@ Core design rules:
   extending the sides is what shrank the people and spent the budget on
   background in the first place (`_IMAGE_API_SIZE` is 1536x1024, so a
   portrait source is always reshaped).
+- BALDNESS GETS "CORRECTED" BY THE IMAGE MODEL unless forbidden: a real
+  styling gave a cleanly bald man a horseshoe of dark hair around his ears
+  (frame 920acc69 on Ari&Michal), and changed wraparound mirrored
+  sunglasses into square white-framed ones. This is not only cosmetic — the
+  motion prompts identify people by visible appearance ("the bald man in
+  pink sunglasses"), so a styling that adds hair breaks the epithet Kling
+  is shown. `style_prompt` now forbids restoring/improving hair in either
+  direction and treats eyewear shape/colour as an identifying feature.
 
 ## Working rules (the user's standing instructions)
 
