@@ -18,6 +18,21 @@ T = TypeVar("T")
 _RATE_LIMIT_MAX_RETRIES = 10
 _RATE_LIMIT_MAX_DELAY = 60.0
 
+# fal rejects a submit with "User is locked. Reason: Exhausted balance" when
+# the account really is out of credit — but ALSO, transiently, when it is not.
+# A real batch had its FIRST clip rejected this way while the next two,
+# submitted ONE SECOND later, were accepted and rendered fine (project
+# Commercial2, 2026-07-26 19:46); re-running the rejected clip later worked
+# untouched. As a 403 it was classified permanent, so the clip was lost with
+# zero retries for no reason. These get a small budget of their own: a blip
+# is recovered on the second try, while a genuinely empty account costs about
+# half a minute before failing with the same clear "top up" message. It is
+# deliberately NOT the patient rate-limit budget — waiting minutes on a real
+# empty balance is exactly the burn is_quota_exhausted_error exists to avoid.
+_BALANCE_MAX_RETRIES = 3
+_BALANCE_BASE_DELAY = 5.0
+_BALANCE_MAX_DELAY = 20.0
+
 
 def _http_status(exc: BaseException) -> Optional[int]:
     """Best-effort extraction of an HTTP status code from an exception."""
@@ -61,6 +76,24 @@ def is_quota_exhausted_error(exc: BaseException) -> bool:
     return "insufficient_quota" in str(exc).lower()
 
 
+def is_balance_error(exc: BaseException) -> bool:
+    """True when the provider rejected the call for account balance/lock.
+
+    Distinct from `is_quota_exhausted_error` (OpenAI's insufficient_quota,
+    a hard account state) because fal reports this transiently as well as
+    permanently — see `_BALANCE_MAX_RETRIES`.
+    """
+    if _http_status(exc) == 402:  # Payment Required
+        return True
+    text = str(exc).lower()
+    return (
+        "exhausted balance" in text
+        or "insufficient balance" in text
+        or "user is locked" in text
+        or "top up your balance" in text
+    )
+
+
 def is_rate_limit_error(exc: BaseException) -> bool:
     """True when an error is a 429 / rate-limit rejection (worth waiting out)."""
     if is_quota_exhausted_error(exc):
@@ -94,6 +127,10 @@ def is_retryable_error(exc: BaseException) -> bool:
         return False
     if is_quota_exhausted_error(exc):
         return False  # out of credits: only a billing top-up fixes this
+    if is_balance_error(exc):
+        # Often a transient lock rather than a real empty account; retried on
+        # a short bounded budget in with_retries rather than failed instantly.
+        return True
     code = _http_status(exc)
     if code is None:
         return True  # network/timeout/unknown -> retry
@@ -205,6 +242,7 @@ def with_retries(
     last_exc: Optional[BaseException] = None
     attempt = 0
     rate_limit_attempt = 0
+    balance_attempt = 0
     while True:
         try:
             return func()
@@ -217,6 +255,29 @@ def with_retries(
                     exc,
                 )
                 break
+            if is_balance_error(exc):
+                balance_attempt += 1
+                if balance_attempt >= _BALANCE_MAX_RETRIES:
+                    logger.error(
+                        "%s: the provider still reports an exhausted balance "
+                        "after %d attempts — this one looks real, top up the "
+                        "account: %s",
+                        description, _BALANCE_MAX_RETRIES, exc,
+                    )
+                    break
+                delay = min(
+                    _BALANCE_BASE_DELAY * (2 ** (balance_attempt - 1)),
+                    _BALANCE_MAX_DELAY,
+                )
+                logger.warning(
+                    "%s was rejected for account balance (retry %d/%d) — the "
+                    "provider reports this transiently even with credit "
+                    "available, so waiting %.1fs and trying again: %s",
+                    description, balance_attempt, _BALANCE_MAX_RETRIES,
+                    delay, exc,
+                )
+                time.sleep(delay)
+                continue
             if is_rate_limit_error(exc):
                 rate_limit_attempt += 1
                 if rate_limit_attempt >= _RATE_LIMIT_MAX_RETRIES:
