@@ -120,6 +120,28 @@ runner → macOS/arm64, follow the shown commands, then):
 ./svc.sh install && ./svc.sh start              # runner as a service too
 ```
 
+**Installed 2026-07-26.** It lives in `~/actions-runner`, registered as
+`mac-mini` with labels `self-hosted, macOS, ARM64, mac-mini` (the workflow's
+`runs-on` needs the first, second and last). It runs as a **user LaunchAgent**,
+`actions.runner.NadavKrashin-ai-video-maker.mac-mini` — that is deliberate and
+must stay that way: `deploy/deploy.sh` calls
+`launchctl kickstart gui/$(id -u)/com.animoments.pipeline`, which only works
+from inside the logged-in user session. A system-level daemon cannot restart
+the server.
+
+```bash
+cd ~/actions-runner && ./svc.sh status    # or stop / start
+gh api repos/NadavKrashin/ai-video-maker/actions/runners \
+  -q '.runners[] | "\(.name) \(.status)"'
+```
+
+**If a deploy never seems to happen, check the runner first.** With no runner
+online a push to `main` does not fail — the job sits *queued* indefinitely and
+the release looks like it simply did nothing. That is exactly what happened on
+2026-07-26: `deploy.yml` had been in the repo for over a week with no runner
+ever registered, so every "push main to deploy" was a no-op and the mini was
+only ever updated by hand.
+
 Settings → Actions → General: set **"Allow select actions"** and disable
 workflow runs for fork PRs (defaults are fine for a private repo, but check —
 a self-hosted runner must never run untrusted PR code).
