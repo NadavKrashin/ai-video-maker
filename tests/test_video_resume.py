@@ -142,6 +142,25 @@ class TestQueueFlow:
         assert dst.exists()
 
 
+class TestBuildArguments:
+    def test_negative_prompt_and_cfg_scale_sent_only_when_set(self, config):
+        args = VideoClient(config)._build_arguments("s", "e", "walk", 5)
+        assert "negative_prompt" not in args and "cfg_scale" not in args
+        config.fal_negative_prompt = "blurry, morphing"
+        config.fal_cfg_scale = 0.4
+        args = VideoClient(config)._build_arguments("s", "e", "walk", 5)
+        assert args["negative_prompt"] == "blurry, morphing"
+        assert args["cfg_scale"] == 0.4
+
+    def test_extra_arguments_override_named_knobs(self, config):
+        # fal_extra_arguments is the ad-hoc escape hatch; it must win over
+        # the first-class fields so a per-project override can experiment.
+        config.fal_negative_prompt = "preset"
+        config.fal_extra_arguments = {"negative_prompt": "override"}
+        args = VideoClient(config)._build_arguments("s", "e", "walk", 5)
+        assert args["negative_prompt"] == "override"
+
+
 class TestFingerprint:
     def test_sensitive_to_every_input(self, config, tmp_path):
         a = tmp_path / "a.png"
@@ -153,6 +172,45 @@ class TestFingerprint:
         assert client.fingerprint(a, b, "walk", 10) != base
         assert client.fingerprint(a, b, "run", 5) != base
         assert client.fingerprint(b, a, "walk", 5) != base
+
+    def test_request_shaping_knobs_change_the_fingerprint(self, config, tmp_path):
+        # A pending job submitted under different knobs rendered a different
+        # request — it must not be resumed as if it matched.
+        a = tmp_path / "a.png"
+        a.write_bytes(b"one")
+        b = tmp_path / "b.png"
+        b.write_bytes(b"two")
+        base = VideoClient(config).fingerprint(a, b, "walk", 5)
+        config.fal_negative_prompt = "blurry"
+        with_neg = VideoClient(config).fingerprint(a, b, "walk", 5)
+        assert with_neg != base
+        config.fal_cfg_scale = 0.7
+        with_cfg = VideoClient(config).fingerprint(a, b, "walk", 5)
+        assert with_cfg not in (base, with_neg)
+        config.fal_extra_arguments = {"seed": 7}
+        assert VideoClient(config).fingerprint(a, b, "walk", 5) \
+            not in (base, with_neg, with_cfg)
+
+    def test_unset_knobs_keep_legacy_fingerprints_valid(self, config, tmp_path):
+        # The knobs join the fingerprint only when set: with all of them at
+        # their defaults the material is identical to what pre-knob versions
+        # hashed, so pending renders submitted before the knobs existed stay
+        # resumable (a mismatch forfeits an already-paid render).
+        a = tmp_path / "a.png"
+        a.write_bytes(b"one")
+        b = tmp_path / "b.png"
+        b.write_bytes(b"two")
+        client = VideoClient(config)
+        import hashlib
+
+        legacy_material = "|".join((
+            config.fal_model_id, "5",
+            hashlib.sha1(b"one").hexdigest(),
+            hashlib.sha1(b"two").hexdigest(),
+            "walk",
+        ))
+        legacy = hashlib.sha1(legacy_material.encode("utf-8")).hexdigest()
+        assert client.fingerprint(a, b, "walk", 5) == legacy
 
     def test_stable_for_same_inputs(self, config, tmp_path):
         a = tmp_path / "a.png"

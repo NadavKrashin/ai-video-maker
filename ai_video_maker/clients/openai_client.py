@@ -17,7 +17,7 @@ from ..media.images import (
     prepare_image_for_upload,
 )
 from ..logging_setup import logger
-from ..models import Frame, Storyboard, Transition
+from ..models import Character, Frame, Storyboard, Transition
 from ..retry import with_retries, with_reword_recovery
 
 T = TypeVar("T")
@@ -333,6 +333,23 @@ _MODE_A_SYSTEM = (
     "length, build) over one that only shows in one. A real movie had two "
     "bald men and most of its prompts said just 'the bald man'; the model "
     "mixed them up from clip to clip for the whole film. "
+    "CAST LIST: alongside the transitions, output `characters` — the "
+    "movie's cast: one entry per distinct person (or recurring "
+    "animal/vehicle subject) visible in the frames, each with a short slug "
+    "id and the exact epithet to use for them. When the user message "
+    "already PROVIDES a cast list, those epithets are FIXED: use each one "
+    "verbatim, word for word, in every motion prompt that mentions that "
+    "person — never shorten it, reword it, or invent a fresh epithet for "
+    "someone already in the cast — and return in `characters` ONLY people "
+    "missing from the provided cast (an empty array when nobody is new). "
+    "When no cast is provided, build it: choose each epithet by the rules "
+    "above (visible appearance only, distinguishing, 2-5 words), and "
+    "prefer traits that stay stable across the whole movie — hair or its "
+    "absence, build, age band, eyewear — over clothing that changes "
+    "between scenes. When a person's look in one pair has moved on from "
+    "their epithet (a new outfit, an older age), keep the epithet and add "
+    "the change inline: 'the bald man in pink sunglasses, now in a winter "
+    "coat'. "
     "SAY WHERE PEOPLE ARE AND WHICH WAY THEY GO: the model matches regions "
     "of the start frame to regions of the end frame, so screen position is "
     "the strongest anchor available. Whenever anyone enters or leaves, give "
@@ -384,7 +401,11 @@ _MODE_A_SYSTEM = (
     "narrate the way there. Keep every motion_prompt in "
     "present tense; preserve each person's identity, wardrobe, and "
     "environment except for the changes visible between the frames; no hard "
-    "cuts, no people who appear in neither frame, no on-screen text. Do not "
+    "cuts, no people who appear in neither frame, no NEW text appearing on "
+    "screen. Text that is ALREADY part of a frame — a shop sign, a birthday "
+    "banner, a logo on a shirt, a book cover — is part of the scene and "
+    "stays: never ask for it to be removed, hidden, or changed, and treat it "
+    "like any other scenery. Do not "
     "mention frame numbers or that these are AI-generated images. "
     "SAME PERSON, ONE PROTAGONIST: when both frames show the same individual "
     "— even at a different age, in different clothes, or in a new setting — "
@@ -507,9 +528,24 @@ _TRANSITIONS_SCHEMA: dict[str, Any] = {
                 ],
                 "additionalProperties": False,
             },
-        }
+        },
+        # The movie's cast (see CAST LIST in _MODE_A_SYSTEM): built on the
+        # first full plan; later calls receive the existing cast in the
+        # instruction and return only people missing from it (usually []).
+        "characters": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "epithet": {"type": "string"},
+                },
+                "required": ["id", "epithet"],
+                "additionalProperties": False,
+            },
+        },
     },
-    "required": ["transitions"],
+    "required": ["transitions", "characters"],
     "additionalProperties": False,
 }
 
@@ -529,6 +565,40 @@ def _motion_word_limit(duration: int) -> int:
     and-dime borderline ones.
     """
     return _MOTION_WORD_LIMITS.get(duration, max(_MOTION_WORD_LIMITS.values()))
+
+
+def _merge_cast(
+    existing: Optional[list[Character]], returned: Any
+) -> list[Character]:
+    """The storyboard's cast plus genuinely new people the model reported.
+
+    Existing entries are never modified, reordered, or dropped — their
+    epithets are already baked into planned motion prompts, so rewriting one
+    here would silently split a person's identity across the movie. Returned
+    entries are appended only when they carry a usable epithet and neither
+    their id nor their epithet collides with the cast (models sometimes
+    re-list the provided cast despite being told not to; that must not
+    duplicate anyone).
+    """
+    cast = list(existing or [])
+    seen_ids = {c.id for c in cast}
+    seen_epithets = {c.epithet.strip().lower() for c in cast}
+    for item in returned if isinstance(returned, list) else []:
+        if not isinstance(item, dict):
+            continue
+        epithet = str(item.get("epithet") or "").strip()
+        if not epithet or epithet.lower() in seen_epithets:
+            continue
+        cid = str(item.get("id") or "").strip()
+        if not cid:
+            cid = "-".join(epithet.lower().split())[:40]
+        if cid in seen_ids:
+            # Same id but a different epithet: the saved cast wins.
+            continue
+        cast.append(Character(id=cid, epithet=epithet))
+        seen_ids.add(cid)
+        seen_epithets.add(epithet.lower())
+    return cast
 
 
 def _realign_by_pair_index(items: list[Any], count: int) -> list[Any]:
@@ -777,23 +847,32 @@ class OpenAIClient:
         style_prompt: str,
         default_duration: Optional[int] = None,
         global_context: str = "",
-    ) -> list[tuple[str, int, str]]:
+        cast: Optional[list[Character]] = None,
+    ) -> tuple[list[tuple[str, int, str]], list[Character]]:
         """Vision-analyze consecutive frames and plan each clip between them.
 
-        Returns one ``(motion_prompt, duration, sound_prompt)`` per consecutive
-        pair — exactly ``len(frames) - 1`` items, in frame order. Durations are
+        Returns ``(plans, cast)``: one ``(motion_prompt, duration,
+        sound_prompt)`` per consecutive pair — exactly ``len(frames) - 1``
+        items, in frame order — plus the movie's cast list. Durations are
         derived from the model's per-pair difficulty ratings (see
-        ``_coerce_transition_plans``). The result is always fully populated:
+        ``_coerce_transition_plans``). The plans are always fully populated:
         any pair the model omits or returns malformed falls back to
         ``config.motion_prompt`` and the short duration, so the caller can
         rely on the length and types.
+
+        ``cast`` is the storyboard's existing character list. When given, its
+        epithets are FIXED for the model (used verbatim in the new prompts —
+        the anchor that keeps a targeted re-plan naming people the same way
+        the rest of the movie does), and the returned cast is the given one
+        plus any genuinely new people the model saw. When None/empty the
+        model builds the cast from scratch.
 
         When ``default_duration`` is set (5 or 10) every clip is forced to that
         length instead of one chosen per pair.
         """
         n = len(frames)
         if n < 2:
-            return []
+            return [], list(cast or [])
         client = self._ensure_client()
 
         instruction = (
@@ -805,7 +884,8 @@ class OpenAIClient:
             '  "transitions": [\n'
             '    {"pair_index": int, "difficulty": 1-5, '
             '"motion_prompt": str, "sound_prompt": str}, ...\n'
-            "  ]\n"
+            "  ],\n"
+            '  "characters": [{"id": str, "epithet": str}, ...]\n'
             "}\n"
             f"The transitions array must have exactly {n - 1} items, in frame "
             "order. pair_index anchors each item to its frames: the item with "
@@ -819,6 +899,23 @@ class OpenAIClient:
         if default_duration:
             instruction += (
                 f" Override: use duration = {default_duration} for every clip."
+            )
+        if cast:
+            # A cast built by an earlier planning call (or hand-edited).
+            # Restating it per call is what keeps epithets identical across
+            # separately planned pairs — a targeted re-plan sees only its own
+            # frames and would otherwise invent a fresh name for someone the
+            # rest of the movie calls something else.
+            roster = "\n".join(f"- {c.id}: {c.epithet}" for c in cast)
+            instruction += (
+                "\n\nThe movie's CAST LIST (fixed — use these epithets "
+                "verbatim in every motion prompt, and return in `characters` "
+                "only people missing from this list):\n" + roster
+            )
+        else:
+            instruction += (
+                "\n\nNo cast list exists yet — build `characters` per the "
+                "CAST LIST rules."
             )
         if global_context.strip():
             # The user's whole-movie guidance (storyboard.global_motion_prompt).
@@ -862,9 +959,9 @@ class OpenAIClient:
             return resp.choices[0].message.content or "{}"
 
         raw = self._retry(_call, "OpenAI analyze_frame_transitions")
-        return self._coerce_transition_plans(
-            json.loads(raw), n - 1, default_duration
-        )
+        data = json.loads(raw)
+        plans = self._coerce_transition_plans(data, n - 1, default_duration)
+        return plans, _merge_cast(cast, data.get("characters"))
 
     def _coerce_transition_plans(
         self, data: dict[str, Any], count: int, default_duration: Optional[int]

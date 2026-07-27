@@ -27,6 +27,25 @@ class Frame(BaseModel):
     styled_hash: str = ""
 
 
+class Character(BaseModel):
+    """One recurring person (or animal/vehicle subject) in the movie's cast.
+
+    ``epithet`` is the exact appearance-based phrase every motion prompt uses
+    for this person ('the bald man in pink sunglasses'). The planner builds
+    the cast on the first full plan and then reuses each epithet VERBATIM in
+    every later planning call — including targeted re-plans that only see a
+    few frames, which otherwise invent a fresh epithet for someone the rest
+    of the movie names differently (the video model then can't tell it's the
+    same person from clip to clip). Hand-editable like everything else in
+    storyboard.json; edits apply to future planning, not to already-planned
+    prompts.
+    """
+
+    id: str
+    epithet: str
+    notes: str = ""
+
+
 class Transition(BaseModel):
     id: str
     start_frame: str
@@ -55,6 +74,11 @@ class Storyboard(BaseModel):
     # separate people, never blend one into the other." Keep it to a sentence
     # or two: it spends part of every clip's prompt budget.
     global_motion_prompt: str = ""
+    # The movie's cast (see Character). Kept stable across storyboard runs;
+    # deliberately NOT clip-defining: epithets are baked into motion prompts
+    # at planning time, so editing the cast changes future plans only and
+    # must not mark rendered clips stale.
+    characters: list[Character] = Field(default_factory=list)
     frames: list[Frame]
     transitions: list[Transition] = Field(default_factory=list)
 

@@ -338,8 +338,23 @@ clip interpolates from one styled frame to the next):
 - **Kling 3.0 on fal:** set `fal_model_id` to
   `"fal-ai/kling-video/v3/pro/image-to-video"`, `fal_start_frame_field` to
   `"start_image_url"`, and `fal_end_frame_field` to `"end_image_url"`.
-- Add extra model-specific args via `fal_extra_arguments`
-  (e.g. `{"negative_prompt": "blur, distortion, low quality"}`).
+- `fal_negative_prompt` — sent as the model's `negative_prompt` when
+  non-empty. The shared config ships a preset targeting artifacts seen on
+  real renders (face distortion, morphing, flicker); set it to `""`
+  (globally or per project) to send none. It names only *generated overlay*
+  text (`text overlay`, `subtitles`, `captions`, `watermark`) — never a bare
+  `text`, because text that is genuinely in a photo (a shop sign, a birthday
+  banner, a logo on a shirt) is part of the scene and must survive the clip.
+- `fal_cfg_scale` — sent as `cfg_scale` when set (Kling: `0`–`1`, provider
+  default `0.5`). Higher = stricter prompt adherence, at some cost to motion
+  coherence. Leave `null` to use the provider default.
+- Add extra model-specific args via `fal_extra_arguments`; they are applied
+  last, so they override the fields above (handy for per-project
+  experiments).
+- Changing `fal_negative_prompt`, `fal_cfg_scale`, or `fal_extra_arguments`
+  changes the render **fingerprint**: a pending, not-yet-collected render
+  submitted under the old settings can no longer be resumed (the next render
+  buys a fresh clip). Collect pending renders before flipping these knobs.
 
 ---
 
@@ -388,6 +403,26 @@ and a younger girl; they are separate people, never blend one into the
 other."` Keep it to a sentence or two — it spends part of every clip's word
 budget. Editing it does **not** invalidate already-rendered clips; re-render
 with `--clip ID` (or `--force`) to apply it to existing ones.
+
+**The cast — `characters`:** the storyboard also carries a top-level
+`characters` list, one entry per person the planner saw
+(`{"id": "bald-man", "epithet": "the bald man in pink sunglasses"}`). The
+video model sees only pixels — it knows no names — so every motion prompt
+refers to people by a short appearance-only epithet, and the cast is what
+keeps that wording **identical across the whole movie**. It matters because
+`storyboard` re-plans only the pairs that changed: a targeted re-plan sees
+just its own two frames and would otherwise invent a fresh epithet for
+someone the rest of the film already calls something else. The saved cast
+rides along with every planning call, its epithets fixed; the planner adds
+only people who are genuinely new.
+
+Hand-edit an epithet to correct it (make it more distinguishing, fix a
+mis-read feature) — the panel has a Cast editor next to the global motion
+prompt, or edit `storyboard.json` directly. Because epithets are baked into
+a motion prompt when its pair is *planned*, editing the cast changes future
+plans only: it never marks a rendered clip outdated, and existing prompts
+keep their old wording until you re-plan those clips
+(`storyboard --replan-clip ID` / the panel's re-plan button).
 
 ### `render`
 

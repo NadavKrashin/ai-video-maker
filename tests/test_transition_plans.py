@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from ai_video_maker.clients.openai_client import (
     OpenAIClient,
+    _merge_cast,
     _motion_word_limit,
     _realign_by_pair_index,
 )
+from ai_video_maker.models import Character
 
 
 def _plans(config, data, count, default_duration=None):
@@ -239,6 +241,103 @@ class TestPaceAndBeatPromptRules:
     def test_reword_keeps_pace_anchors(self):
         from ai_video_maker.clients import openai_client as oc
         assert "Pace anchors" in oc._REWORD_MOTION_SYSTEM
+
+
+class TestMergeCast:
+    """The cast list is the movie's identity anchor across planning calls.
+
+    Reconcile re-plans only dirty pairs, so a later targeted call sees just
+    a couple of frames. Feeding it the saved cast keeps its prompts naming
+    people exactly as the rest of the movie does — but only if merging never
+    rewrites what earlier prompts already baked in.
+    """
+
+    def _cast(self, *pairs):
+        return [Character(id=i, epithet=e) for i, e in pairs]
+
+    def test_new_people_are_appended(self):
+        existing = self._cast(("bald-man", "the bald man in pink sunglasses"))
+        merged = _merge_cast(existing, [{"id": "girl", "epithet": "the small girl"}])
+        assert [(c.id, c.epithet) for c in merged] == [
+            ("bald-man", "the bald man in pink sunglasses"),
+            ("girl", "the small girl"),
+        ]
+
+    def test_existing_epithets_are_never_rewritten(self):
+        # The saved epithet is already inside planned motion prompts; letting
+        # a later call "improve" it would split one person's identity across
+        # the movie — exactly the drift the cast exists to prevent.
+        existing = self._cast(("bald-man", "the bald man in pink sunglasses"))
+        merged = _merge_cast(
+            existing, [{"id": "bald-man", "epithet": "the man"}]
+        )
+        assert [c.epithet for c in merged] == ["the bald man in pink sunglasses"]
+
+    def test_recycled_cast_does_not_duplicate_anyone(self):
+        # Models re-list the provided cast despite being told not to.
+        existing = self._cast(("bald-man", "the bald man"))
+        merged = _merge_cast(existing, [{"id": "other", "epithet": "The Bald Man"}])
+        assert len(merged) == 1
+
+    def test_missing_id_is_derived_from_the_epithet(self):
+        merged = _merge_cast([], [{"epithet": "the woman in the red dress"}])
+        assert len(merged) == 1 and merged[0].id
+
+    def test_junk_entries_are_skipped(self):
+        merged = _merge_cast([], ["nonsense", {"id": "x"}, {"epithet": "  "}, 7])
+        assert merged == []
+
+    def test_no_returned_cast_keeps_the_existing_one(self):
+        existing = self._cast(("a", "the tall man"))
+        assert _merge_cast(existing, None) == existing
+
+
+class TestInSceneTextIsPreserved:
+    """Text that is IN the photo stays; only generated text is unwanted.
+
+    User call (2026-07-26): a shop sign, a birthday banner or a logo on a
+    shirt is part of the scene and must survive the clip — the pipeline may
+    only suppress text the video model invents. Easy to undo by tightening
+    an artifact list, so both halves are pinned.
+    """
+
+    def test_planner_protects_text_already_in_the_frames(self):
+        from ai_video_maker.clients import openai_client as oc
+        s = oc._MODE_A_SYSTEM
+        assert "no NEW text appearing on screen" in s
+        assert "birthday banner" in s
+
+    def test_shipped_negative_prompt_targets_overlays_not_scene_text(self):
+        # The repo's live config is the one that renders real orders, so it
+        # is what this rule has to hold for. A bare "text"/"on-screen text"
+        # term would tell the model to erase a sign that is in the photo.
+        import json
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        negative = json.loads(
+            (root / "config.json").read_text(encoding="utf-8")
+        )["fal_negative_prompt"]
+        terms = {t.strip() for t in negative.split(",")}
+        assert "text overlay" in terms and "watermark" in terms
+        assert "text" not in terms and "on-screen text" not in terms
+
+
+class TestCastPromptRules:
+    """The CAST LIST contract lives in the planner prompt; pin its presence
+    the way the other hard-won identity rules are pinned."""
+
+    def test_planner_has_the_cast_list_contract(self):
+        from ai_video_maker.clients import openai_client as oc
+        s = oc._MODE_A_SYSTEM
+        assert "CAST LIST" in s
+        assert "verbatim" in s
+
+    def test_cast_is_part_of_the_planner_schema(self):
+        from ai_video_maker.clients import openai_client as oc
+        props = oc._TRANSITIONS_SCHEMA["properties"]
+        assert "characters" in props
+        assert "characters" in oc._TRANSITIONS_SCHEMA["required"]
 
 
 class TestDistinguishingEpithetRules:
