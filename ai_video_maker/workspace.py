@@ -70,6 +70,16 @@ class Workspace:
         return self.root / "logs"
 
     @property
+    def published_dir(self) -> Path:
+        """Archive of every movie version delivered to the customer.
+
+        `final_video.mp4` is rebuilt in place by each combine, so without a
+        copy taken at publish time the bytes a customer was actually sent
+        survive only in Cloudinary. Created on the first publish (not by
+        mkdirs) so untouched projects stay clean."""
+        return self.output_dir / "published"
+
+    @property
     def failed_jobs_dir(self) -> Path:
         return self.root / "failed_jobs"
 

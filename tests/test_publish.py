@@ -139,7 +139,9 @@ class TestPublicationRecord:
 
     def test_nothing_published_yet(self, tmp_path, workspace):
         state = publish_state(tmp_path / "none.json", _final_video(workspace))
-        assert state == {"count": 0, "latest": None, "changed_since": False}
+        assert state == {
+            "count": 0, "latest": None, "versions": [], "changed_since": False,
+        }
 
 
 class _FakeCloudinary:
@@ -310,6 +312,90 @@ class TestCmdPublish:
         assert entry["version"] == 1
         assert entry["order_folder"] == FOLDER
         assert entry["url"].endswith("final_v1.mp4")
+
+
+class TestDeliveredCopiesAreKeptLocally:
+    """Every published version is archived as output/published/final_vN.mp4.
+
+    output/final_video.mp4 is rebuilt IN PLACE by the next combine, so without
+    this copy the bytes a customer was actually sent survive only in
+    Cloudinary — there is no way to see, re-send or compare an earlier cut.
+    """
+
+    def _publish(self, make_pipeline, workspace, monkeypatch, versions=(), **options):
+        monkeypatch.setattr(
+            CloudinaryClient, "from_config",
+            staticmethod(lambda c: _FakeCloudinary(list(versions))),
+        )
+        pipeline = make_pipeline(**options)
+        pipeline.confirm = lambda lines, question: True
+        pipeline.cmd_publish()
+        return pipeline
+
+    def test_the_delivered_bytes_are_copied_next_to_the_movie(
+        self, make_pipeline, workspace, monkeypatch
+    ):
+        _ordered(workspace)
+        _final_video(workspace, b"the first cut")
+        self._publish(make_pipeline, workspace, monkeypatch)
+
+        copy = workspace.published_dir / "final_v1.mp4"
+        assert copy.read_bytes() == b"the first cut"
+        entry = read_publications(workspace.published_file)[0]
+        assert entry["local_file"] == "output/published/final_v1.mp4"
+
+    def test_each_version_is_kept_side_by_side(
+        self, make_pipeline, workspace, monkeypatch
+    ):
+        _ordered(workspace)
+        _final_video(workspace, b"the first cut")
+        self._publish(make_pipeline, workspace, monkeypatch)
+        # A fix, a re-combine (which REPLACES final_video.mp4), another publish.
+        _final_video(workspace, b"the second cut, after a fix")
+        self._publish(make_pipeline, workspace, monkeypatch, versions=[1])
+
+        assert (workspace.published_dir / "final_v1.mp4").read_bytes() == b"the first cut"
+        assert (workspace.published_dir / "final_v2.mp4").read_bytes() == (
+            b"the second cut, after a fix"
+        )
+
+    def test_an_existing_copy_is_never_overwritten(
+        self, make_pipeline, workspace, monkeypatch
+    ):
+        _ordered(workspace)
+        _final_video(workspace, b"new bytes")
+        leftover = workspace.published_dir / "final_v1.mp4"
+        leftover.parent.mkdir(parents=True, exist_ok=True)
+        leftover.write_bytes(b"a leftover from a half-finished publish")
+        self._publish(make_pipeline, workspace, monkeypatch)
+        assert leftover.read_bytes() == b"a leftover from a half-finished publish"
+
+    def test_a_failed_copy_never_sinks_a_delivery_that_happened(
+        self, make_pipeline, workspace, monkeypatch
+    ):
+        # Disk full at exactly the wrong moment: the movie IS in the customer's
+        # folder, so the publish must be recorded — only the archive is missing.
+        _ordered(workspace)
+        _final_video(workspace)
+
+        def _no_space(*args, **kwargs):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr("ai_video_maker.runner.shutil.copy2", _no_space)
+        self._publish(make_pipeline, workspace, monkeypatch)
+
+        entry = read_publications(workspace.published_file)[0]
+        assert entry["version"] == 1 and entry["local_file"] == ""
+
+    def test_archiving_can_be_switched_off(self, make_pipeline, workspace, monkeypatch,
+                                           config):
+        _ordered(workspace)
+        _final_video(workspace)
+        object.__setattr__(config, "publish_keep_local_copy", False)
+        self._publish(make_pipeline, workspace, monkeypatch)
+
+        assert not workspace.published_dir.exists()
+        assert read_publications(workspace.published_file)[0]["local_file"] == ""
 
 
 class TestSnapshotPublished:

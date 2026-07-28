@@ -146,6 +146,11 @@ class Config(BaseModel):
     # own folder, named <basename>_v1, <basename>_v2, ... Publishing never
     # replaces anything: each publish takes the next free version number.
     cloudinary_publish_basename: str = "final"
+    # Keep a copy of every delivered version in output/published/ as well.
+    # output/final_video.mp4 is rebuilt in place by the next combine, so this
+    # is the only local record of what a customer was actually sent — at the
+    # cost of one movie's disk space (100-300 MB) per published version.
+    publish_keep_local_copy: bool = True
 
     # --- Firebase order ledger (Firestore) ---------------------------------- #
     # The frontend also writes each paid order to Firestore (collection

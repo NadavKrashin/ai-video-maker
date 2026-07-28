@@ -554,16 +554,18 @@ function CombinePanel({
 // order folder. The name it will be saved under is fetched from the server
 // (which asks Cloudinary what is already there) and shown for approval BEFORE
 // anything is uploaded — see onPublish in ProjectDetail.
-function PublishPanel({ locked, info, onPublish, publishing }) {
+function PublishPanel({ project, locked, info, onPublish, publishing }) {
   const published = info.published || {};
   const latest = published.latest;
+  const versions = published.versions || [];
   return (
     <div>
       <PanelIntro>
         Uploads the finished movie into this order's own Cloudinary folder,
         next to the customer's photos. Nothing already there is ever replaced
         or deleted: each publish is saved as the next version — final_v1,
-        final_v2, final_v3…
+        final_v2, final_v3… A copy of every delivered version is also kept
+        here, under the project's output/published/ folder.
       </PanelIntro>
       {!published.publishable && (
         <Alert color="gray" variant="light" mb="sm">
@@ -575,12 +577,42 @@ function PublishPanel({ locked, info, onPublish, publishing }) {
         <Text size="sm" mb="xs">
           Last published: <b>v{latest.version}</b>
           {latest.published_at ? ` on ${localTime(latest.published_at)}` : ''}
-          {latest.url && (
-            <> — <a href={latest.url} target="_blank" rel="noreferrer">open in Cloudinary</a></>
-          )}
           {published.changed_since
             && ' · the final video has been rebuilt since, so publishing now adds a new version.'}
         </Text>
+      )}
+      {/* Every delivery, newest first. The local copy matters because
+          output/final_video.mp4 is overwritten by the next Combine — this is
+          the only way back to what an earlier customer actually received. */}
+      {versions.length > 0 && (
+        <Stack gap={4} mb="sm">
+          {versions.map((v) => (
+            <Group key={v.version} gap="xs" wrap="nowrap">
+              <Badge variant="light" size="sm">v{v.version}</Badge>
+              <Text size="xs" c="dimmed" style={{ flex: 1 }} truncate
+                title={v.public_id}>
+                {v.published_at ? localTime(v.published_at) : ''} · {v.public_id}
+              </Text>
+              {v.url && (
+                <Button component="a" size="compact-xs" variant="subtle"
+                  href={v.url} target="_blank" rel="noreferrer">
+                  Cloudinary
+                </Button>
+              )}
+              {v.local_exists ? (
+                <Button component="a" size="compact-xs" variant="light"
+                  href={fileUrl(project, 'published', v.local_file.split('/').pop())}
+                  download={`${project}_v${v.version}.mp4`}>
+                  Download copy
+                </Button>
+              ) : (
+                <Text size="xs" c="dimmed" title="Only the Cloudinary copy exists">
+                  no local copy
+                </Text>
+              )}
+            </Group>
+          ))}
+        </Stack>
       )}
       <Group align="flex-end">
         <Text size="xs" c="dimmed" style={{ flex: 1 }}>
@@ -1012,6 +1044,9 @@ export default function ProjectDetail({ name, onBack }) {
           ...(plan.latest && !plan.changed_since_last
             ? [`The final video has not changed since v${plan.latest.version} — this publishes the same movie again as a new version.`]
             : []),
+          ...(plan.keeps_local_copy
+            ? [`A copy of exactly what is delivered is also kept here, as output/published/${plan.filename}.`]
+            : []),
           'Free of API credits; it uses your Cloudinary storage.'
         ],
         cost: 'free',
@@ -1147,7 +1182,8 @@ export default function ProjectDetail({ name, onBack }) {
       onFetchMusicUrl={fetchMusicUrl} musicBusy={musicBusy}
       letterText={snap.letter_text || ''} onSaveLetter={saveLetter}
       letterBusy={letterBusy} />,
-    publish: <PublishPanel locked={locked} info={info} onPublish={startPublish}
+    publish: <PublishPanel project={name} locked={locked} info={info}
+      onPublish={startPublish}
       publishing={busyAction === 'publish-preview' || busyAction === 'publish'} />,
     runall: <RunAllPanel ask={ask} locked={locked} info={info} />
   };

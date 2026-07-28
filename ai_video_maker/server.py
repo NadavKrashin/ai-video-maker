@@ -1097,6 +1097,9 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         "generated": lambda ws: ws.generated_frames_dir,
         "clips": lambda ws: ws.clips_dir,
         "output": lambda ws: ws.output_dir,
+        # Archived deliveries (output/published/final_vN.mp4) — its own kind
+        # because the file route deliberately refuses path separators.
+        "published": lambda ws: ws.published_dir,
         "storyboard": lambda ws: ws.storyboard_dir,
     }
 

@@ -118,3 +118,24 @@ class TestPublishAction:
         from ai_video_maker.server import _ALLOWED_OPTIONS
 
         assert "publish_as" in _ALLOWED_OPTIONS
+
+
+class TestArchivedDeliveriesAreDownloadable:
+    """The panel offers each delivered version for download from the archive."""
+
+    def test_an_archived_version_is_served(self, client):
+        ws = Workspace.for_project(PROJECT)
+        ws.published_dir.mkdir(parents=True, exist_ok=True)
+        (ws.published_dir / "final_v1.mp4").write_bytes(b"the delivered cut")
+
+        res = client.get(
+            f"/api/projects/{PROJECT}/files/published/final_v1.mp4", headers=AUTH
+        )
+        assert res.status_code == 200 and res.content == b"the delivered cut"
+
+    def test_paths_cannot_escape_the_archive(self, client):
+        res = client.get(
+            f"/api/projects/{PROJECT}/files/published/..%2Ffinal_video.mp4",
+            headers=AUTH,
+        )
+        assert res.status_code == 404

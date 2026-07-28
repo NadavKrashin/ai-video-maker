@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -2019,6 +2020,9 @@ class Pipeline:
             # version), but whoever approves it should know it adds nothing.
             "changed_since_last": state["changed_since"],
             "latest": state["latest"],
+            # Whether the delivered bytes will also be archived locally, so
+            # the confirmation can say what actually happens on this machine.
+            "keeps_local_copy": self.config.publish_keep_local_copy,
         }
 
     def cmd_publish(self) -> None:
@@ -2076,6 +2080,11 @@ class Pipeline:
                 *already,
                 *unchanged,
                 "Nothing already in Cloudinary is replaced or deleted.",
+                *(
+                    [f"A copy of exactly what is delivered is kept in "
+                     f"{ws.published_dir.relative_to(ws.root)}/."]
+                    if self.config.publish_keep_local_copy else []
+                ),
             ],
             f"Publish the movie as {plan['filename']}? [y/N] ",
             "Publish skipped. Deliver it later with:\n  "
@@ -2097,10 +2106,45 @@ class Pipeline:
             url=published.url,
             version=published.version,
             video=ws.final_video,
+            local_file=self._archive_published_movie(published.version),
         )
         logger.info(
             "Published v%d: %s", published.version, published.url or published.public_id,
         )
+
+    def _archive_published_movie(self, version: int) -> str:
+        """Keep the delivered bytes as output/published/<basename>_vN.mp4.
+
+        The next combine REPLACES output/final_video.mp4, so without this copy
+        the only remaining record of what a customer was sent is the file in
+        their Cloudinary folder. Taken after the upload succeeded, and never
+        allowed to sink a delivery that already happened: a failure here (disk
+        full is the realistic one) is a warning and an empty record entry, not
+        an error. Returns the project-relative path, or "" when there is none.
+        """
+        ws = self.workspace
+        if not self.config.publish_keep_local_copy:
+            return ""
+        dst = ws.published_dir / (
+            f"{self.config.cloudinary_publish_basename}_v{version}.mp4"
+        )
+        if dst.exists():
+            # Version numbers are never reused, so this can only be a leftover
+            # from a half-finished publish — keep it rather than overwrite it.
+            logger.warning("Local copy %s already exists; leaving it untouched.", dst)
+            return str(dst.relative_to(ws.root))
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ws.final_video, dst)
+        except OSError as exc:
+            logger.warning(
+                "Published, but could not keep a local copy at %s: %s. The "
+                "delivered movie is safe in Cloudinary; only the local "
+                "archive is missing.", dst, exc,
+            )
+            return ""
+        logger.info("Kept a copy of exactly what was delivered: %s", dst)
+        return str(dst.relative_to(ws.root))
 
     # ------------------------------ status step --------------------------- #
     def snapshot(self) -> dict[str, Any]:
@@ -2404,6 +2448,12 @@ class Pipeline:
                 f"  Published        : v{published['latest']['version']} — "
                 f"{published['latest']['public_id']}{note}"
             )
+            kept = [v for v in published["versions"] if v["local_exists"]]
+            if kept:
+                print(
+                    f"  Delivered copies : {len(kept)} kept in {ws.published_dir} "
+                    f"({', '.join(Path(v['local_file']).name for v in kept)})"
+                )
         elif published["publishable"] and final.exists():
             print("  Published        : not yet delivered to the order's Cloudinary folder")
         if snap["has_failed_jobs"]:

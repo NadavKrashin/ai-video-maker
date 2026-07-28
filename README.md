@@ -92,6 +92,17 @@ shown for approval is *pinned into the job*: if someone published from
 elsewhere in between, the job stops rather than uploading under a name nobody
 approved.
 
+**Every delivered version is also kept locally**, as
+`projects/<name>/output/published/final_vN.mp4`. `output/final_video.mp4` is
+rebuilt *in place* by the next Combine, so without that copy the bytes a
+customer actually received would exist only in Cloudinary — you could not
+re-send, re-check or compare an earlier cut. The copy is taken after the
+upload succeeds and can never sink a delivery that already happened: if it
+fails (a full disk), the publish is still recorded and the log says the
+archive is missing. Each version is downloadable from the panel's Publish
+step. Set `publish_keep_local_copy: false` in `config.json` to skip the
+copies — a movie is 100–300 MB per version.
+
 `status` and the panel show what has been delivered, and flag a movie that has
 been re-combined since its last publish (`next_step: publish`). Only projects
 created by `ingest` can be published — a hand-made project has no order folder
@@ -686,6 +697,7 @@ Everything below lives inside the project workspace, `projects/<name>/`:
 | `generated_frames/` | Idea-based generated frames (`001.png`, …) |
 | `clips/` | Rendered clips (`001_to_002.mp4`, …) |
 | `output/` | `final_video.mp4` + `music_custom.mp3` (the music track you uploaded, when you supplied one) |
+| `output/published/` | A copy of every version delivered to the customer (`final_v1.mp4`, …) — `final_video.mp4` itself is overwritten by the next combine |
 | `storyboard/` | `storyboard.json` (editable source of truth), `storyboard.md` (readable view), `preview.html` (visual contact sheet — open it in a browser) |
 | `logs/` | Run logs + `state.json` |
 | `order.json` | Which Cloudinary order this project came from (written by `ingest`) |

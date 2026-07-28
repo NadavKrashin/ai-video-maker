@@ -394,6 +394,16 @@ confirmation gates.
   chunked (movies exceed Cloudinary's single-request cap) and the cloud's
   `folder_mode` decides whether `asset_folder` rides along. Pinned by
   tests/test_publish.py + tests/test_server_publish.py.
+- ...AND EVERY DELIVERED VERSION IS ARCHIVED LOCALLY as
+  `output/published/final_vN.mp4` (`_archive_published_movie`, config
+  `publish_keep_local_copy`, default on). `output/final_video.mp4` is
+  rebuilt IN PLACE by the next combine, so before this the bytes a customer
+  actually received survived only in Cloudinary. The copy happens AFTER the
+  upload succeeds and may never sink a delivery that already happened — an
+  OSError (full disk) is a warning plus an empty `local_file` in
+  published.json, never an exception — and an existing archive file is left
+  untouched, never overwritten. Served to the panel through the media route
+  as its own kind (`published`), since that route refuses path separators.
 - The **Firestore order ledger** (`clients/firebase_client.py`, REST +
   google-auth, NOT the heavy firebase-admin SDK) is the watcher's order
   source when a service-account key exists (FIREBASE_SERVICE_ACCOUNT in
