@@ -70,6 +70,16 @@ class Workspace:
         return self.root / "logs"
 
     @property
+    def published_dir(self) -> Path:
+        """Archive of every movie version delivered to the customer.
+
+        `final_video.mp4` is rebuilt in place by each combine, so without a
+        copy taken at publish time the bytes a customer was actually sent
+        survive only in Cloudinary. Created on the first publish (not by
+        mkdirs) so untouched projects stay clean."""
+        return self.output_dir / "published"
+
+    @property
     def failed_jobs_dir(self) -> Path:
         return self.root / "failed_jobs"
 
@@ -108,6 +118,12 @@ class Workspace:
         """Which Cloudinary web order this project came from (written by
         `ingest`); absent for hand-made projects."""
         return self.root / "order.json"
+
+    @property
+    def published_file(self) -> Path:
+        """Delivery history: every movie version published back to the order's
+        Cloudinary folder (written by `publish`). See publish.py."""
+        return self.root / "published.json"
 
     @property
     def default_storyboard_json(self) -> Path:

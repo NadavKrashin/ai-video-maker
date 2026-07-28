@@ -6,7 +6,7 @@ One process serves four things:
   is mounted at ``/`` when present, so http://host:8300/ is the panel);
 * the **admin API** — orders, per-project status (``Pipeline.snapshot()``),
   storyboard read/edit, media files, photo upload, and actions (ingest/
-  storyboard/render/audio/combine/run) that run as background jobs;
+  storyboard/render/audio/combine/publish/run) that run as background jobs;
 * the **job runner** — a single worker thread executing one pipeline command
   at a time (an order's steps take minutes and the volume is orders-per-day,
   so serial keeps things simple and safe);
@@ -80,7 +80,9 @@ from .workspace import PROJECT_ROOT, PROJECTS_DIR, Workspace
 # and the RunOptions fields a request body may set — every per-run knob the
 # CLI has, but still an explicit whitelist so a request can't reach for
 # constructor internals.
-_ALLOWED_COMMANDS = {"ingest", "storyboard", "render", "audio", "combine", "run"}
+_ALLOWED_COMMANDS = {
+    "ingest", "storyboard", "render", "audio", "combine", "publish", "run",
+}
 _ALLOWED_OPTIONS = {f.name for f in dataclasses.fields(RunOptions)}
 
 # Uploads into input_images/ — the same formats a user would drop there.
@@ -693,12 +695,18 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
             except Exception:  # noqa: BLE001 - a broken project can't hide its order
                 return None
             clips = snap.get("clips") or []
+            published = snap.get("published") or {}
             return {
                 "photos": len(snap.get("input_images") or []),
                 "clips_total": len(clips),
                 "clips_rendered": sum(1 for c in clips if c.get("rendered")),
                 "clips_stale": sum(1 for c in clips if c.get("stale")),
                 "final": bool(snap.get("final_video")),
+                # Delivery: the newest movie version sitting in the order's
+                # own Cloudinary folder (0 = never published), and whether the
+                # movie has been rebuilt since it went there.
+                "published": (published.get("latest") or {}).get("version", 0),
+                "publish_changed": bool(published.get("changed_since")),
                 "next_step": snap.get("next_step", ""),
                 "placeholders": len(
                     (snap.get("storyboard") or {}).get("placeholder_transitions")
@@ -954,6 +962,26 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         snap["letter_text"] = read_letter(ws.letter_file)
         return snap
 
+    @app.get("/api/projects/{name}/publish/preview", dependencies=guarded)
+    async def publish_preview(name: str) -> dict[str, Any]:
+        """What publishing this project would upload, and under what name.
+
+        Read-only: it lists the order folder's existing movie versions in
+        Cloudinary and derives the next free name. The panel calls it to fill
+        the confirmation modal, so the name shown for approval is the real one
+        — and the same name is then pinned into the publish job (`publish_as`),
+        which refuses to upload under anything else.
+        """
+        ws = _workspace(name)
+        try:
+            return _pipeline(ws).publish_plan()
+        except PipelineError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - Cloudinary/network surface
+            raise HTTPException(
+                status_code=502, detail=f"Cloudinary lookup failed: {exc}"
+            ) from exc
+
     @app.put("/api/projects/{name}/letter", dependencies=guarded)
     async def save_letter_text(name: str, body: dict[str, Any]) -> dict[str, Any]:
         """Write the closing letter (the UI twin of editing letter.txt).
@@ -1069,6 +1097,9 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         "generated": lambda ws: ws.generated_frames_dir,
         "clips": lambda ws: ws.clips_dir,
         "output": lambda ws: ws.output_dir,
+        # Archived deliveries (output/published/final_vN.mp4) — its own kind
+        # because the file route deliberately refuses path separators.
+        "published": lambda ws: ws.published_dir,
         "storyboard": lambda ws: ws.storyboard_dir,
     }
 

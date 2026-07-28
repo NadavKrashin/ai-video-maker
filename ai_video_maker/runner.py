@@ -7,7 +7,7 @@ orchestration can be driven by the CLI or, later, an API request.
 
 The public surface is one method per lifecycle command (``cmd_ingest``,
 ``cmd_storyboard``, ``cmd_render``, ``cmd_audio``, ``cmd_combine``,
-``cmd_status``, ``cmd_run``),
+``cmd_publish``, ``cmd_status``, ``cmd_run``),
 dispatched via :meth:`Pipeline.execute`. Anything interactive happens through
 the injected ``confirm`` callback — the CLI wires it to a terminal prompt, an
 API caller simply omits it (every gate auto-proceeds) and drives the steps
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -29,6 +30,8 @@ from .clients.audio import AudioClient
 from .clients.cloudinary_client import (
     CloudinaryClient,
     ingest_filename,
+    next_publish_version,
+    publish_public_id,
     resolve_order_folder,
 )
 from .clients.download import download_file
@@ -36,7 +39,7 @@ from .clients.openai_client import OpenAIClient
 from .clients.video import VideoClient
 from .config import Config
 from .errors import PipelineCancelled, PipelineError, StoryboardError
-from .intake import parse_order_folder, write_order_record
+from .intake import parse_order_folder, read_order_record, write_order_record
 from .logging_setup import logger
 from .media.ffmpeg import (
     apply_edge_fades,
@@ -68,6 +71,11 @@ from .media.images import (
 )
 from .models import Character, Frame, Storyboard, Transition
 from .options import RunOptions
+from .publish import (
+    publish_state,
+    published_versions,
+    record_publication,
+)
 from .state import FailedJobStore, StateStore
 from .storyboard_html import write_storyboard_preview
 from .storyboard_md import write_storyboard_markdown
@@ -231,6 +239,7 @@ class Pipeline:
             "render": self.cmd_render,
             "audio": self.cmd_audio,
             "combine": self.cmd_combine,
+            "publish": self.cmd_publish,
             "status": self.cmd_status,
             "run": self.cmd_run,
         }
@@ -1964,6 +1973,179 @@ class Pipeline:
             self.state.set(job_id, "failed")
             self.failed.record(job_id, "music", str(exc))
 
+    # ----------------------------- publish step --------------------------- #
+    def publish_plan(self, client: Optional[CloudinaryClient] = None) -> dict[str, Any]:
+        """What the next publish would upload, and under exactly what name.
+
+        Queries Cloudinary (free, read-only) so the name shown to whoever
+        approves the publish is the real one. The version is one past the
+        HIGHEST already used — as reported by Cloudinary *and* by this
+        project's own published.json, merged — so neither a listing hiccup
+        nor a hand-deleted version can make a publish land on a name that was
+        used before.
+        """
+        ws = self.workspace
+        order = read_order_record(ws.order_file)
+        folder = str((order or {}).get("order_folder", "")).strip()
+        if not folder:
+            raise PipelineError(
+                f"Project '{ws.root.name}' isn't tied to a Cloudinary order "
+                "(no order.json), so there is no order folder to publish into. "
+                "Only projects created by `ingest` can be published."
+            )
+        client = client or CloudinaryClient.from_config(self.config)
+        remote = client.list_published_videos(folder)
+        version = next_publish_version(
+            [p.version for p in remote] + published_versions(ws.published_file)
+        )
+        state = publish_state(ws.published_file, ws.final_video)
+        return {
+            "order_folder": folder,
+            "version": version,
+            "public_id": publish_public_id(
+                client.orders_folder, folder, client.publish_basename, version
+            ),
+            "filename": f"{client.publish_basename}_v{version}.mp4",
+            "final_video": ws.final_video.exists(),
+            "bytes": ws.final_video.stat().st_size if ws.final_video.exists() else 0,
+            "published": [
+                {
+                    "version": p.version, "public_id": p.public_id,
+                    "url": p.url, "bytes": p.bytes, "created_at": p.created_at,
+                }
+                for p in remote
+            ],
+            # False when the movie on disk is byte-for-byte the one already
+            # published: publishing again is allowed (it just makes another
+            # version), but whoever approves it should know it adds nothing.
+            "changed_since_last": state["changed_since"],
+            "latest": state["latest"],
+            # Whether the delivered bytes will also be archived locally, so
+            # the confirmation can say what actually happens on this machine.
+            "keeps_local_copy": self.config.publish_keep_local_copy,
+        }
+
+    def cmd_publish(self) -> None:
+        """Upload the finished movie into its Cloudinary order folder.
+
+        Delivery, not generation: nothing is created and — by construction —
+        nothing in Cloudinary is replaced or removed. Each publish takes the
+        next free version (``final_v1``, ``final_v2``, ...), so a movie that
+        was re-combined after a fix is delivered alongside its predecessor
+        rather than over it.
+        """
+        ws = self.workspace
+        if not ws.final_video.exists():
+            raise PipelineError(
+                f"No final video to publish ({ws.final_video}). Build it "
+                f"first:\n  {self._next_command('combine')}"
+            )
+        client = CloudinaryClient.from_config(self.config)
+        plan = self.publish_plan(client)
+        size_mb = plan["bytes"] / (1024 * 1024)
+
+        # The caller (the panel) may pin the name it showed the user for
+        # approval. If the world moved between the two — someone published
+        # from elsewhere — the approved name is no longer the free one, so
+        # stop rather than upload under a name nobody agreed to.
+        approved = (self.options.publish_as or "").strip()
+        if approved and approved != plan["public_id"]:
+            raise PipelineError(
+                f"The approved name ({approved}) is no longer the next free "
+                f"one — Cloudinary now says {plan['public_id']}. Nothing was "
+                "uploaded; publish again to approve the new name."
+            )
+
+        if self.dry_run:
+            logger.info(
+                "DRY-RUN: would upload %s (%.1f MB) to Cloudinary as %s",
+                ws.final_video.name, size_mb, plan["public_id"],
+            )
+            return
+
+        already = (
+            [f"Already published: {', '.join('v' + str(p['version']) for p in plan['published'])}."]
+            if plan["published"] else ["Nothing has been published for this order yet."]
+        )
+        unchanged = (
+            [] if plan["changed_since_last"] or not plan["latest"]
+            else ["NOTE: the final video hasn't changed since v"
+                  f"{plan['latest']['version']} — this uploads the same movie again."]
+        )
+        if not self._ask(
+            [
+                f"Uploads {ws.final_video} ({size_mb:.1f} MB) to the order's "
+                "Cloudinary folder.",
+                f"It will be saved as:  {plan['public_id']}.mp4",
+                *already,
+                *unchanged,
+                "Nothing already in Cloudinary is replaced or deleted.",
+                *(
+                    [f"A copy of exactly what is delivered is kept in "
+                     f"{ws.published_dir.relative_to(ws.root)}/."]
+                    if self.config.publish_keep_local_copy else []
+                ),
+            ],
+            f"Publish the movie as {plan['filename']}? [y/N] ",
+            "Publish skipped. Deliver it later with:\n  "
+            + self._next_command("publish"),
+        ):
+            return
+
+        logger.info(
+            "Publishing %s (%.1f MB) as %s …",
+            ws.final_video.name, size_mb, plan["public_id"],
+        )
+        published = client.publish_final_video(
+            plan["order_folder"], ws.final_video, plan["version"]
+        )
+        record_publication(
+            ws.published_file,
+            order_folder=plan["order_folder"],
+            public_id=published.public_id,
+            url=published.url,
+            version=published.version,
+            video=ws.final_video,
+            local_file=self._archive_published_movie(published.version),
+        )
+        logger.info(
+            "Published v%d: %s", published.version, published.url or published.public_id,
+        )
+
+    def _archive_published_movie(self, version: int) -> str:
+        """Keep the delivered bytes as output/published/<basename>_vN.mp4.
+
+        The next combine REPLACES output/final_video.mp4, so without this copy
+        the only remaining record of what a customer was sent is the file in
+        their Cloudinary folder. Taken after the upload succeeded, and never
+        allowed to sink a delivery that already happened: a failure here (disk
+        full is the realistic one) is a warning and an empty record entry, not
+        an error. Returns the project-relative path, or "" when there is none.
+        """
+        ws = self.workspace
+        if not self.config.publish_keep_local_copy:
+            return ""
+        dst = ws.published_dir / (
+            f"{self.config.cloudinary_publish_basename}_v{version}.mp4"
+        )
+        if dst.exists():
+            # Version numbers are never reused, so this can only be a leftover
+            # from a half-finished publish — keep it rather than overwrite it.
+            logger.warning("Local copy %s already exists; leaving it untouched.", dst)
+            return str(dst.relative_to(ws.root))
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ws.final_video, dst)
+        except OSError as exc:
+            logger.warning(
+                "Published, but could not keep a local copy at %s: %s. The "
+                "delivered movie is safe in Cloudinary; only the local "
+                "archive is missing.", dst, exc,
+            )
+            return ""
+        logger.info("Kept a copy of exactly what was delivered: %s", dst)
+        return str(dst.relative_to(ws.root))
+
     # ------------------------------ status step --------------------------- #
     def snapshot(self) -> dict[str, Any]:
         """Structured project status: what exists, what's missing, what's next.
@@ -2033,12 +2215,25 @@ class Pipeline:
             )
             stray = [p.name for p in sorted(set(found) - set(expected))]
 
+        # Delivery state, read from published.json only — snapshot() runs for
+        # every project on every panel refresh, so it must never hit the
+        # network (the real Cloudinary listing happens in publish_plan()).
+        published = publish_state(ws.published_file, ws.final_video)
+        order = read_order_record(ws.order_file)
+        published["publishable"] = bool((order or {}).get("order_folder"))
+
         if storyboard is None and not storyboard_error:
             next_step = "storyboard"
         elif storyboard is not None and missing:
             next_step = "render"
         elif storyboard is not None and not ws.final_video.exists():
             next_step = "combine"
+        elif published["publishable"] and (
+            not published["count"] or published["changed_since"]
+        ):
+            # A finished movie that has never been delivered — or one rebuilt
+            # since the last delivery — still owes the customer a version.
+            next_step = "publish"
         else:
             next_step = ""
 
@@ -2065,6 +2260,10 @@ class Pipeline:
             "stray_clips": stray,
             "pending_renders": self.pending_renders(),
             "final_video": ws.final_video.exists(),
+            # Delivery: which movie versions were published back to the
+            # order's Cloudinary folder, and whether the current final video
+            # is newer than the last one delivered.
+            "published": published,
             # The closing letter is a plain text file someone writes by hand;
             # with the file missing or blank the combine toggle silently
             # produces no letter (see _letter_text), so status and the panel
@@ -2241,6 +2440,22 @@ class Pipeline:
 
         final = ws.final_video
         print(f"  Final video      : {'ready — ' + str(final) if final.exists() else 'not built'}")
+
+        published = snap["published"]
+        if published["latest"]:
+            note = " (the final video has changed since)" if published["changed_since"] else ""
+            print(
+                f"  Published        : v{published['latest']['version']} — "
+                f"{published['latest']['public_id']}{note}"
+            )
+            kept = [v for v in published["versions"] if v["local_exists"]]
+            if kept:
+                print(
+                    f"  Delivered copies : {len(kept)} kept in {ws.published_dir} "
+                    f"({', '.join(Path(v['local_file']).name for v in kept)})"
+                )
+        elif published["publishable"] and final.exists():
+            print("  Published        : not yet delivered to the order's Cloudinary folder")
         if snap["has_failed_jobs"]:
             print(f"  Failed jobs      : see {self.failed.path}")
 

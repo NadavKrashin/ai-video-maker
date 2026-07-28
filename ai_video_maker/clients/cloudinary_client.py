@@ -1,7 +1,7 @@
-"""Cloudinary order ingestion: find a paid order's photo folder, list its photos.
+"""Cloudinary order intake and delivery.
 
-The animoments web frontend uploads a customer's photos to Cloudinary right
-after payment, one folder per order:
+*Intake* — the animoments web frontend uploads a customer's photos to
+Cloudinary right after payment, one folder per order:
 
     video-orders/<ORDER-ID>_<customer-name>-<dd.mm.yyyy_HH-MM>/
         1.jpg, 2.jpg, ...      # public_id = the photo's position in the movie
@@ -12,25 +12,42 @@ listed by tag — which works in both of Cloudinary's folder modes (legacy
 fixed folders and dynamic folders) — with a public_id-prefix listing as the
 fallback for old orders that predate tagging.
 
+*Delivery* — the finished movie is uploaded back into that same order folder
+(``publish_final_video``), named ``final_v1``, ``final_v2``, ... Publishing is
+strictly ADDITIVE: the version number is one past the highest already there,
+every upload carries ``overwrite=false``, and a name that turns out to be
+taken fails loudly instead of replacing anything.
+
 Auth: the Admin API uses HTTP basic auth with the account's API key/secret,
 read from the ``CLOUDINARY_API_KEY`` / ``CLOUDINARY_API_SECRET`` env vars
-(.env). The cloud name is public (it appears in the frontend's config) and
-lives in config.json (``cloudinary_cloud_name``).
+(.env); the Upload API is signed with the same secret. The cloud name is
+public (it appears in the frontend's config) and lives in config.json
+(``cloudinary_cloud_name``).
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
+import secrets
+import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Iterable, Optional
 
 import requests
 
 from ..errors import ConfigError, PipelineError
+from ..logging_setup import logger
 from ..retry import with_retries
 
 _API_BASE = "https://api.cloudinary.com/v1_1"
 _PAGE_SIZE = 500  # Admin API max per page
+
+# Uploads are sent in chunks: Cloudinary caps a single upload request (100 MB
+# on most plans) and a finished movie can be bigger, plus a chunked upload
+# survives a wobbly connection far better than one long POST.
+_CHUNK_BYTES = 20 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -43,6 +60,17 @@ class OrderAsset:
     # 1-based position in the movie (from context.order / the public_id's
     # trailing number); None when neither is available.
     position: Optional[int]
+    created_at: str = ""
+
+
+@dataclass(frozen=True)
+class PublishedVideo:
+    """One movie version already published into an order folder."""
+
+    public_id: str
+    url: str
+    version: int          # the N in final_vN
+    bytes: int = 0
     created_at: str = ""
 
 
@@ -101,6 +129,73 @@ def resolve_order_folder(query: str, folders: list[str]) -> str:
     )
 
 
+def publish_version(public_id: str, basename: str) -> Optional[int]:
+    """The N in a published ``<basename>_vN`` public_id, else None.
+
+    Only the leaf is examined, so it works in both folder modes (the public_id
+    carries the folder path in fixed mode and may not in dynamic mode).
+    """
+    leaf = public_id.rsplit("/", 1)[-1]
+    m = re.fullmatch(rf"{re.escape(basename)}_v(\d+)", leaf)
+    return int(m.group(1)) if m else None
+
+
+def next_publish_version(existing: Iterable[int]) -> int:
+    """One past the highest version seen — never reuses a number.
+
+    Takes the MAXIMUM rather than the count, so a gap (an old version deleted
+    by hand in the Cloudinary console) can never make the next publish land on
+    a name that was already used.
+    """
+    versions = [v for v in existing if isinstance(v, int) and v > 0]
+    return max(versions, default=0) + 1
+
+
+def publish_public_id(
+    orders_folder: str, folder_leaf: str, basename: str, version: int
+) -> str:
+    """Full public_id for a published movie: ``video-orders/<leaf>/final_vN``.
+
+    The path is kept inside the public_id in both folder modes so the delivery
+    URL always shows which order the movie belongs to; in dynamic-folder mode
+    ``asset_folder`` additionally files it under the order folder in the Media
+    Library (see :meth:`CloudinaryClient.publish_final_video`).
+    """
+    return f"{orders_folder.strip('/')}/{folder_leaf.strip('/')}/{basename}_v{version}"
+
+
+def upload_signature(params: dict[str, Any], api_secret: str) -> str:
+    """Cloudinary's SHA-1 upload signature over the request's own parameters.
+
+    Every parameter that is sent must be signed except ``file``, ``api_key``,
+    ``resource_type`` and ``cloud_name`` (they are part of the URL or not
+    signed by design) — sorted by name, joined as a query string, with the
+    API secret appended.
+    """
+    signed = {
+        k: v for k, v in params.items()
+        if k not in ("file", "api_key", "resource_type", "cloud_name", "signature")
+        and v not in (None, "")
+    }
+    payload = "&".join(f"{k}={signed[k]}" for k in sorted(signed))
+    return hashlib.sha1(f"{payload}{api_secret}".encode("utf-8")).hexdigest()
+
+
+def chunk_ranges(total: int, chunk_size: int = _CHUNK_BYTES) -> list[tuple[int, int]]:
+    """Inclusive (start, end) byte ranges covering a file of `total` bytes.
+
+    Cloudinary's chunked upload wants ``Content-Range: bytes start-end/total``
+    with an INCLUSIVE end. An empty file still yields one (0, 0) range so the
+    caller always makes exactly one request per range.
+    """
+    if total <= 0:
+        return [(0, 0)]
+    return [
+        (start, min(start + chunk_size, total) - 1)
+        for start in range(0, total, chunk_size)
+    ]
+
+
 def ingest_filename(sequence: int, total: int, fmt: str) -> str:
     """Local filename for the photo at 1-based `sequence` of `total`.
 
@@ -124,11 +219,15 @@ class CloudinaryClient:
         api_secret: str,
         *,
         orders_folder: str = "video-orders",
+        publish_basename: str = "final",
         max_retries: int = 5,
         base_delay: float = 2.0,
     ) -> None:
         self.cloud_name = cloud_name
         self.orders_folder = orders_folder.strip("/")
+        self.publish_basename = publish_basename
+        self._api_key = api_key
+        self._api_secret = api_secret
         self._auth = (api_key, api_secret)
         self._max_retries = max_retries
         self._base_delay = base_delay
@@ -159,6 +258,7 @@ class CloudinaryClient:
             api_key,
             api_secret,
             orders_folder=config.cloudinary_orders_folder,
+            publish_basename=config.cloudinary_publish_basename,
             max_retries=config.max_retries,
             base_delay=config.retry_base_delay_seconds,
         )
@@ -243,3 +343,186 @@ class CloudinaryClient:
             for r in raw
         ]
         return sort_assets(assets)
+
+    # ------------------------------ delivery ------------------------------- #
+
+    def _paged_allowing_404(
+        self, path: str, params: dict[str, Any], description: str
+    ) -> list[dict[str, Any]]:
+        """Listing that treats "no such tag/prefix" as an empty result.
+
+        A folder nobody has published into yet has no video tag at all, and
+        Cloudinary answers 404 rather than an empty list. Any other failure
+        still propagates: publishing derives the next version number from
+        these listings, so a silent error must not look like "nothing there".
+        """
+        try:
+            return self._paged(path, params, "resources", description)
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                return []
+            raise
+
+    def list_published_videos(self, folder_leaf: str) -> list[PublishedVideo]:
+        """Movie versions already published into one order folder, oldest first.
+
+        Listed by tag AND by public_id prefix, unioned: the tag listing is the
+        one that works in dynamic-folder mode, the prefix listing covers a
+        version whose tag was removed in the console. Missing one of these
+        would make the next publish reuse a version number, so both are asked
+        and the highest wins.
+        """
+        found: dict[str, dict[str, Any]] = {}
+        for raw in (
+            self._paged_allowing_404(
+                f"resources/video/tags/{requests.utils.quote(folder_leaf, safe='')}",
+                {},
+                f"list published movies tagged {folder_leaf}",
+            )
+            + self._paged_allowing_404(
+                "resources/video",
+                {
+                    "type": "upload",
+                    "prefix": f"{self.orders_folder}/{folder_leaf}/",
+                },
+                f"list published movies under {self.orders_folder}/{folder_leaf}/",
+            )
+        ):
+            found[raw["public_id"]] = raw
+
+        published = []
+        for public_id, raw in found.items():
+            version = publish_version(public_id, self.publish_basename)
+            if version is None:
+                continue  # something else living in the folder — not ours
+            published.append(PublishedVideo(
+                public_id=public_id,
+                url=raw.get("secure_url") or raw.get("url", ""),
+                version=version,
+                bytes=int(raw.get("bytes") or 0),
+                created_at=raw.get("created_at", ""),
+            ))
+        return sorted(published, key=lambda p: p.version)
+
+    def folder_mode(self) -> str:
+        """The cloud's folder mode: "fixed" or "dynamic".
+
+        It decides how an upload is filed: in fixed mode the folder is part of
+        the public_id, in dynamic mode the two are decoupled and the folder
+        travels as ``asset_folder``. Best-effort — an account whose key may not
+        read settings falls back to "fixed", which still lands the asset at the
+        right delivery URL.
+        """
+        try:
+            data = self._get("config", {"settings": "true"}, "read Cloudinary settings")
+        except Exception as exc:  # noqa: BLE001 - never block a publish on this
+            logger.warning(
+                "Could not read the Cloudinary folder mode (%s) — assuming fixed.",
+                exc,
+            )
+            return "fixed"
+        settings = data.get("settings") if isinstance(data, dict) else None
+        mode = (settings or {}).get("folder_mode", "") if isinstance(settings, dict) else ""
+        return str(mode).strip().lower() or "fixed"
+
+    def publish_final_video(
+        self, folder_leaf: str, path: Path, version: int
+    ) -> PublishedVideo:
+        """Upload the finished movie into an order folder as ``final_vN``.
+
+        Additive by construction: the public_id carries an explicit version
+        the caller derived from what is already there, and ``overwrite=false``
+        means Cloudinary refuses to replace an existing asset rather than
+        silently versioning over it. If that name IS taken (someone published
+        from another machine in between), the upload returns the existing
+        asset untouched — detected here and raised, so nothing is ever lost.
+        """
+        if not path.is_file():
+            raise PipelineError(f"There is no movie to publish at {path}")
+        public_id = publish_public_id(
+            self.orders_folder, folder_leaf, self.publish_basename, version
+        )
+        params: dict[str, Any] = {
+            "public_id": public_id,
+            "overwrite": "false",
+            # Same tag the frontend puts on the order's photos, so the whole
+            # order (photos + delivered movies) lists together.
+            "tags": folder_leaf,
+            "context": f"order_folder={folder_leaf}|kind=final_movie",
+            "timestamp": str(int(time.time())),
+        }
+        if self.folder_mode() == "dynamic":
+            # Public_id and folder are decoupled in this mode: without these
+            # the movie would be delivered from the right URL but sit at the
+            # root of the Media Library instead of inside the order.
+            params["asset_folder"] = f"{self.orders_folder}/{folder_leaf}"
+            params["display_name"] = f"{self.publish_basename}_v{version}"
+        params["signature"] = upload_signature(params, self._api_secret)
+        params["api_key"] = self._api_key
+
+        result = self._upload_chunked(path, params)
+        if result.get("existing"):
+            raise PipelineError(
+                f"Cloudinary already has an asset named {public_id} — nothing "
+                "was uploaded or replaced. Publish again to take the next free "
+                "version number."
+            )
+        return PublishedVideo(
+            public_id=str(result.get("public_id") or public_id),
+            url=str(result.get("secure_url") or result.get("url") or ""),
+            version=version,
+            bytes=int(result.get("bytes") or path.stat().st_size),
+            created_at=str(result.get("created_at") or ""),
+        )
+
+    def _upload_chunked(self, path: Path, params: dict[str, Any]) -> dict[str, Any]:
+        """POST a file to the Upload API in chunks; returns the final response.
+
+        Every chunk repeats the same signed parameters and the same
+        ``X-Unique-Upload-Id``; Cloudinary assembles them and answers the last
+        chunk with the finished asset. Each chunk is retried on its own, which
+        is the point of chunking a movie-sized upload at all.
+        """
+        url = f"{_API_BASE}/{self.cloud_name}/video/upload"
+        total = path.stat().st_size
+        upload_id = secrets.token_hex(16)
+        ranges = chunk_ranges(total)
+        result: dict[str, Any] = {}
+
+        with path.open("rb") as handle:
+            for index, (start, end) in enumerate(ranges, start=1):
+                handle.seek(start)
+                blob = handle.read(end - start + 1)
+
+                def _call(blob: bytes = blob, start: int = start, end: int = end):
+                    resp = requests.post(
+                        url,
+                        data=params,
+                        files={"file": (path.name, blob, "video/mp4")},
+                        headers={
+                            "X-Unique-Upload-Id": upload_id,
+                            "Content-Range": f"bytes {start}-{end}/{total}",
+                        },
+                        timeout=600,
+                    )
+                    resp.raise_for_status()
+                    return resp.json()
+
+                if len(ranges) > 1:
+                    logger.info(
+                        "Uploading chunk %d/%d (%.1f MB)…",
+                        index, len(ranges), len(blob) / (1024 * 1024),
+                    )
+                result = with_retries(
+                    _call,
+                    max_retries=self._max_retries,
+                    base_delay=self._base_delay,
+                    description=f"upload {path.name} to Cloudinary",
+                )
+        if not isinstance(result, dict) or not (
+            result.get("secure_url") or result.get("url")
+        ):
+            raise PipelineError(
+                f"Cloudinary accepted the upload but returned no asset URL: {result}"
+            )
+        return result

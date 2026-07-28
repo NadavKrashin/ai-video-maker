@@ -27,7 +27,12 @@ function stage(o) {
   }
   const p = o.progress;
   if (p) {
-    if (p.final) return { text: 'final ready', color: 'green', rank: 8, group: 'final' };
+    // Delivered = the movie is in the customer's own Cloudinary folder AND
+    // hasn't been rebuilt since; a rebuilt movie still owes them a version.
+    if (p.final && p.published > 0 && !p.publish_changed) {
+      return { text: `delivered v${p.published}`, color: 'green', rank: 9, group: 'final' };
+    }
+    if (p.final) return { text: 'needs publish', color: 'grape', rank: 8, group: 'final' };
     if (p.clips_total > 0 && p.clips_rendered === p.clips_total) {
       return { text: 'needs combine', color: 'blue', rank: 5, group: 'todo' };
     }
@@ -63,7 +68,8 @@ const progressLine = (p) => p && [
     : 'no storyboard yet',
   p.clips_stale > 0 && `${p.clips_stale} outdated`,
   p.placeholders > 0 && `${p.placeholders} generic prompt(s)`,
-  p.final && 'final ready'
+  p.final && 'final ready',
+  p.published > 0 && `published v${p.published}${p.publish_changed ? ' (movie rebuilt since)' : ''}`
 ].filter(Boolean).join(' · ');
 
 export default function OrdersTab({ onOpenProject }) {

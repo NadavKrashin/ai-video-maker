@@ -550,6 +550,85 @@ function CombinePanel({
   );
 }
 
+// Step 5: deliver the finished movie back into the customer's own Cloudinary
+// order folder. The name it will be saved under is fetched from the server
+// (which asks Cloudinary what is already there) and shown for approval BEFORE
+// anything is uploaded — see onPublish in ProjectDetail.
+function PublishPanel({ project, locked, info, onPublish, publishing }) {
+  const published = info.published || {};
+  const latest = published.latest;
+  const versions = published.versions || [];
+  return (
+    <div>
+      <PanelIntro>
+        Uploads the finished movie into this order's own Cloudinary folder,
+        next to the customer's photos. Nothing already there is ever replaced
+        or deleted: each publish is saved as the next version — final_v1,
+        final_v2, final_v3… A copy of every delivered version is also kept
+        here, under the project's output/published/ folder.
+      </PanelIntro>
+      {!published.publishable && (
+        <Alert color="gray" variant="light" mb="sm">
+          This project didn't come from a web order (no order.json), so there
+          is no Cloudinary order folder to publish into.
+        </Alert>
+      )}
+      {latest && (
+        <Text size="sm" mb="xs">
+          Last published: <b>v{latest.version}</b>
+          {latest.published_at ? ` on ${localTime(latest.published_at)}` : ''}
+          {published.changed_since
+            && ' · the final video has been rebuilt since, so publishing now adds a new version.'}
+        </Text>
+      )}
+      {/* Every delivery, newest first. The local copy matters because
+          output/final_video.mp4 is overwritten by the next Combine — this is
+          the only way back to what an earlier customer actually received. */}
+      {versions.length > 0 && (
+        <Stack gap={4} mb="sm">
+          {versions.map((v) => (
+            <Group key={v.version} gap="xs" wrap="nowrap">
+              <Badge variant="light" size="sm">v{v.version}</Badge>
+              <Text size="xs" c="dimmed" style={{ flex: 1 }} truncate
+                title={v.public_id}>
+                {v.published_at ? localTime(v.published_at) : ''} · {v.public_id}
+              </Text>
+              {v.url && (
+                <Button component="a" size="compact-xs" variant="subtle"
+                  href={v.url} target="_blank" rel="noreferrer">
+                  Cloudinary
+                </Button>
+              )}
+              {v.local_exists ? (
+                <Button component="a" size="compact-xs" variant="light"
+                  href={fileUrl(project, 'published', v.local_file.split('/').pop())}
+                  download={`${project}_v${v.version}.mp4`}>
+                  Download copy
+                </Button>
+              ) : (
+                <Text size="xs" c="dimmed" title="Only the Cloudinary copy exists">
+                  no local copy
+                </Text>
+              )}
+            </Group>
+          ))}
+        </Stack>
+      )}
+      <Group align="flex-end">
+        <Text size="xs" c="dimmed" style={{ flex: 1 }}>
+          {info.finalExists
+            ? 'You will see the exact file name before anything is uploaded.'
+            : 'Build the final movie in step 4 first — there is nothing to publish yet.'}
+        </Text>
+        <Button disabled={locked || !info.finalExists || !published.publishable}
+          loading={publishing} onClick={onPublish}>
+          Publish to Cloudinary…
+        </Button>
+      </Group>
+    </div>
+  );
+}
+
 function RunAllPanel({ ask, locked, info }) {
   const [noCombine, setNoCombine] = useState(false);
   const start = () => {
@@ -593,7 +672,8 @@ const STEPS = [
   { id: 'storyboard', n: 1, name: 'Storyboard', caption: 'Style photos & plan each clip' },
   { id: 'render', n: 2, name: 'Render', caption: 'Generate the video clips' },
   { id: 'audio', n: 3, name: 'Audio', caption: 'Sound effects + music' },
-  { id: 'combine', n: 4, name: 'Combine', caption: 'Build the final movie' }
+  { id: 'combine', n: 4, name: 'Combine', caption: 'Build the final movie' },
+  { id: 'publish', n: 5, name: 'Publish', caption: 'Deliver to the order folder' }
 ];
 
 function StepTile({ selected, highlight, dashed, onClick, children }) {
@@ -718,18 +798,26 @@ export default function ProjectDetail({ name, onBack }) {
     finalExists: Boolean(snap.final_video),
     customMusic: Boolean(snap.custom_music),
     // 0 when no letter is written: the Closing letter toggle is a no-op then.
-    letterChars: snap.letter?.chars || 0
+    letterChars: snap.letter?.chars || 0,
+    // Delivery state from published.json (no network): {count, latest,
+    // changed_since, publishable}.
+    published: snap.published || {}
   };
 
   const stepStatus = (id) => {
+    const published = info.published || {};
     const done = {
       storyboard: Boolean(storyboard),
       render: total > 0 && rendered === total,
       audio: rendered > 0 && info.silentRendered === 0,
-      combine: info.finalExists
+      combine: info.finalExists,
+      // Delivered, and the movie hasn't been rebuilt since.
+      publish: published.count > 0 && !published.changed_since
     }[id];
     if (done) return 'done';
     if (snap.next_step === id) return 'next';
+    // A hand-made project has no order folder, so publishing never applies.
+    if (id === 'publish' && !published.publishable) return 'optional';
     return id === 'audio' ? 'optional' : 'todo';
   };
 
@@ -930,6 +1018,45 @@ export default function ProjectDetail({ name, onBack }) {
     });
   };
 
+  // Publishing is the one action whose target name is decided by what is
+  // ALREADY in Cloudinary, so the modal can't be written from the local
+  // snapshot: ask the server first (read-only), show the real file name for
+  // approval, then pin that exact name into the job (`publish_as`) so the
+  // upload can only ever land under the name that was approved.
+  const startPublish = async () => {
+    setBusyAction('publish-preview');
+    try {
+      const plan = await api.publishPreview(name);
+      if (!plan.final_video) {
+        notify('There is no final video to publish — run Combine first.', 'yellow');
+        return;
+      }
+      const mb = (plan.bytes / (1024 * 1024)).toFixed(1);
+      const versions = (plan.published || []).map((p) => `v${p.version}`).join(', ');
+      ask({
+        title: 'Publish the movie to the order folder?',
+        lines: [
+          `Uploads output/final_video.mp4 (${mb} MB) into the Cloudinary order folder ${plan.order_folder}.`,
+          `It will be saved as:  ${plan.filename}   (full name: ${plan.public_id}.mp4)`,
+          versions
+            ? `Already published there: ${versions} — those files are kept exactly as they are. Nothing is replaced or deleted.`
+            : 'Nothing has been published for this order yet, so this is version 1.',
+          ...(plan.latest && !plan.changed_since_last
+            ? [`The final video has not changed since v${plan.latest.version} — this publishes the same movie again as a new version.`]
+            : []),
+          ...(plan.keeps_local_copy
+            ? [`A copy of exactly what is delivered is also kept here, as output/published/${plan.filename}.`]
+            : []),
+          'Free of API credits; it uses your Cloudinary storage.'
+        ],
+        cost: 'free',
+        label: `Publish ${plan.filename}`,
+        action: () => run('publish', { publish_as: plan.public_id }, 'publish')
+      });
+    } catch (e) { notify(`Could not prepare the publish: ${e.message}`, 'red'); }
+    finally { setBusyAction(''); }
+  };
+
   // Fetching can take a few seconds (a page URL is extracted + transcoded
   // server-side), so it shares the same busy flag as the file upload.
   const fetchMusicUrl = async (url, onDone) => {
@@ -1055,6 +1182,9 @@ export default function ProjectDetail({ name, onBack }) {
       onFetchMusicUrl={fetchMusicUrl} musicBusy={musicBusy}
       letterText={snap.letter_text || ''} onSaveLetter={saveLetter}
       letterBusy={letterBusy} />,
+    publish: <PublishPanel project={name} locked={locked} info={info}
+      onPublish={startPublish}
+      publishing={busyAction === 'publish-preview' || busyAction === 'publish'} />,
     runall: <RunAllPanel ask={ask} locked={locked} info={info} />
   };
 
@@ -1214,7 +1344,25 @@ export default function ProjectDetail({ name, onBack }) {
               href={fileUrl(name, 'output', 'final_video.mp4', mediaV)} download={`${name}.mp4`}>
               Download
             </Button>
+            {info.published.publishable && (
+              <Button variant="default" disabled={locked}
+                loading={busyAction === 'publish-preview' || busyAction === 'publish'}
+                onClick={startPublish}
+                title="Upload this movie into the customer's Cloudinary order folder as the next version">
+                Publish to Cloudinary…
+              </Button>
+            )}
           </Group>
+          {info.published.latest && (
+            <Text size="xs" c="dimmed" mt="xs">
+              Published as v{info.published.latest.version}
+              {info.published.latest.published_at
+                ? ` on ${localTime(info.published.latest.published_at)}` : ''}
+              {info.published.changed_since
+                ? ' — this movie has been rebuilt since, so it is newer than what the customer folder holds.'
+                : ' — the order folder holds exactly this movie.'}
+            </Text>
+          )}
         </Card>
       )}
 
