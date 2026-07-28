@@ -466,18 +466,28 @@ def render_letter_scroll(
 
 
 def _letter_overlay_cmd(
-    background: Path, letter_png: Path, dst: Path, pixels_per_second: float
+    background: Path, letter_png: Path, dst: Path, pixels_per_second: float,
+    dim: float = 0.0,
 ) -> list[str]:
     """Build the ffmpeg command scrolling the letter OVER a video (pure).
 
-    The background (the photo montage) is dimmed with a translucent black
-    scrim so the white letter text stays readable above any photo, then the
-    transparent letter image slides from below the frame to above it. The
-    output lasts exactly as long as the background.
+    The transparent letter image slides from below the frame to above it,
+    over the photo montage, and the output lasts exactly as long as the
+    background.
+
+    ``dim`` darkens the photos behind the text with a translucent black
+    scrim. It used to be a fixed 0.55 for readability, but greying out the
+    customer's photos is not a trade the user wants (2026-07-28) — the
+    letter carries its own drop shadow instead, so the default is 0 and the
+    photos play at their true brightness.
     """
+    scrim = (
+        f"[0:v]drawbox=x=0:y=0:w=iw:h=ih:color=black@{dim:.2f}:t=fill[bg];"
+        if dim > 0 else "[0:v]null[bg];"
+    )
     graph = (
-        "[0:v]drawbox=x=0:y=0:w=iw:h=ih:color=black@0.55:t=fill[dim];"
-        f"[dim][1:v]overlay=x=(W-w)/2:y='H-t*{pixels_per_second:.3f}',"
+        f"{scrim}"
+        f"[bg][1:v]overlay=x=(W-w)/2:y='H-t*{pixels_per_second:.3f}',"
         "format=yuv420p[v]"
     )
     return [
@@ -491,12 +501,15 @@ def _letter_overlay_cmd(
 
 
 def render_letter_overlay(
-    background: Path, letter_png: Path, dst: Path, pixels_per_second: float
+    background: Path, letter_png: Path, dst: Path, pixels_per_second: float,
+    dim: float = 0.0,
 ) -> None:
     """Render the letter scrolling over `background` into `dst`."""
     _require_ffmpeg()
     dst.parent.mkdir(parents=True, exist_ok=True)
-    cmd = _letter_overlay_cmd(background, letter_png, dst, pixels_per_second)
+    cmd = _letter_overlay_cmd(
+        background, letter_png, dst, pixels_per_second, dim
+    )
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(

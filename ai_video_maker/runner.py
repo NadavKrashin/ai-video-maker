@@ -1774,7 +1774,9 @@ class Pipeline:
             )
             background = seg_dir / "credits_bg.mp4"
             combine_clips(stills, background, force_filter=True)
-            render_letter_overlay(background, png, dst, pps)
+            render_letter_overlay(
+                background, png, dst, pps, self.config.letter_overlay_dim
+            )
         except Exception as exc:  # noqa: BLE001 - extras must not kill combine
             logger.error("Credits+letter section failed (%s); combining "
                          "without it.", exc)

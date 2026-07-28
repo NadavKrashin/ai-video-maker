@@ -483,8 +483,10 @@ no API cost:
   one (`pipeline.py status` and the panel both show whether there is a
   letter). **When
   `--credits-photos` is also on, the letter scrolls OVER the photo montage**
-  (photos dimmed under a dark scrim so the text stays readable), with both
-  paced to end together — photos never flash faster than configured and the
+  at their normal brightness — a drop shadow behind the text is what keeps
+  it readable, so nothing greys the photos out (`letter_overlay_dim`,
+  default `0`, darkens them instead if you ever want that trade). Both are
+  paced to end together: photos never flash faster than configured and the
   letter never scrolls faster than configured. With the letter alone it
   scrolls over a plain dark background. Empty lines become paragraph gaps;
   long lines wrap. Font is auto-detected (override with `letter_font_path`),

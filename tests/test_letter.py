@@ -175,6 +175,22 @@ class TestRenderWithEmoji:
         colours = {c for _, c in (img.getcolors(200_000) or [])}
         assert any(r > 120 and r - b > 60 and r - g > 60 for r, g, b in colours)
 
+    def test_overlay_letter_carries_a_shadow_but_the_dark_one_does_not(self):
+        # The overlay plays over real photos at full brightness, so the text
+        # needs its own contrast; the standalone letter sits on a dark
+        # background already and must stay clean.
+        overlay = render_letter_image(
+            "shalom", 1920, 400, _FONT, 64, pad=False, transparent=True,
+        )
+        assert overlay.mode == "RGBA"
+        alphas = {a for _, (*_rgb, a) in (overlay.getcolors(200_000) or [])}
+        # Fully transparent canvas, opaque text, and the shadow in between.
+        assert len(alphas) > 2 and max(alphas) > 200
+
+        plain = render_letter_image("shalom", 1920, 400, _FONT, 64, pad=False)
+        colours = {c for _, c in (plain.getcolors(200_000) or [])}
+        assert _BG in colours
+
     @needs_emoji_font
     def test_hebrew_letter_with_a_heart_still_reorders_rtl(self):
         # The real letter: the heart is last logically, so it lands leftmost.
