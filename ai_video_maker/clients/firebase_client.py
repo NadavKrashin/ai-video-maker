@@ -314,6 +314,27 @@ class FirebaseClient:
         orders = [order_from_document(doc) for doc in documents]
         return sorted(orders, key=lambda o: o.created_at, reverse=True)
 
+    def get_order(self, order_id: str) -> Optional[FirestoreOrder]:
+        """One order document by id, or None when the ledger has no such doc.
+
+        A single-doc read instead of `list_orders` for the paths that already
+        know the order id (ingest, seeding the closing letter from the
+        customer's blessing): the whole collection is pointless traffic there,
+        and an order that predates the ledger simply has no doc — a missing
+        one is a normal answer, not an error.
+        """
+        try:
+            document = self._request(
+                "GET",
+                f"{self.collection}/{order_id}",
+                description=f"read Firestore order {order_id}",
+            )
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                return None
+            raise
+        return order_from_document(document)
+
     def update_order(self, order_id: str, fields: dict[str, Any]) -> None:
         """Merge ``fields`` into one order doc (other fields untouched).
 

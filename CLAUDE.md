@@ -197,6 +197,20 @@ Core design rules:
   extending the sides is what shrank the people and spent the budget on
   background in the first place (`_IMAGE_API_SIZE` is 1536x1024, so a
   portrait source is always reshaped).
+- ...BUT "CROP IN" ALONE CHOPPED HEADS OFF (user report, 2026-07-28). A
+  vertical photo of a couple on a salt flat came back with the man's scalp
+  cut away at the top edge: a portrait source must lose height to become
+  16:9, and nothing said WHERE that height comes from. `style_prompt`'s
+  FRAMING section now opens with "NEVER CUT A PERSON OFF" and says it
+  OUTRANKS the keep-them-large/crop-in bias, that the height comes off the
+  BOTTOM (feet/legs/foreground) and off empty sky only down to a band of
+  headroom, and that the last resort is pulling the camera BACK (smaller
+  people are acceptable, a cropped head is not). It also protects sources
+  that are ALREADY cropped — the rule must never become "hallucinate the
+  missing top of this head". Pinned by TestStylingKeepsWholeSubjectsInFrame
+  against the live config.json. If prompt-side framing proves unreliable,
+  the deterministic fix is padding a portrait source to 3:2 before upload
+  in `prepare_image_for_upload` — not weakening this text.
 - BALDNESS GETS "CORRECTED" BY THE IMAGE MODEL unless forbidden: a real
   styling gave a cleanly bald man a horseshoe of dark hair around his ears
   (frame 920acc69 on Ari&Michal), and changed wraparound mirrored
@@ -295,6 +309,19 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
   `v=` cache-buster (`fileUrl`'s 4th argument, bumped by the panel's poll
   and once more when a job settles); without it a regenerated frame kept
   showing its previous version and looked like the button did nothing.
+- THE CLOSING LETTER IS AUTHORED IN THE PANEL (2026-07-28). combine could
+  always be TOLD to scroll `projects/<n>/letter.txt` (`--letter` /
+  `closing_letter`), but nothing could WRITE it — behind the tunnel that
+  meant a shell on the mini, so the toggle was unusable remotely and
+  silently produced no letter. Now: `PUT /api/projects/<n>/letter`
+  (`read_letter`/`save_letter`/`letter_state` in media/letter.py — blank
+  text DELETES the file so "no letter" is one state), the text rides in the
+  detail response as `letter_text`, `snapshot()["letter"]` is
+  `{exists, chars}` (status + panel show it; the Combine modal warns when
+  the toggle is on with `chars == 0`), and ingest SEEDS the file from the
+  order's Firestore `blessing` (`_seed_letter_from_order`, best-effort,
+  never overwrites an existing letter). Saving is free and local, so it is
+  inline like the storyboard save, not an `ask({...})` job.
 - The **Firestore order ledger** (`clients/firebase_client.py`, REST +
   google-auth, NOT the heavy firebase-admin SDK) is the watcher's order
   source when a service-account key exists (FIREBASE_SERVICE_ACCOUNT in

@@ -8,7 +8,10 @@ from ai_video_maker.media.letter import (
     _BG,
     _wrap,
     find_letter_font,
+    letter_state,
+    read_letter,
     render_letter_image,
+    save_letter,
 )
 
 try:
@@ -28,6 +31,48 @@ class TestFindLetterFont:
         fake = tmp_path / "font.ttf"
         fake.write_bytes(b"x")
         assert find_letter_font(str(fake)) == str(fake)
+
+
+class TestLetterFile:
+    """Reading/writing letter.txt — what the panel's editor rides on."""
+
+    def test_missing_file_reads_as_no_letter(self, tmp_path):
+        path = tmp_path / "letter.txt"
+        assert read_letter(path) == ""
+        assert letter_state(path) == {"exists": False, "chars": 0}
+
+    def test_save_then_read_round_trips(self, tmp_path):
+        path = tmp_path / "letter.txt"
+        state = save_letter(path, "מתן היקר,\n\nאוהבים אותך")
+        assert state == {"exists": True, "chars": len("מתן היקר,\n\nאוהבים אותך")}
+        assert read_letter(path).startswith("מתן היקר,")
+
+    def test_browser_crlf_is_normalised(self, tmp_path):
+        # A textarea submits CRLF; a stray \r would be drawn as a glyph.
+        path = tmp_path / "letter.txt"
+        save_letter(path, "line one\r\nline two\r\n")
+        assert "\r" not in path.read_text(encoding="utf-8")
+
+    def test_blank_text_removes_the_file(self, tmp_path):
+        # "No letter" must be ONE state, not an empty file that behaves the
+        # same but reads differently in status.
+        path = tmp_path / "letter.txt"
+        save_letter(path, "something")
+        assert save_letter(path, "   \n  ") == {"exists": False, "chars": 0}
+        assert not path.exists()
+
+    def test_whitespace_only_file_has_no_chars(self, tmp_path):
+        # A file left behind by hand: it exists, but scrolls nothing.
+        path = tmp_path / "letter.txt"
+        path.write_text("\n\n   \n", encoding="utf-8")
+        assert letter_state(path) == {"exists": True, "chars": 0}
+
+    def test_unreadable_bytes_do_not_raise(self, tmp_path):
+        # status/API describe a project; a corrupt file can't take the view down.
+        path = tmp_path / "letter.txt"
+        path.write_bytes(b"\xff\xfe\x00garbage")
+        assert read_letter(path) == ""
+        assert letter_state(path) == {"exists": True, "chars": 0}
 
 
 @needs_font

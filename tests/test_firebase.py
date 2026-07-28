@@ -132,6 +132,56 @@ class TestCredentialsResolution:
         assert client.collection == "orders"
 
 
+class TestGetOrder:
+    """Single-doc read: the ingest paths already know the order id."""
+
+    def _client(self) -> FirebaseClient:
+        return FirebaseClient("p", Path("/nonexistent/key.json"))
+
+    def test_document_is_decoded(self, monkeypatch):
+        client = self._client()
+        monkeypatch.setattr(
+            client, "_request",
+            lambda *a, **k: _doc({"name": "Dana", "blessing": "מזל טוב"}),
+        )
+        order = client.get_order("AM-180726-XY12")
+        assert order is not None
+        assert (order.customer, order.blessing) == ("Dana", "מזל טוב")
+
+    def test_missing_document_is_none_not_an_error(self, monkeypatch):
+        # Orders that predate the ledger simply have no doc — normal, not a
+        # failure the caller has to catch.
+        import requests
+
+        response = requests.Response()
+        response.status_code = 404
+
+        def boom(*a, **k):
+            raise requests.HTTPError("404", response=response)
+
+        client = self._client()
+        monkeypatch.setattr(client, "_request", boom)
+        assert client.get_order("AM-nope") is None
+
+    def test_other_http_errors_still_raise(self, monkeypatch):
+        import requests
+
+        response = requests.Response()
+        response.status_code = 403
+
+        def boom(*a, **k):
+            raise requests.HTTPError("403", response=response)
+
+        client = self._client()
+        monkeypatch.setattr(client, "_request", boom)
+        try:
+            client.get_order("AM-180726-XY12")
+        except requests.HTTPError:
+            pass
+        else:  # pragma: no cover - the assertion IS the test
+            raise AssertionError("a 403 must not be swallowed as 'no order'")
+
+
 # ----------------------- completeness with photo_count ---------------------- #
 
 def _assets(n: int, minutes_ago: float) -> list[OrderAsset]:
