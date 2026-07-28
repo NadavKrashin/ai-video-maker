@@ -314,6 +314,15 @@ movie's clips may be long: raise it toward `1.0` if hard transitions are being
 squeezed into 5s and teleporting, lower it for a shorter, pacier movie.
 Remember a 10s clip costs roughly twice a 5s one.
 
+**Position swaps are caught in code.** When the same people appear in both
+frames but trade left–right places, pinning them where they stand makes the
+video model morph each into the other. The planner reports who stands where
+in each frame (left to right), and the pipeline compares the two lists
+itself: a swapped pair is forced to a 10-second clip, and if its motion
+prompt has nobody crossing or leaving frame, a targeted rewrite restages it
+as an exit past the camera plus a walk back in. Prompt-side instructions
+alone kept missing these.
+
 **Per-project overrides:** drop a `config.json` inside a project
 (`projects/<name>/config.json`) with just the keys you want to change for that
 movie — e.g. its own `style_prompt` or a different `fal_model_id`. It is merged
