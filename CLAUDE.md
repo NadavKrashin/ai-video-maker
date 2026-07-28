@@ -530,6 +530,14 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
 - Clips are named `<startid>_to_<endid>.mp4`; bridged clips (a missing middle
   frame) get non-consecutive names like `003_to_005.mp4` and become "stray"
   once the frame is restored — `combine` ignores strays by design.
+- THE CREDITS PHOTOS ARE NEVER GREYED OUT under a scrolling letter (user
+  call, 2026-07-28). `_letter_overlay_cmd` used to lay a fixed `black@0.55`
+  drawbox over the montage for text contrast; the photos are the product,
+  so the scrim is gone (`letter_overlay_dim`, default 0) and the contrast
+  comes from a stroke-outline drop shadow drawn into the transparent letter
+  PNG (`_SHADOW`, only when `transparent=True` — the standalone letter is
+  already on a dark background). Pinned by
+  test_letter_overlay_keeps_the_photos_at_full_brightness.
 - THE LETTER FONT HAS NO EMOJI, and a blessing usually ends in a heart: a
   real delivered movie showed "לאהבת חיי ט״ו באב שמח" followed by two empty
   boxes (the emoji + its variation selector, both .notdef). media/letter.py

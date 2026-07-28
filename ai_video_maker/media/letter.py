@@ -69,6 +69,10 @@ _EMOJI_RE = re.compile(
 # consistent regardless of what the movie's last frame looked like.
 _BG = (13, 13, 15)
 _FG = (242, 237, 228)
+# Outline drawn behind the text when the letter scrolls over the photos.
+# Mostly-opaque near-black: enough to separate light text from a bright
+# photo without putting a grey wash over the picture itself.
+_SHADOW = (0, 0, 0, 190)
 
 
 def find_letter_font(explicit: str = "") -> str:
@@ -267,12 +271,17 @@ def _draw_line(
     font: ImageFont.FreeTypeFont,
     emoji: Optional[tuple[ImageFont.FreeTypeFont, int]],
     font_size: int,
+    shadow: bool = False,
 ) -> None:
     """Draw one centred line, switching fonts per run.
 
     Text runs go through the normal text font; an emoji run is rendered by
     the colour font at its own native strike size and scaled down, because
     bitmap emoji fonts cannot be loaded at an arbitrary size.
+
+    ``shadow`` puts a soft dark outline behind the text. It is what keeps
+    the letter readable when it scrolls over the photo montage, now that
+    the photos are no longer greyed out behind it.
     """
     emoji_font = emoji[0] if emoji else None
     segments = _segments(line, font, emoji_font)
@@ -282,6 +291,11 @@ def _draw_line(
     x = (width - _line_width(line, font, emoji_font, font_size)) / 2
     for run, is_emoji in segments:
         if not is_emoji:
+            if shadow:
+                draw.text(
+                    (x, y), run, font=font, fill=_SHADOW, anchor="la",
+                    stroke_width=max(2, font_size // 20), stroke_fill=_SHADOW,
+                )
             draw.text((x, y), run, font=font, fill=_FG, anchor="la")
             x += font.getlength(run)
             continue
@@ -353,6 +367,12 @@ def render_letter_image(
     y = pad_height
     for line, advance in display_lines:
         if line:
-            _draw_line(img, draw, line, y, width, font, emoji, font_size)
+            # The overlay (transparent) letter plays over real photos, so it
+            # carries the shadow; the standalone one already sits on a dark
+            # background and needs none.
+            _draw_line(
+                img, draw, line, y, width, font, emoji, font_size,
+                shadow=transparent,
+            )
         y += advance
     return img

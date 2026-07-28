@@ -123,6 +123,12 @@ class Config(BaseModel):
     letter_emoji_font_path: str = ""
     letter_font_size: int = 64
     letter_seconds_per_screen: float = 7.0  # scroll pace per screen height
+    # How much to darken the photo montage under a scrolling letter, 0-1.
+    # 0 (the default) plays the photos at their true brightness — the user
+    # explicitly does not want them greyed out; the letter's own drop shadow
+    # is what keeps the text readable. Raise it only to trade the photos'
+    # brightness back for contrast.
+    letter_overlay_dim: float = 0.0
     # Fade the final video's last moments to black (audio fades with it).
     # Applied after music muxing so the bed fades too. 0 disables.
     end_fade_seconds: float = 1.5
