@@ -855,6 +855,68 @@ class TestPresentationSegments:
         assert "intro" not in calls               # untouched -> reused
         assert "overlay" in calls                 # letter section redone
 
+    def _built(self, p, workspace, clips, monkeypatch):
+        """Render every section once, then return the call log, cleared."""
+        calls = self._stub_renderers(monkeypatch)
+        self._global_intro(p, workspace)
+        workspace.letter_file.write_text("שלום", encoding="utf-8")
+        p._presentation_segments(clips)
+        assert calls  # something really was rendered
+        calls.clear()
+        return calls
+
+    def test_renderer_version_bump_redoes_the_sections(
+        self, make_pipeline, workspace, monkeypatch
+    ):
+        """The bug the user hit: new code, identical ending.
+
+        The reuse check is mtime-based, and shipping a fix touches no
+        project file — so a re-combine after the emoji and no-grey-photos
+        fixes returned the OLD ending. The renderer version is part of each
+        section's recipe precisely so that can't happen.
+        """
+        import ai_video_maker.runner as runner_mod
+
+        p = make_pipeline(
+            intro_clip=True, credits_photos=True, closing_letter=True
+        )
+        clips = self._project(workspace)
+        calls = self._built(p, workspace, clips, monkeypatch)
+        monkeypatch.setattr(
+            runner_mod, "_SEGMENT_RENDERER_VERSION",
+            runner_mod._SEGMENT_RENDERER_VERSION + 1,
+        )
+        p._presentation_segments(clips)
+        assert "overlay" in calls and "intro" in calls and "still" in calls
+
+    def test_changed_letter_setting_redoes_the_letter_section(
+        self, make_pipeline, workspace, monkeypatch
+    ):
+        # Same trap by another route: config edited, no file touched.
+        p = make_pipeline(
+            intro_clip=True, credits_photos=True, closing_letter=True
+        )
+        clips = self._project(workspace)
+        calls = self._built(p, workspace, clips, monkeypatch)
+        p.config.letter_overlay_dim = 0.5
+        p._presentation_segments(clips)
+        assert "overlay" in calls
+        assert "intro" not in calls  # unrelated section stays cached
+
+    def test_force_rebuilds_every_section(
+        self, make_pipeline, workspace, monkeypatch
+    ):
+        # "Force" on the panel's Combine button rebuilt the final video out
+        # of cached sections, which is not what anyone means by force.
+        p = make_pipeline(
+            intro_clip=True, credits_photos=True, closing_letter=True
+        )
+        clips = self._project(workspace)
+        calls = self._built(p, workspace, clips, monkeypatch)
+        p.force = True
+        p._presentation_segments(clips)
+        assert "overlay" in calls and "intro" in calls and "still" in calls
+
 
 class TestConsecutiveRuns:
     def test_grouping(self):

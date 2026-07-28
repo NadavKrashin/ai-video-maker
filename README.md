@@ -514,7 +514,11 @@ one run.
 Rendered segments live in `output/segments/` and are **reused** on the next
 combine as long as their inputs (the intro video, the photos, `letter.txt`,
 the config files) haven't changed since; edit any input and only the affected
-segment is re-rendered. Delete `output/segments/` to force a full redo.
+segment is re-rendered. Each segment also records the *recipe* that made it —
+the settings it used plus the renderer's version — so changing a letter
+setting, or upgrading the pipeline itself, re-renders it even though no
+project file was touched. `--force` (the panel's Combine button) redoes every
+segment regardless, and deleting `output/segments/` still forces a full redo.
 
 ### `run`
 
