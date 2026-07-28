@@ -74,6 +74,14 @@ from .storyboard_md import write_storyboard_markdown
 from .summary import RunSummary
 from .workspace import PROJECT_ROOT, Workspace
 
+# Bump when the presentation sections (intro / credits stills / letter) are
+# DRAWN differently, so already-rendered ones in output/segments/ are redone
+# on the next combine. Their reuse check is otherwise mtime-based, and a code
+# change touches no project file: after the emoji and no-grey-photos fixes
+# shipped, a re-combine returned the identical old ending.
+#   2 - letter emoji via a colour font; photos no longer dimmed under it
+_SEGMENT_RENDERER_VERSION = 2
+
 # (info_lines, question) -> proceed? Injected by the CLI as a terminal prompt;
 # defaults to always-yes so embedded/API callers never block on stdin.
 ConfirmFn = Callable[[list[str], str], bool]
@@ -1661,14 +1669,66 @@ class Pipeline:
             self.workspace.root / "config.json",
         ]
 
-    def _segment_fresh(self, dst: Path, media_deps: list[Path]) -> bool:
-        if not dst.exists():
+    def _segment_fresh(
+        self, dst: Path, media_deps: list[Path], recipe: str = ""
+    ) -> bool:
+        """Can this rendered section be reused instead of re-rendered?
+
+        Three ways it goes stale, and all three are needed:
+
+        * ``--force`` — the operator asked for a rebuild;
+        * one of its inputs is newer than it (the photos, letter.txt, config);
+        * the RECIPE changed — the settings and the renderer version that
+          produced it. Without this, upgrading the pipeline left every
+          project's ending frozen at whatever the old code made: a real
+          combine after fixing the letter's emoji and the greyed-out photos
+          came back byte-identical, because letter.txt and the photos had
+          not been touched.
+        """
+        if self.force or not dst.exists():
             return False
         mtime = dst.stat().st_mtime
-        return all(
-            not dep.exists() or dep.stat().st_mtime <= mtime
+        if any(
+            dep.exists() and dep.stat().st_mtime > mtime
             for dep in self._segment_deps(*media_deps)
+        ):
+            return False
+        if not recipe:
+            return True
+        sidecar = self._segment_recipe_file(dst)
+        if not sidecar.exists():
+            return False  # made before recipes existed: re-render once
+        try:
+            return sidecar.read_text(encoding="utf-8").strip() == recipe
+        except OSError:
+            return False
+
+    @staticmethod
+    def _segment_recipe_file(dst: Path) -> Path:
+        """Sidecar recording HOW a rendered section was made."""
+        return dst.with_suffix(dst.suffix + ".recipe")
+
+    def _record_segment_recipe(self, dst: Path, recipe: str) -> None:
+        """Remember the recipe so a settings/code change invalidates it."""
+        if not recipe:
+            return
+        try:
+            self._segment_recipe_file(dst).write_text(recipe, encoding="utf-8")
+        except OSError as exc:  # noqa: BLE001 - caching is never fatal
+            logger.debug("Could not record the segment recipe: %s", exc)
+
+    def _segment_recipe(self, kind: str, **parts: Any) -> str:
+        """A short fingerprint of everything that shapes a rendered section.
+
+        ``_SEGMENT_RENDERER_VERSION`` is part of it, so a change to HOW
+        sections are drawn invalidates them even when every input file is
+        untouched — bump it whenever the drawing changes.
+        """
+        payload = json.dumps(
+            {"kind": kind, "renderer": _SEGMENT_RENDERER_VERSION, **parts},
+            sort_keys=True, ensure_ascii=False, default=str,
         )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
     def _letter_text(self) -> Optional[str]:
         """The letter's text, or None (with a warning) when there isn't one."""
@@ -1697,7 +1757,8 @@ class Pipeline:
         """The user's intro clip, normalized to the movie's frame size."""
         src = self._intro_source()
         dst = seg_dir / "intro.mp4"
-        if self._segment_fresh(dst, [src]):
+        recipe = self._segment_recipe("intro", src=src.name, size=(width, height))
+        if self._segment_fresh(dst, [src], recipe):
             logger.info("Reusing intro clip (unchanged).")
             return dst
         try:
@@ -1706,6 +1767,7 @@ class Pipeline:
             logger.error("Intro clip failed (%s); combining without it.", exc)
             self.failed.record("intro", "intro", str(exc))
             return None
+        self._record_segment_recipe(dst, recipe)
         logger.info("Intro: %s opens the movie.", src.name)
         return dst
 
@@ -1725,10 +1787,14 @@ class Pipeline:
         """
         stills: list[Path] = []
         rendered = 0
+        recipe = self._segment_recipe(
+            "credit_still", seconds=round(per_photo, 2), size=(width, height)
+        )
         for i, (_fid, photo) in enumerate(sources):
             dst = seg_dir / f"credits_{i:03d}_{per_photo:.2f}s.mp4"
-            if not self._segment_fresh(dst, [photo]):
+            if not self._segment_fresh(dst, [photo], recipe):
                 render_photo_still(photo, dst, width, height, seconds=per_photo)
+                self._record_segment_recipe(dst, recipe)
                 rendered += 1
             stills.append(dst)
         if rendered < len(stills):
@@ -1749,7 +1815,17 @@ class Pipeline:
         """The combined ending: letter scrolling over the real-photo montage."""
         dst = seg_dir / "credits_letter.mp4"
         media_deps = [self.workspace.letter_file, *(p for _, p in sources)]
-        if self._segment_fresh(dst, media_deps):
+        recipe = self._segment_recipe(
+            "credits_letter",
+            text=text, photos=len(sources), size=(width, height),
+            font=self.config.letter_font_path,
+            emoji_font=self.config.letter_emoji_font_path,
+            font_size=self.config.letter_font_size,
+            pace=self.config.letter_seconds_per_screen,
+            per_photo=self.config.credits_seconds_per_photo,
+            dim=self.config.letter_overlay_dim,
+        )
+        if self._segment_fresh(dst, media_deps, recipe):
             logger.info("Reusing credits+letter section (unchanged).")
             return dst
         try:
@@ -1782,6 +1858,7 @@ class Pipeline:
                          "without it.", exc)
             self.failed.record("letter", "letter", str(exc))
             return None
+        self._record_segment_recipe(dst, recipe)
         logger.info(
             "Credits + letter: %d photo(s) under a ~%.0fs scrolling letter "
             "(font: %s).", len(sources), travel / pps, Path(font).name,
@@ -1793,7 +1870,14 @@ class Pipeline:
     ) -> Optional[Path]:
         """The letter alone, scrolling over a dark background."""
         dst = seg_dir / "letter.mp4"
-        if self._segment_fresh(dst, [self.workspace.letter_file]):
+        recipe = self._segment_recipe(
+            "letter", text=text, size=(width, height),
+            font=self.config.letter_font_path,
+            emoji_font=self.config.letter_emoji_font_path,
+            font_size=self.config.letter_font_size,
+            pace=self.config.letter_seconds_per_screen,
+        )
+        if self._segment_fresh(dst, [self.workspace.letter_file], recipe):
             logger.info("Reusing closing letter (unchanged).")
             return dst
         try:
@@ -1813,6 +1897,7 @@ class Pipeline:
             logger.error("Closing letter failed (%s); combining without it.", exc)
             self.failed.record("letter", "letter", str(exc))
             return None
+        self._record_segment_recipe(dst, recipe)
         logger.info(
             "Closing letter: %d chars scrolled over ~%.0fs (font: %s).",
             len(text),

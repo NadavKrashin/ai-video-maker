@@ -530,6 +530,18 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
 - Clips are named `<startid>_to_<endid>.mp4`; bridged clips (a missing middle
   frame) get non-consecutive names like `003_to_005.mp4` and become "stray"
   once the frame is restored — `combine` ignores strays by design.
+- A COMBINE FIX ISN'T VISIBLE UNTIL THE SEGMENT CACHE LETS GO. Sections in
+  `output/segments/` (intro, credit stills, letter, credits+letter) were
+  reused on mtime alone, and shipping code touches no project file — so
+  after the emoji and no-greyed-photos fixes deployed, the user re-combined
+  and got a byte-identical ending. `--force` didn't help either: it gated
+  only the final-video rebuild, never `_segment_fresh`. Now each section
+  writes a `<segment>.recipe` sidecar holding a hash of its settings plus
+  `_SEGMENT_RENDERER_VERSION`, and reuse needs mtimes AND a matching
+  recipe, with `self.force` short-circuiting the whole check. **Bump
+  `_SEGMENT_RENDERER_VERSION` whenever you change how a section is drawn**
+  — that is the only thing that reaches already-rendered projects. Pinned by
+  TestPresentationSegments (version bump / changed setting / force).
 - PHONE UPLOADS HAVE NO FILE EXTENSION, so nothing may validate on one. A
   real mp3 from iOS arrived named `Lights(chosic.com)` and the music upload
   refused it (extension-only check), while `accept="audio/*"` on the input
