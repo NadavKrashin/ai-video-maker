@@ -539,12 +539,18 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
   on Linux/CI). Colour fonts are BITMAP STRIKES: `ImageFont.truetype` raises
   OSError('invalid pixel size') at any other size, so `load_emoji_font`
   probes known strikes (109 Noto, 137/160 Apple) and the emoji is drawn at
-  that size then scaled to the text. Pillow exposes no glyph-index API, so
-  coverage is tested by comparing a character's rendered bitmap against the
-  font's .notdef box (`_drawable`) — anything neither font can draw is
-  DROPPED, never boxed, along with the space left dangling in front of it
-  (it offsets the centring). Pinned by TestSegments / TestRenderWithEmoji;
-  the emoji-colour test is font-gated, so the mini's own deploy-time test
-  run is what proves Apple Color Emoji works there.
+  that size then scaled to the text. Emoji are identified by CODE POINT
+  (`_EMOJI_RE`) and dropped when no emoji font exists — never boxed — along
+  with the space left dangling in front of them (it offsets the centring).
+  **NEVER ask the font whether it has a glyph.** The first version did:
+  Pillow exposes no glyph-index API, so it compared each character's
+  rendered bitmap against the font's .notdef box. On Linux that worked; on
+  the mini's Arial Hebrew it reported EVERY character as missing, so
+  `_segments` returned nothing and a letter would have rendered blank. The
+  deploy's own test run caught it (5 failures, service never restarted) —
+  which is exactly what that test run is for, since the emoji tests are
+  font-gated and only execute where a colour font exists. Apple Color Emoji
+  itself is confirmed working there. Pinned by TestSegments (plain text and
+  Hebrew must survive segmentation) / TestRenderWithEmoji.
 - ffmpeg concat: mixed silent/sounded clips must go through the concat-filter
   path with silent padding (`_combine_clips_mixed_audio`), never the demuxer.

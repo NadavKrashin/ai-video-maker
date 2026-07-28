@@ -112,13 +112,24 @@ class TestFindEmojiFont:
 
 @needs_font
 class TestSegments:
-    """What each font is asked to draw — and what is dropped instead of boxed."""
+    """What each font is asked to draw — and what is dropped instead of boxed.
+
+    Text is split by CODE POINT, never by asking the font what it can draw:
+    an earlier version compared each character's bitmap against the font's
+    .notdef box, and on the production Mac that reported every character as
+    missing, so a letter rendered blank. These tests pin the plain-text path
+    as much as the emoji one.
+    """
 
     def _font(self):
         return ImageFont.truetype(_FONT, 40)
 
     def test_plain_text_is_one_text_run(self):
         assert _segments("shalom", self._font(), None) == [("shalom", False)]
+
+    def test_hebrew_text_survives_whatever_the_font_reports(self):
+        line = 'לאהבת חיי ט"ו באב שמח'
+        assert _segments(line, self._font(), None) == [(line, False)]
 
     def test_emoji_is_dropped_when_there_is_no_emoji_font(self):
         # The bug this fixes: the text font draws an empty box for a heart.
@@ -134,8 +145,12 @@ class TestSegments:
         # Heart + variation selector stay together so the font can compose them.
         assert segments[1][1] is True and "❤" in segments[1][0]
 
-    def test_characters_the_font_cannot_draw_are_dropped(self):
-        assert _segments(f"a{UNMAPPED}b", self._font(), None) == [("ab", False)]
+    def test_ordinary_text_is_never_dropped(self):
+        # Whatever the font does with an exotic code point, it is the font's
+        # business: dropping text here is how the whole letter went blank.
+        assert _segments(f"a{UNMAPPED}b", self._font(), None) == [
+            (f"a{UNMAPPED}b", False)
+        ]
 
 
 @needs_font
