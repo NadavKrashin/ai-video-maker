@@ -323,6 +323,52 @@ class TestInSceneTextIsPreserved:
         assert "text" not in terms and "on-screen text" not in terms
 
 
+class TestStylingKeepsWholeSubjectsInFrame:
+    """A portrait source must not come back with a head cut off.
+
+    `_IMAGE_API_SIZE` is 1536x1024, so a vertical photo is ALWAYS reshaped
+    to 16:9, and the styling prompt's "crop INTO the scene rather than
+    invent scenery" bias is what turns that reshape into a crop. Left alone
+    it took the height off the top: a real couple on a salt flat came back
+    with the man's scalp sliced off at the frame edge. The fix lives in the
+    shipped prompt (the one that styles real orders), so pin both halves —
+    the no-cut rule and the direction the crop must come from.
+    """
+
+    def _prompts(self) -> dict:
+        import json
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        return json.loads((root / "config.json").read_text(encoding="utf-8"))
+
+    def test_shipped_style_prompt_forbids_cropping_people(self):
+        style = self._prompts()["style_prompt"]
+        assert "NEVER CUT A PERSON OFF" in style
+        # The rule is worthless unless it beats the "keep them large / crop
+        # in" bias that caused the crop in the first place.
+        assert "OUTRANKS" in style
+
+    def test_shipped_style_prompt_says_where_the_height_comes_off(self):
+        style = self._prompts()["style_prompt"]
+        assert "PORTRAIT) SOURCE IS THE DANGEROUS CASE" in style
+        assert "take it off the BOTTOM" in style
+        # Last resort when the people still don't fit: smaller, never cut.
+        assert "pull the camera BACK" in style
+
+    def test_shipped_style_prompt_does_not_invent_missing_body_parts(self):
+        # A source that is ALREADY cropped must stay cropped — "never cut a
+        # head" must not become "hallucinate the top of this head".
+        style = self._prompts()["style_prompt"]
+        assert "already cuts someone off, keep that framing" in style
+
+    def test_from_idea_frames_keep_headroom_too(self):
+        # Generated frames aren't reshaped from a photo, but they feed the
+        # same movie and the same complaint.
+        scratch = self._prompts()["scratch_style_prompt"]
+        assert "never crop a head" in scratch
+
+
 class TestCastPromptRules:
     """The CAST LIST contract lives in the planner prompt; pin its presence
     the way the other hard-won identity rules are pinned."""

@@ -197,6 +197,20 @@ Core design rules:
   extending the sides is what shrank the people and spent the budget on
   background in the first place (`_IMAGE_API_SIZE` is 1536x1024, so a
   portrait source is always reshaped).
+- ...BUT "CROP IN" ALONE CHOPPED HEADS OFF (user report, 2026-07-28). A
+  vertical photo of a couple on a salt flat came back with the man's scalp
+  cut away at the top edge: a portrait source must lose height to become
+  16:9, and nothing said WHERE that height comes from. `style_prompt`'s
+  FRAMING section now opens with "NEVER CUT A PERSON OFF" and says it
+  OUTRANKS the keep-them-large/crop-in bias, that the height comes off the
+  BOTTOM (feet/legs/foreground) and off empty sky only down to a band of
+  headroom, and that the last resort is pulling the camera BACK (smaller
+  people are acceptable, a cropped head is not). It also protects sources
+  that are ALREADY cropped — the rule must never become "hallucinate the
+  missing top of this head". Pinned by TestStylingKeepsWholeSubjectsInFrame
+  against the live config.json. If prompt-side framing proves unreliable,
+  the deterministic fix is padding a portrait source to 3:2 before upload
+  in `prepare_image_for_upload` — not weakening this text.
 - BALDNESS GETS "CORRECTED" BY THE IMAGE MODEL unless forbidden: a real
   styling gave a cleanly bald man a horseshoe of dark hair around his ears
   (frame 920acc69 on Ari&Michal), and changed wraparound mirrored
