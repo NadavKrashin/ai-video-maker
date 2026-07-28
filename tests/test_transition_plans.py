@@ -323,6 +323,89 @@ class TestInSceneTextIsPreserved:
         assert "text" not in terms and "on-screen text" not in terms
 
 
+class TestMotionPromptsDescribeSubjectsOnly:
+    """A motion prompt is about the people, never about the scenery.
+
+    User call (2026-07-28): the two frames already fix the setting, and the
+    video model interpolates the background on its own, so words spent on
+    'the green Andean peaks' buy nothing while eating the word budget and
+    pulling attention off the people. What the prompt owes is the SUBJECTS'
+    path: an ordinary, walkable route from where each person stands in the
+    start frame to where they stand in the end frame.
+
+    The trigger was a real plan for a salt-flat -> Machu Picchu pair (a
+    left-right swap AND a setting change): "…squeeze a little closer, share
+    a quiet smile, then slowly step toward the camera and past it." It
+    pinned swapped people in place (which morphs them) and ended on the exit
+    instead of on the end frame.
+    """
+
+    def _planner(self) -> str:
+        from ai_video_maker.clients import openai_client as oc
+        return oc._MODE_A_SYSTEM
+
+    def test_planner_forbids_describing_the_scene(self):
+        s = self._planner()
+        assert "SUBJECTS ONLY — NEVER DESCRIBE THE SCENE" in s
+        # The old "WORLD FLOW" priority actively ASKED for scenery prose
+        # ("light shifts, weather rolls in") — it must not come back.
+        assert "WORLD FLOW" not in s
+        assert "weather rolls in" not in s
+
+    def test_planner_demands_a_walkable_path(self):
+        s = self._planner()
+        assert "NOBODY TELEPORTS" in s
+        assert "ON THEIR OWN FEET" in s
+        # The failure modes a position change without a path degrades into.
+        for word in ("materialising", "floating", "sliding"):
+            assert word in s
+
+    def test_planner_requires_the_walk_back_in_after_an_exit(self):
+        # The exit past the camera is half the staging; the plan that broke
+        # stopped there, leaving the model to invent the arrival.
+        s = self._planner()
+        assert "only HALF the staging" in s
+        assert "walk back in" in s
+
+    def test_planner_forbids_ending_on_people_leaving(self):
+        s = self._planner()
+        assert "SIDE OF THE FRAME" in s
+        assert "last beat is people LEAVING" in s
+
+    def test_planner_demands_a_concrete_physical_verb(self):
+        # "squeeze a little closer" is the canonical failure: the model
+        # cannot animate an abstraction, so it morphs or drifts instead.
+        s = self._planner()
+        assert "NAME A CONCRETE PHYSICAL ACTION FOR EVERY PERSON WHO MOVES" in s
+        assert "'squeeze a little closer'" in s
+        for verb in ("walk", "climb", "crouch", "sprint", "slide"):
+            assert verb in s
+
+    def test_planner_ties_the_verb_to_the_real_pace(self):
+        # The verb vocabulary must not become licence to sprint people
+        # across a route — the failure that ruined two real clips.
+        s = self._planner()
+        assert "MATCH THE VERB TO THE REAL PACE AND GROUND" in s
+        assert "never as a way to " in s
+
+    def test_condense_keeps_the_verb_instead_of_generalising_it(self):
+        from ai_video_maker.clients import openai_client as oc
+        s = oc._CONDENSE_MOTION_SYSTEM
+        assert "AS THE CONCRETE PHYSICAL VERB" in s
+        assert "'share a moment'" in s
+
+    def test_condense_drops_scenery_before_anything_a_person_does(self):
+        from ai_video_maker.clients import openai_client as oc
+        s = oc._CONDENSE_MOTION_SYSTEM
+        assert "CUT EVERY WORD ABOUT THE SCENE FIRST" in s
+
+    def test_reword_does_not_fall_back_to_describing_the_room(self):
+        # The safety rewrite used to suggest "as the scene moves to the cozy
+        # room" as its generic escape hatch — scenery prose by another name.
+        from ai_video_maker.clients import openai_client as oc
+        assert "cozy room" not in oc._REWORD_MOTION_SYSTEM
+
+
 class TestStylingKeepsWholeSubjectsInFrame:
     """A portrait source must not come back with a head cut off.
 
