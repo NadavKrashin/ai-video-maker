@@ -217,6 +217,65 @@ function MusicBed({ info, onUpload, onRemove, onFetchUrl, busy, note }) {
   );
 }
 
+// The closing letter: plain text scrolled over the ending. It used to be a
+// file only a shell on the server could write (the panel could switch it on
+// but not author it), which behind the tunnel made it unusable remotely.
+// The box detects direction per paragraph while typing (see the input
+// styles); the renderer does its own bidi pass again at combine time.
+function LetterEditor({ text, onSave, busy }) {
+  const [value, setValue] = useState(text || '');
+  const [dirty, setDirty] = useState(false);
+  const serverText = useRef(text || '');
+  useEffect(() => {
+    // Adopt the server's copy only while the box is untouched: the detail
+    // view is re-fetched every 3s during a job, and a poll must never
+    // overwrite a letter someone is in the middle of writing.
+    if (serverText.current !== (text || '')) {
+      serverText.current = text || '';
+      if (!dirty) setValue(text || '');
+    }
+  }, [text, dirty]);
+  const save = async () => {
+    // A failed save must leave the box dirty (and the text in it) — losing
+    // someone's letter to a network blip is not an acceptable outcome.
+    try { await onSave(value); } catch { return; }
+    serverText.current = value;
+    setDirty(false);
+  };
+  const chars = value.trim().length;
+  return (
+    <>
+      <Group mt="md" gap="sm" align="center">
+        <Text size="sm" fw={600}>Closing letter:</Text>
+        {chars
+          ? <Badge variant="light" color="green">{chars} characters</Badge>
+          : <Badge variant="light" color="gray">
+              none — the “Closing letter” toggle will have nothing to scroll
+            </Badge>}
+        {dirty && <Badge variant="light" color="yellow">unsaved</Badge>}
+      </Group>
+      {/* `unicode-bidi: plaintext` is dir="auto" per PARAGRAPH, and it has to
+          be set on the input itself: Mantine puts a plain dir attribute on
+          its wrapper, where auto resolves from the (empty) wrapper text and
+          leaves a Hebrew letter laid out left-to-right. */}
+      <Textarea mt="xs" autosize minRows={4} maxRows={14}
+        styles={{ input: { unicodeBidi: 'plaintext', textAlign: 'start' } }}
+        placeholder={'A few lines to close the movie with — Hebrew is fine.\n\n'
+          + 'Leave a blank line between paragraphs.'}
+        value={value} disabled={busy}
+        onChange={(e) => { setValue(e.currentTarget.value); setDirty(true); }} />
+      <Group mt="xs" gap="sm">
+        <Button size="xs" variant="default" loading={busy} disabled={!dirty}
+          onClick={save}>Save letter</Button>
+        <Text size="xs" c="dimmed">
+          Saved to the project as letter.txt. The letter is drawn during
+          Combine, so changing it needs another Combine — never a re-render.
+        </Text>
+      </Group>
+    </>
+  );
+}
+
 function StoryboardPanel({ ask, locked, info }) {
   const [idea, setIdea] = useState('');
   const [frameCount, setFrameCount] = useState('');
@@ -399,22 +458,31 @@ function AudioPanel({ ask, locked, info, onUploadMusic, onRemoveMusic, onFetchMu
 }
 
 // Tri-state checkbox cycling config → on → off → config.
-function TriToggle({ value, onChange, label, title }) {
+function TriToggle({ value, onChange, label, title, note = '' }) {
   const suffix = value === null ? ' (config)' : value ? ' (on)' : ' (off)';
   return (
-    <Checkbox label={label + suffix} title={title}
+    <Checkbox label={label + suffix + note} title={title}
       checked={value === true} indeterminate={value === null}
       onChange={() => onChange(value === null ? true : value === true ? false : null)} />
   );
 }
 
-function CombinePanel({ ask, locked, info, onUploadMusic, onRemoveMusic, onFetchMusicUrl, musicBusy }) {
+function CombinePanel({
+  ask, locked, info, onUploadMusic, onRemoveMusic, onFetchMusicUrl, musicBusy,
+  letterText, onSaveLetter, letterBusy
+}) {
   const [intro, setIntro] = useState(null);
   const [credits, setCredits] = useState(null);
   const [letter, setLetter] = useState(null);
   const start = (finalize) => {
+    // The delivery preset takes everything this project HAS: the letter is
+    // opt-in per project (most orders have none), so it joins only when
+    // there is text to scroll rather than switching on a silent no-op.
     const o = finalize
-      ? { intro_clip: true, credits_photos: true, force: true }
+      ? {
+        intro_clip: true, credits_photos: true,
+        closing_letter: info.letterChars > 0, force: true
+      }
       : { force: true };
     if (!finalize) {
       if (intro !== null) o.intro_clip = intro;
@@ -431,6 +499,12 @@ function CombinePanel({ ask, locked, info, onUploadMusic, onRemoveMusic, onFetch
         `Concatenates the ${info.rendered} rendered clip(s) into output/final_video.mp4` +
           (info.finalExists ? ', replacing the existing final video.' : '.'),
         extras.length ? `Extras: ${extras.join(' + ')}.` : 'No extras (intro/credits/letter follow the config).',
+        // Turning the letter on without one written is a silent no-op in the
+        // pipeline (it warns to the log and combines without it) — say so
+        // here instead, where the decision is being made.
+        ...(o.closing_letter && !info.letterChars
+          ? ['No letter is written for this project yet, so the movie will be built WITHOUT one — write it below first.']
+          : []),
         'Pure ffmpeg on your machine — nothing is sent to any API.'
       ],
       cost: 'free',
@@ -452,12 +526,15 @@ function CombinePanel({ ask, locked, info, onUploadMusic, onRemoveMusic, onFetch
         <TriToggle value={credits} onChange={setCredits} label="Credits photos"
           title="End-credits montage of the original photos" />
         <TriToggle value={letter} onChange={setLetter} label="Closing letter"
-          title="Scroll the project's letter.txt at the end" />
+          note={info.letterChars ? '' : ' — none written yet'}
+          title="Scroll the letter written below over the ending" />
         <div style={{ flex: 1 }} />
         <Button variant="default" disabled={locked} onClick={() => start(true)}
-          title="The delivery preset: intro + photo credits + rebuild">Finalize…</Button>
+          title="The delivery preset: intro + photo credits + the letter (when there is one) + rebuild">
+          Finalize…</Button>
         <Button disabled={locked} onClick={() => start(false)}>Combine…</Button>
       </Group>
+      <LetterEditor text={letterText} onSave={onSaveLetter} busy={letterBusy} />
       <MusicBed info={info} onUpload={onUploadMusic} onRemove={onRemoveMusic}
         onFetchUrl={onFetchMusicUrl} busy={musicBusy}
         note={'The music bed is laid under the finished movie by THIS step, so '
@@ -539,6 +616,7 @@ export default function ProjectDetail({ name, onBack }) {
   const [openPanel, setOpenPanel] = useState('');
   const [uploading, setUploading] = useState(false);
   const [musicBusy, setMusicBusy] = useState(false);
+  const [letterBusy, setLetterBusy] = useState(false);
   const [confirm, setConfirm] = useState(null);
   // Cache-buster for styled frames and clips: they are replaced in place, so
   // the browser would otherwise keep showing the pre-render version. Bumped
@@ -631,7 +709,9 @@ export default function ProjectDetail({ name, onBack }) {
     needsRender: clipsNeedingRender(snap).length,
     silentRendered: (snap.clips || []).filter((c) => c.rendered && !c.sfx).length,
     finalExists: Boolean(snap.final_video),
-    customMusic: Boolean(snap.custom_music)
+    customMusic: Boolean(snap.custom_music),
+    // 0 when no letter is written: the Closing letter toggle is a no-op then.
+    letterChars: snap.letter?.chars || 0
   };
 
   const stepStatus = (id) => {
@@ -856,6 +936,22 @@ export default function ProjectDetail({ name, onBack }) {
     finally { setMusicBusy(false); }
   };
 
+  // Saving the letter only writes a text file — no job, no credits — so it
+  // runs inline like the storyboard save rather than through a confirmation.
+  const saveLetter = async (text) => {
+    setLetterBusy(true);
+    try {
+      const res = await api.saveLetter(name, text);
+      notify(res.letter.chars
+        ? `Letter saved (${res.letter.chars} characters)`
+        : 'Letter cleared — the movie will end without one', 'green');
+      await load();
+    } catch (e) {
+      notify(`Saving the letter failed: ${e.message}`, 'red');
+      throw e;
+    } finally { setLetterBusy(false); }
+  };
+
   const uploadMusic = async (file) => {
     if (!file) return;
     setMusicBusy(true);
@@ -949,7 +1045,9 @@ export default function ProjectDetail({ name, onBack }) {
       onFetchMusicUrl={fetchMusicUrl} musicBusy={musicBusy} />,
     combine: <CombinePanel ask={ask} locked={locked} info={info}
       onUploadMusic={uploadMusic} onRemoveMusic={removeMusic}
-      onFetchMusicUrl={fetchMusicUrl} musicBusy={musicBusy} />,
+      onFetchMusicUrl={fetchMusicUrl} musicBusy={musicBusy}
+      letterText={snap.letter_text || ''} onSaveLetter={saveLetter}
+      letterBusy={letterBusy} />,
     runall: <RunAllPanel ask={ask} locked={locked} info={info} />
   };
 

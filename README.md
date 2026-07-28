@@ -77,7 +77,9 @@ the `ADMIN_API_TOKEN` from `.env`:
   reviewing and editing every transition (motion prompt, duration, sound
   prompt, global motion prompt), rendering all clips or regenerating one,
   per-clip audio redo, uploading the music track, combine/finalize with
-  intro/credits/letter toggles, and `run` for the whole chain. Jobs stream
+  intro/credits/letter toggles, **writing the closing letter itself** (a
+  Hebrew-safe text box in the Combine step, saved as the project's
+  `letter.txt`), and `run` for the whole chain. Jobs stream
   their logs and can be cancelled from the panel.
   **Editing prompts in bulk:** saving your transition edits marks every
   already-rendered clip whose motion prompt / duration / frames changed as
@@ -91,7 +93,10 @@ the `ADMIN_API_TOKEN` from `.env`:
   live — styled frames appear one by one as they come back, instead of only
   once the whole run finishes.
 - **API**: order list, per-project status, storyboard read/edit, photos, a
-  music-bed upload (`POST`/`DELETE /api/projects/<name>/music`), and
+  music-bed upload (`POST`/`DELETE /api/projects/<name>/music`), the closing
+  letter (`PUT /api/projects/<name>/letter` with `{"text": "…"}`; the text
+  comes back in the project detail as `letter_text`, and its summary as
+  `letter: {exists, chars}`), and
   clip playback, plus actions (ingest / storyboard / render / redo one clip /
   audio / combine / run) that run as **background jobs** — one at a time,
   with their logs available at `/api/jobs/<id>`. `POST /api/jobs/<id>/cancel`
@@ -460,7 +465,14 @@ no API cost:
   (`credits_seconds_per_photo`), in movie order, under the same music bed.
 - `--letter` (config: `closing_letter`): write a letter in
   `projects/<name>/letter.txt` (plain text; Hebrew and RTL are fully
-  supported) and it rolls credits-style at the very end. **When
+  supported — or write it in the admin panel's Combine step, which saves the
+  same file) and it rolls credits-style at the very end. For an ingested web
+  order the file is **pre-filled with the customer's blessing** from the
+  order ledger, so the letter usually only needs editing, not typing; an
+  existing `letter.txt` is never overwritten by an ingest. With no letter
+  written the flag is a no-op: combine warns and builds the movie without
+  one (`pipeline.py status` and the panel both show whether there is a
+  letter). **When
   `--credits-photos` is also on, the letter scrolls OVER the photo montage**
   (photos dimmed under a dark scrim so the text stays readable), with both
   paced to end together — photos never flash faster than configured and the

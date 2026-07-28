@@ -258,6 +258,69 @@ class TestJobOutcome:
         assert "2 clip" in error and "1 sfx" in error
 
 
+class TestLetterEndpoint:
+    """Writing the closing letter through the API (the panel's editor).
+
+    Combine could always be TOLD to scroll a letter, but nothing could write
+    one — the text had to reach the server's disk by hand, which behind the
+    tunnel means a shell on the machine.
+    """
+
+    def _put(self, client: TestClient, body: dict):
+        return client.put(
+            f"/api/projects/{PROJECT}/letter", json=body,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+
+    def _get(self, client: TestClient) -> dict:
+        return client.get(
+            f"/api/projects/{PROJECT}",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ).json()
+
+    def test_saved_letter_lands_in_the_project(self, client):
+        res = self._put(client, {"text": "מתן היקר,\n\nאוהבים אותך"})
+        assert res.status_code == 200
+        assert res.json()["letter"]["chars"] > 0
+        assert "מתן" in Workspace.for_project(PROJECT).letter_file.read_text(
+            encoding="utf-8")
+
+    def test_detail_returns_the_text_and_the_summary(self, client):
+        self._put(client, {"text": "dear you"})
+        snap = self._get(client)
+        assert snap["letter_text"].strip() == "dear you"
+        assert snap["letter"] == {"exists": True, "chars": 8}
+
+    def test_project_without_a_letter_reports_none(self, client):
+        snap = self._get(client)
+        assert snap["letter"] == {"exists": False, "chars": 0}
+        assert snap["letter_text"] == ""
+
+    def test_clearing_the_letter_removes_it(self, client):
+        self._put(client, {"text": "dear you"})
+        assert self._put(client, {"text": ""}).json()["letter"]["exists"] is False
+        assert not Workspace.for_project(PROJECT).letter_file.exists()
+
+    def test_absurdly_long_letter_is_rejected(self, client):
+        res = self._put(client, {"text": "x" * 20_001})
+        assert res.status_code == 413
+        assert not Workspace.for_project(PROJECT).letter_file.exists()
+
+    def test_non_string_text_is_rejected(self, client):
+        assert self._put(client, {"text": {"nope": 1}}).status_code == 422
+
+    def test_unknown_project_is_404(self, client):
+        res = client.put(
+            "/api/projects/nosuchproject/letter", json={"text": "hi"},
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+        assert res.status_code == 404
+
+    def test_endpoint_requires_the_token(self, client):
+        res = client.put(f"/api/projects/{PROJECT}/letter", json={"text": "hi"})
+        assert res.status_code == 401
+
+
 class TestMusicFromUrlEndpoint:
     """POST /music/url writes the same file the upload does."""
 

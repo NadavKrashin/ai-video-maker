@@ -63,6 +63,10 @@ export const api = {
     }),
   deleteMusic: (name) =>
     request(`/api/projects/${encodeURIComponent(name)}/music`, { method: 'DELETE' }),
+  saveLetter: (name, text) =>
+    request(`/api/projects/${encodeURIComponent(name)}/letter`, {
+      method: 'PUT', body: JSON.stringify({ text })
+    }),
   saveStoryboard: (name, storyboard) =>
     request(`/api/projects/${encodeURIComponent(name)}/storyboard`, {
       method: 'PUT', body: JSON.stringify(storyboard)

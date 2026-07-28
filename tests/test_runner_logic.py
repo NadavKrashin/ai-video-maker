@@ -963,6 +963,99 @@ class TestSnapshotMusic:
         assert snap["custom_music"] is True and snap["music"] is True
 
 
+class TestSnapshotLetter:
+    """The closing letter's presence has to be visible, not guessed.
+
+    Turning `closing_letter` on without a letter written is a silent no-op
+    (combine warns to the log and builds the movie without it), so status
+    and the panel need to know whether there is any text to scroll.
+    """
+
+    def test_no_letter_file(self, pipeline):
+        assert pipeline.snapshot()["letter"] == {"exists": False, "chars": 0}
+
+    def test_written_letter_is_counted(self, pipeline, workspace):
+        workspace.letter_file.write_text("dear you\n", encoding="utf-8")
+        assert pipeline.snapshot()["letter"] == {"exists": True, "chars": 8}
+
+    def test_blank_letter_file_scrolls_nothing(self, pipeline, workspace):
+        workspace.letter_file.write_text("\n  \n", encoding="utf-8")
+        assert pipeline.snapshot()["letter"] == {"exists": True, "chars": 0}
+
+
+class TestSeedLetterFromOrder:
+    """Ingest pre-fills letter.txt with the customer's blessing.
+
+    The order form already collects it and it is exactly what the closing
+    letter scrolls, but nothing carried it across: the text sat in Firestore
+    while every letter was retyped by hand.
+    """
+
+    FOLDER = "AM-180726-XY12_Dana-Cohen-18.07.2026_10-30"
+
+    def _stub_firebase(self, monkeypatch, *, configured=True, order=None,
+                       explode=False):
+        """Stand in for the Firestore ledger; records the id that was read."""
+        seen: dict[str, str] = {}
+
+        class _Client:
+            @staticmethod
+            def configured(config):
+                return configured
+
+            @staticmethod
+            def from_config(config):
+                return _Client()
+
+            def get_order(self, order_id):
+                seen["order_id"] = order_id
+                if explode:
+                    raise RuntimeError("firestore is down")
+                return order
+
+        monkeypatch.setattr(
+            "ai_video_maker.clients.firebase_client.FirebaseClient", _Client)
+        return seen
+
+    def _order(self, blessing: str):
+        from ai_video_maker.clients.firebase_client import FirestoreOrder
+
+        return FirestoreOrder(order_id="AM-180726-XY12", blessing=blessing)
+
+    def test_blessing_becomes_the_letter(self, make_pipeline, workspace, monkeypatch):
+        seen = self._stub_firebase(monkeypatch, order=self._order("מזל טוב!"))
+        p = make_pipeline()
+        p._seed_letter_from_order(self.FOLDER)
+        assert workspace.letter_file.read_text(encoding="utf-8").strip() == "מזל טוב!"
+        # The doc id is the order id from the folder leaf, not the whole leaf.
+        assert seen["order_id"] == "AM-180726-XY12"
+
+    def test_existing_letter_is_never_overwritten(self, make_pipeline, workspace,
+                                                  monkeypatch):
+        workspace.letter_file.write_text("hand-written\n", encoding="utf-8")
+        self._stub_firebase(monkeypatch, order=self._order("from the order"))
+        make_pipeline()._seed_letter_from_order(self.FOLDER)
+        assert workspace.letter_file.read_text(encoding="utf-8") == "hand-written\n"
+
+    def test_order_without_a_blessing_writes_nothing(self, make_pipeline,
+                                                     workspace, monkeypatch):
+        self._stub_firebase(monkeypatch, order=self._order("   "))
+        make_pipeline()._seed_letter_from_order(self.FOLDER)
+        assert not workspace.letter_file.exists()
+
+    def test_no_ledger_configured_is_a_no_op(self, make_pipeline, workspace,
+                                             monkeypatch):
+        self._stub_firebase(monkeypatch, configured=False)
+        make_pipeline()._seed_letter_from_order(self.FOLDER)
+        assert not workspace.letter_file.exists()
+
+    def test_ledger_failure_never_sinks_the_ingest(self, make_pipeline, workspace,
+                                                   monkeypatch):
+        self._stub_firebase(monkeypatch, explode=True)
+        make_pipeline()._seed_letter_from_order(self.FOLDER)  # must not raise
+        assert not workspace.letter_file.exists()
+
+
 class TestPendingRenders:
     """Submitted-but-uncollected fal jobs — money spent, output not fetched.
 

@@ -50,7 +50,13 @@ from .media.ffmpeg import (
     render_letter_scroll,
     render_photo_still,
 )
-from .media.letter import find_letter_font, render_letter_image
+from .media.letter import (
+    find_letter_font,
+    letter_state,
+    read_letter,
+    render_letter_image,
+    save_letter,
+)
 from .media.music_url import fetch_music
 from .media.images import (
     SUPPORTED_IMAGE_EXTS,
@@ -377,6 +383,7 @@ class Pipeline:
             photo_count=len(targets),
         )
         self._sync_order_status(folder)
+        self._seed_letter_from_order(folder)
         logger.info(
             "Ingested %d photo(s) into %s", len(pending),
             self.workspace.input_images_dir,
@@ -406,6 +413,39 @@ class Pipeline:
             logger.warning(
                 "Could not update Firestore order %s: %s", order_id, exc
             )
+
+    def _seed_letter_from_order(self, folder: str) -> None:
+        """Pre-fill letter.txt with the customer's blessing, if they wrote one.
+
+        The order form already asks for a blessing, and it is exactly what
+        the closing letter scrolls — but nothing used to carry it across, so
+        the text sat in Firestore and every letter was retyped by hand. This
+        only ever SEEDS: an existing letter.txt (someone's edit) is never
+        overwritten, and a ledger hiccup never sinks the ingest.
+        """
+        from .clients.firebase_client import FirebaseClient
+
+        path = self.workspace.letter_file
+        if path.exists() or not FirebaseClient.configured(self.config):
+            return
+        order_id = parse_order_folder(folder)["order_id"]
+        try:
+            order = FirebaseClient.from_config(self.config).get_order(order_id)
+        except Exception as exc:  # noqa: BLE001 - the ledger never sinks an ingest
+            logger.warning(
+                "Could not read Firestore order %s for its blessing: %s",
+                order_id, exc,
+            )
+            return
+        blessing = (order.blessing if order else "").strip()
+        if not blessing:
+            return
+        save_letter(path, blessing)
+        logger.info(
+            "Closing letter seeded from the order's blessing (%d chars) -> %s "
+            "— edit it in the panel, then combine with --letter.",
+            len(blessing), path,
+        )
 
     # --------------------------- storyboard step -------------------------- #
     def cmd_storyboard(self) -> None:
@@ -1639,7 +1679,7 @@ class Pipeline:
                 path,
             )
             return None
-        text = path.read_text(encoding="utf-8").strip()
+        text = read_letter(path).strip()
         if not text:
             logger.warning("closing_letter: %s is empty; skipping.", path)
             return None
@@ -1933,6 +1973,11 @@ class Pipeline:
             "stray_clips": stray,
             "pending_renders": self.pending_renders(),
             "final_video": ws.final_video.exists(),
+            # The closing letter is a plain text file someone writes by hand;
+            # with the file missing or blank the combine toggle silently
+            # produces no letter (see _letter_text), so status and the panel
+            # have to be able to say whether there is one at all.
+            "letter": letter_state(ws.letter_file),
             "music": ws.music_file.exists(),
             "custom_music": ws.custom_music_file.exists(),
             "has_failed_jobs": self.failed.path.exists(),
@@ -2095,6 +2140,12 @@ class Pipeline:
                     "Rendering this clip will pay for a fresh one; the old "
                     "job's output is lost."
                 )
+
+        letter = snap["letter"]
+        if letter["chars"]:
+            print(f"  Closing letter   : {letter['chars']} chars in {ws.letter_file}")
+        elif letter["exists"]:
+            print(f"  Closing letter   : {ws.letter_file} is empty — nothing to scroll")
 
         final = ws.final_video
         print(f"  Final video      : {'ready — ' + str(final) if final.exists() else 'not built'}")

@@ -51,6 +51,50 @@ def find_letter_font(explicit: str = "") -> str:
     )
 
 
+def read_letter(path: Path) -> str:
+    """The project's letter text, or "" when it hasn't been written yet.
+
+    Unreadable bytes are treated as no letter rather than raising: the
+    callers (status, the admin panel) are describing a project, and a
+    corrupt file must not take the whole view down with it.
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def letter_state(path: Path) -> dict:
+    """Describe the letter file for status/API: is there text to scroll?
+
+    ``exists`` is about the FILE, ``chars`` about its content — a file of
+    blank lines renders nothing, so the two differ and both matter: the
+    closing_letter toggle silently does nothing when ``chars`` is 0.
+    """
+    return {
+        "exists": path.is_file(),
+        "chars": len(read_letter(path).strip()),
+    }
+
+
+def save_letter(path: Path, text: str) -> dict:
+    """Write (or clear) the project's letter; returns the new letter_state.
+
+    Blank text DELETES the file instead of leaving an empty one behind, so
+    "no letter" is a single state everywhere rather than two that behave the
+    same but read differently in status.
+    """
+    if not text.strip():
+        path.unlink(missing_ok=True)
+        return letter_state(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Normalise the line endings a browser textarea submits (CRLF): the
+    # renderer splits on lines and a stray \r would be drawn as a glyph.
+    normalised = text.replace("\r\n", "\n").replace("\r", "\n")
+    path.write_text(normalised.rstrip() + "\n", encoding="utf-8")
+    return letter_state(path)
+
+
 def _wrap(paragraph: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
     """Word-wrap LOGICAL (unreordered) text to the given pixel width.
 

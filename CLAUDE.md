@@ -295,6 +295,19 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
   `v=` cache-buster (`fileUrl`'s 4th argument, bumped by the panel's poll
   and once more when a job settles); without it a regenerated frame kept
   showing its previous version and looked like the button did nothing.
+- THE CLOSING LETTER IS AUTHORED IN THE PANEL (2026-07-28). combine could
+  always be TOLD to scroll `projects/<n>/letter.txt` (`--letter` /
+  `closing_letter`), but nothing could WRITE it — behind the tunnel that
+  meant a shell on the mini, so the toggle was unusable remotely and
+  silently produced no letter. Now: `PUT /api/projects/<n>/letter`
+  (`read_letter`/`save_letter`/`letter_state` in media/letter.py — blank
+  text DELETES the file so "no letter" is one state), the text rides in the
+  detail response as `letter_text`, `snapshot()["letter"]` is
+  `{exists, chars}` (status + panel show it; the Combine modal warns when
+  the toggle is on with `chars == 0`), and ingest SEEDS the file from the
+  order's Firestore `blessing` (`_seed_letter_from_order`, best-effort,
+  never overwrites an existing letter). Saving is free and local, so it is
+  inline like the storyboard save, not an `ask({...})` job.
 - The **Firestore order ledger** (`clients/firebase_client.py`, REST +
   google-auth, NOT the heavy firebase-admin SDK) is the watcher's order
   source when a service-account key exists (FIREBASE_SERVICE_ACCOUNT in
