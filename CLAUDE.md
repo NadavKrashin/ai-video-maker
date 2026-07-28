@@ -530,6 +530,16 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
 - Clips are named `<startid>_to_<endid>.mp4`; bridged clips (a missing middle
   frame) get non-consecutive names like `003_to_005.mp4` and become "stray"
   once the frame is restored — `combine` ignores strays by design.
+- PHONE UPLOADS HAVE NO FILE EXTENSION, so nothing may validate on one. A
+  real mp3 from iOS arrived named `Lights(chosic.com)` and the music upload
+  refused it (extension-only check), while `accept="audio/*"` on the input
+  greyed the same file out in the Files picker before it could even be
+  chosen. Now: `looks_like_audio` (media/audio_files.py) decides from magic
+  bytes → declared MIME → extension, any one of which is enough, and the
+  panel's accept list is deliberately wide (includes
+  `application/octet-stream` and bare extensions) because the server checks
+  content anyway. The same trap is live for PHOTO uploads
+  (`_PHOTO_EXTENSIONS` in server.py) — fix it the same way if it bites.
 - THE CREDITS PHOTOS ARE NEVER GREYED OUT under a scrolling letter (user
   call, 2026-07-28). `_letter_overlay_cmd` used to lay a fixed `black@0.55`
   drawbox over the montage for text contrast; the photos are the product,
