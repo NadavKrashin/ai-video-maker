@@ -51,6 +51,7 @@ from .media.ffmpeg import (
     render_photo_still,
 )
 from .media.letter import (
+    find_emoji_font,
     find_letter_font,
     letter_state,
     read_letter,
@@ -1756,6 +1757,8 @@ class Pipeline:
             image = render_letter_image(
                 text, width, height, font, self.config.letter_font_size,
                 pad=False, transparent=True,
+                emoji_font_path=find_emoji_font(
+                    self.config.letter_emoji_font_path),
             )
             png = seg_dir / "letter.png"
             image.save(png)
@@ -1794,7 +1797,9 @@ class Pipeline:
         try:
             font = find_letter_font(self.config.letter_font_path)
             image = render_letter_image(
-                text, width, height, font, self.config.letter_font_size
+                text, width, height, font, self.config.letter_font_size,
+                emoji_font_path=find_emoji_font(
+                    self.config.letter_emoji_font_path),
             )
             png = seg_dir / "letter.png"
             image.save(png)

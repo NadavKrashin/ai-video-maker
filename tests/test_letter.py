@@ -6,9 +6,12 @@ from PIL import ImageFont
 
 from ai_video_maker.media.letter import (
     _BG,
+    _segments,
     _wrap,
+    find_emoji_font,
     find_letter_font,
     letter_state,
+    load_emoji_font,
     read_letter,
     render_letter_image,
     save_letter,
@@ -19,7 +22,16 @@ try:
 except FileNotFoundError:  # no system font in this environment
     _FONT = ""
 
+_EMOJI_FONT = find_emoji_font()
+
 needs_font = pytest.mark.skipif(not _FONT, reason="no Hebrew-capable system font")
+needs_emoji_font = pytest.mark.skipif(
+    not _EMOJI_FONT, reason="no colour-emoji font on this system"
+)
+
+# A private-use code point: no real font maps it, so it stands in for "a
+# character this font cannot draw" without depending on which font is found.
+UNMAPPED = ""
 
 
 class TestFindLetterFont:
@@ -73,6 +85,86 @@ class TestLetterFile:
         path.write_bytes(b"\xff\xfe\x00garbage")
         assert read_letter(path) == ""
         assert letter_state(path) == {"exists": True, "chars": 0}
+
+
+class TestFindEmojiFont:
+    """Emoji need their own font; missing one is a degrade, not a crash."""
+
+    def test_explicit_path_must_exist(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            find_emoji_font(str(tmp_path / "missing.ttf"))
+
+    def test_explicit_existing_path_wins(self, tmp_path):
+        fake = tmp_path / "emoji.ttf"
+        fake.write_bytes(b"x")
+        assert find_emoji_font(str(fake)) == str(fake)
+
+    def test_unloadable_font_is_none_not_an_exception(self, tmp_path):
+        # A file that exists but isn't a usable font: the letter must still
+        # render (without emoji), never blow up the whole combine.
+        fake = tmp_path / "emoji.ttf"
+        fake.write_bytes(b"not a font")
+        assert load_emoji_font(str(fake)) is None
+
+    def test_no_path_means_no_font(self):
+        assert load_emoji_font("") is None
+
+
+@needs_font
+class TestSegments:
+    """What each font is asked to draw — and what is dropped instead of boxed."""
+
+    def _font(self):
+        return ImageFont.truetype(_FONT, 40)
+
+    def test_plain_text_is_one_text_run(self):
+        assert _segments("shalom", self._font(), None) == [("shalom", False)]
+
+    def test_emoji_is_dropped_when_there_is_no_emoji_font(self):
+        # The bug this fixes: the text font draws an empty box for a heart.
+        # The space that preceded it goes too, or the line centres off by one.
+        assert _segments("hi ❤️", self._font(), None) == [("hi", False)]
+
+    @needs_emoji_font
+    def test_emoji_becomes_its_own_run_when_a_font_exists(self):
+        emoji = load_emoji_font(_EMOJI_FONT)
+        assert emoji is not None
+        segments = _segments("hi ❤️", self._font(), emoji[0])
+        assert segments[0] == ("hi ", False)
+        # Heart + variation selector stay together so the font can compose them.
+        assert segments[1][1] is True and "❤" in segments[1][0]
+
+    def test_characters_the_font_cannot_draw_are_dropped(self):
+        assert _segments(f"a{UNMAPPED}b", self._font(), None) == [("ab", False)]
+
+
+@needs_font
+class TestRenderWithEmoji:
+    def _render(self, text, emoji_font=""):
+        return render_letter_image(
+            text, 1920, 400, _FONT, 64, pad=False, emoji_font_path=emoji_font,
+        )
+
+    def test_without_an_emoji_font_the_emoji_leaves_no_mark(self):
+        # Strongest available statement of "no empty box": the image is
+        # identical to one rendered from the same text without the emoji.
+        with_emoji = self._render("shalom ❤️")
+        without = self._render("shalom ")
+        assert with_emoji.tobytes() == without.tobytes()
+
+    @needs_emoji_font
+    def test_emoji_font_puts_colour_in_the_line(self):
+        # The text is drawn in one flat colour on a flat background, so any
+        # saturated pixel can only have come from the colour emoji.
+        img = self._render("shalom ❤️", _EMOJI_FONT).convert("RGB")
+        colours = {c for _, c in (img.getcolors(200_000) or [])}
+        assert any(r > 120 and r - b > 60 and r - g > 60 for r, g, b in colours)
+
+    @needs_emoji_font
+    def test_hebrew_letter_with_a_heart_still_reorders_rtl(self):
+        # The real letter: the heart is last logically, so it lands leftmost.
+        img = self._render('לאהבת חיי ט"ו באב שמח ❤️', _EMOJI_FONT)
+        assert img.width == 1920
 
 
 @needs_font
