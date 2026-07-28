@@ -197,15 +197,27 @@ class TestPhotoSegments:
         assert "crop=1920:1080:0:'min(t*154.286,ih-1080)'" in graph
         assert "setsar=1" in graph
 
-    def test_letter_overlay_dims_bg_and_scrolls_up(self):
+    def test_letter_overlay_keeps_the_photos_at_full_brightness(self):
+        # The photos used to be greyed out under a black scrim for
+        # readability; the user wants them normal (2026-07-28), and the
+        # letter's own drop shadow carries the contrast instead.
         cmd = _letter_overlay_cmd(
             Path("bg.mp4"), Path("letter.png"), Path("out.mp4"),
             pixels_per_second=120.0,
         )
         graph = cmd[cmd.index("-filter_complex") + 1]
-        assert "drawbox" in graph and "black@0.55" in graph  # readability scrim
+        assert "drawbox" not in graph and "black@" not in graph
         assert "overlay=x=(W-w)/2:y='H-t*120.000'" in graph  # enters from below
         assert "0:a?" in cmd  # background audio kept if present
+
+    def test_letter_overlay_dim_is_available_when_asked_for(self):
+        cmd = _letter_overlay_cmd(
+            Path("bg.mp4"), Path("letter.png"), Path("out.mp4"),
+            pixels_per_second=120.0, dim=0.4,
+        )
+        graph = cmd[cmd.index("-filter_complex") + 1]
+        assert "drawbox" in graph and "black@0.40" in graph
+        assert "overlay=x=(W-w)/2:y='H-t*120.000'" in graph
 
     def test_end_fade_cmd_fades_video_and_audio(self):
         cmd = _end_fade_cmd(
