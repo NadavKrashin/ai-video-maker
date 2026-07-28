@@ -372,6 +372,28 @@ class TestMotionPromptsDescribeSubjectsOnly:
         assert "SIDE OF THE FRAME" in s
         assert "last beat is people LEAVING" in s
 
+    def test_planner_demands_a_concrete_physical_verb(self):
+        # "squeeze a little closer" is the canonical failure: the model
+        # cannot animate an abstraction, so it morphs or drifts instead.
+        s = self._planner()
+        assert "NAME A CONCRETE PHYSICAL ACTION FOR EVERY PERSON WHO MOVES" in s
+        assert "'squeeze a little closer'" in s
+        for verb in ("walk", "climb", "crouch", "sprint", "slide"):
+            assert verb in s
+
+    def test_planner_ties_the_verb_to_the_real_pace(self):
+        # The verb vocabulary must not become licence to sprint people
+        # across a route — the failure that ruined two real clips.
+        s = self._planner()
+        assert "MATCH THE VERB TO THE REAL PACE AND GROUND" in s
+        assert "never as a way to " in s
+
+    def test_condense_keeps_the_verb_instead_of_generalising_it(self):
+        from ai_video_maker.clients import openai_client as oc
+        s = oc._CONDENSE_MOTION_SYSTEM
+        assert "AS THE CONCRETE PHYSICAL VERB" in s
+        assert "'share a moment'" in s
+
     def test_condense_drops_scenery_before_anything_a_person_does(self):
         from ai_video_maker.clients import openai_client as oc
         s = oc._CONDENSE_MOTION_SYSTEM

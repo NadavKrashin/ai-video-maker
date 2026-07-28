@@ -91,6 +91,21 @@ Core design rules:
   "…squeeze a little closer, share a quiet smile, then slowly step toward
   the camera and past it" — hold-steady staging on swapped people, ending
   on the exit. Pinned by TestMotionPromptsDescribeSubjectsOnly.
+- EVERY PERSON WHO MOVES GETS A CONCRETE PHYSICAL VERB (user call,
+  2026-07-28, same thread). Kling animates BODIES, so the prompt must name
+  a movement you could act out — walk, step, turn, crouch, kneel, climb,
+  jump, crawl, slide, run, swim, paddle, ride, hug, wave, push, carry... —
+  and abstractions are forbidden: "squeeze a little closer", "share a
+  moment", "move together", "shift", "settle into", "they connect". An
+  abstraction gives the model nothing to render, so it fills the clip with
+  a morph or a drift. Expressions (smiling) may hang off a movement, never
+  BE the movement, and "they hold the moment" is not a movement. Balanced
+  against the pace rule by MATCH THE VERB TO THE REAL PACE AND GROUND:
+  run/jog/sprint only when the shot really is running AND the ground is
+  short (never as a way to cross a route faster), climb/wade/ski only when
+  the frames show that terrain. `_CONDENSE_MOTION_SYSTEM` must keep the
+  verb rather than generalise it back to "move"/"share a moment". Pinned by
+  the same test class.
 - Motion prompts are BEAT-BUDGETED to the clip length: 5s = exactly one
   continuous action, 10s = max two beats. User-verified on a real clip: an
   overloaded 5s prompt (lift-carry-seat-examine) made Kling swap in another
