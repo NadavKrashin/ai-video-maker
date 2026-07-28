@@ -124,56 +124,30 @@ def load_emoji_font(path: str) -> Optional[tuple[ImageFont.FreeTypeFont, int]]:
     return None
 
 
-def _missing_glyph_signature(font: ImageFont.FreeTypeFont) -> bytes:
-    """What this font draws for a character it has no glyph for.
-
-    FreeType renders the .notdef box, and Pillow exposes no glyph-index API,
-    so the box's own bitmap is the reference every character is compared
-    against. \\uE000 is a private-use code point no real font maps.
-    """
-    return _glyph_signature(font, "")
-
-
-def _glyph_signature(font: ImageFont.FreeTypeFont, ch: str) -> bytes:
-    try:
-        mask = font.getmask(ch, mode="L")
-    except Exception:  # noqa: BLE001 - a font that can't measure can't draw
-        return b""
-    if not mask.size[0] or not mask.size[1]:
-        return b""
-    return Image.frombytes("L", mask.size, bytes(mask)).tobytes()
-
-
-def _drawable(font: ImageFont.FreeTypeFont, ch: str, notdef: bytes) -> bool:
-    """Does the font have a real glyph for this character?"""
-    if ch.isspace():
-        return True
-    return _glyph_signature(font, ch) != notdef
-
-
 def _segments(
     line: str,
     font: ImageFont.FreeTypeFont,
     emoji_font: Optional[ImageFont.FreeTypeFont],
 ) -> list[tuple[str, bool]]:
-    """Split a line into (run, is_emoji) pieces the fonts can actually draw.
+    """Split a line into (run, is_emoji) pieces, one per font.
 
     Emoji runs are kept whole so the emoji font can compose sequences (a
-    heart plus its variation selector, a joined family). Anything neither
-    font can render is dropped rather than drawn as an empty box.
+    heart plus its variation selector, a joined family); with no emoji font
+    on this machine they are dropped rather than drawn as empty boxes.
+
+    Which characters are emoji is decided by code point alone. An earlier
+    version asked the font whether it had a glyph, by comparing each
+    character's rendered bitmap against the font's .notdef box — on the
+    production Mac that call reported EVERY character as missing and a
+    letter came out blank. Never probe the font here; the text font draws
+    all non-emoji text, exactly as it did before emoji support existed.
     """
-    notdef = _missing_glyph_signature(font)
+    del font  # kept for signature stability; text is never font-probed
     out: list[tuple[str, bool]] = []
     for ch in line:
         is_emoji = bool(_EMOJI_RE.match(ch))
         if is_emoji and emoji_font is None:
             continue  # no emoji font on this machine: drop, never box
-        if not is_emoji and not _drawable(font, ch, notdef):
-            logger.warning(
-                "Letter font cannot draw %r (U+%04X); dropping it.",
-                ch, ord(ch),
-            )
-            continue
         if out and out[-1][1] == is_emoji:
             out[-1] = (out[-1][0] + ch, is_emoji)
         else:
