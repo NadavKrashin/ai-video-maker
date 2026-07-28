@@ -117,6 +117,10 @@ class Config(BaseModel):
     # reordering happens in media/letter.py, not ffmpeg).
     closing_letter: bool = False
     letter_font_path: str = ""       # empty = auto-detect a Hebrew-capable font
+    # Emoji in a letter (a heart is the common one) need their own font: the
+    # Hebrew text font has no glyph for them and draws an empty box instead.
+    # Empty = auto-detect the system's colour-emoji font.
+    letter_emoji_font_path: str = ""
     letter_font_size: int = 64
     letter_seconds_per_screen: float = 7.0  # scroll pace per screen height
     # Fade the final video's last moments to black (audio fades with it).

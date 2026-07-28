@@ -530,5 +530,21 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
 - Clips are named `<startid>_to_<endid>.mp4`; bridged clips (a missing middle
   frame) get non-consecutive names like `003_to_005.mp4` and become "stray"
   once the frame is restored — `combine` ignores strays by design.
+- THE LETTER FONT HAS NO EMOJI, and a blessing usually ends in a heart: a
+  real delivered movie showed "לאהבת חיי ט״ו באב שמח" followed by two empty
+  boxes (the emoji + its variation selector, both .notdef). media/letter.py
+  now splits each line into runs — text through the Hebrew font, emoji
+  through a colour font (`find_emoji_font`, config
+  `letter_emoji_font_path`; Apple Color Emoji on the mini, Noto Color Emoji
+  on Linux/CI). Colour fonts are BITMAP STRIKES: `ImageFont.truetype` raises
+  OSError('invalid pixel size') at any other size, so `load_emoji_font`
+  probes known strikes (109 Noto, 137/160 Apple) and the emoji is drawn at
+  that size then scaled to the text. Pillow exposes no glyph-index API, so
+  coverage is tested by comparing a character's rendered bitmap against the
+  font's .notdef box (`_drawable`) — anything neither font can draw is
+  DROPPED, never boxed, along with the space left dangling in front of it
+  (it offsets the centring). Pinned by TestSegments / TestRenderWithEmoji;
+  the emoji-colour test is font-gated, so the mini's own deploy-time test
+  run is what proves Apple Color Emoji works there.
 - ffmpeg concat: mixed silent/sounded clips must go through the concat-filter
   path with silent padding (`_combine_clips_mixed_audio`), never the demuxer.

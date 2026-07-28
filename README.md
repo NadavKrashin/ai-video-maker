@@ -490,6 +490,13 @@ no API cost:
   long lines wrap. Font is auto-detected (override with `letter_font_path`),
   size via `letter_font_size` (default 64), pace via
   `letter_seconds_per_screen` (default 7.0 — higher is slower).
+  **Emoji** (a heart at the end of a blessing is the usual one) are drawn by
+  the system's colour-emoji font — Apple Color Emoji on macOS, Noto Color
+  Emoji on Linux — because the Hebrew text font has no glyph for them and
+  would draw an empty box. Override with `letter_emoji_font_path`. If no
+  emoji font is found the emoji are dropped from the letter rather than
+  boxed, and the same goes for any other character the text font can't
+  draw.
 - **End fade** (config: `end_fade_seconds`, default 1.5): the video's last
   moments fade to black and the audio — music bed and SFX — fades out with
   them. Set `0` to disable.
