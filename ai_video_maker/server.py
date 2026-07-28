@@ -68,6 +68,7 @@ from .intake import (
     read_order_record,
 )
 from .logging_setup import logger, setup_logging
+from .media.letter import read_letter, save_letter
 from .media.music_url import fetch_music
 from .models import Storyboard, changed_transition_ids
 from .options import RunOptions
@@ -92,6 +93,11 @@ _AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus"}
 # only exists so an unauthenticated-looking-but-authenticated mistake (or a
 # stolen token) can't fill the disk through the panel.
 _MAX_UPLOAD_BYTES = 40 * 1024 * 1024
+
+# The closing letter is a few paragraphs read off the screen; anything near
+# this is already far more than can scroll past in a movie's ending, so the
+# cap only stops the text box being used as a file dump.
+_MAX_LETTER_CHARS = 20_000
 
 # The token is the only thing between the internet and the pipeline once the
 # server sits behind a tunnel — refuse to boot with a guessable one.
@@ -938,7 +944,33 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         snap["storyboard_json"] = (
             sb.read_text(encoding="utf-8") if sb.exists() else ""
         )
+        # The letter's text rides along with the detail view (like the
+        # storyboard) so the panel's editor opens filled in; the projects
+        # LIST keeps just the summary from snapshot().
+        snap["letter_text"] = read_letter(ws.letter_file)
         return snap
+
+    @app.put("/api/projects/{name}/letter", dependencies=guarded)
+    async def save_letter_text(name: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Write the closing letter (the UI twin of editing letter.txt).
+
+        Combine could already be told to scroll a letter, but nothing could
+        WRITE one: the text had to be put on the server's disk by hand, which
+        behind the tunnel means a shell on the machine. Saving is free and
+        local — the letter is rendered at combine time, so a changed letter
+        needs another Combine, never a re-render.
+        """
+        ws = _workspace(name)
+        text = body.get("text", "")
+        if not isinstance(text, str):
+            raise HTTPException(status_code=422, detail="'text' must be a string")
+        if len(text) > _MAX_LETTER_CHARS:
+            raise HTTPException(
+                status_code=413,
+                detail=f"The letter is longer than {_MAX_LETTER_CHARS} characters",
+            )
+        state = save_letter(ws.letter_file, text)
+        return {"ok": True, "letter": state}
 
     @app.put("/api/projects/{name}/storyboard", dependencies=guarded)
     async def save_storyboard(name: str, body: dict[str, Any]) -> dict[str, Any]:
