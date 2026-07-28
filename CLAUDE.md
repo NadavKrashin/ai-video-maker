@@ -71,6 +71,26 @@ Core design rules:
 - Transition motion prompts must describe in-world subject action, not camera
   moves (see `_MODE_A_SYSTEM` in `clients/openai_client.py`); the user
   explicitly rejects "zoom/pan/pull-back" slideshow-style prompts.
+- MOTION PROMPTS DESCRIBE THE SUBJECTS ONLY — never the scene (user call,
+  2026-07-28). The two frames already fix the setting/light/outfits and
+  Kling interpolates the background by itself, so naming the location or
+  narrating the world ("the green Andean peaks rise behind them", "the room
+  gives way to open sky") buys nothing, spends the word cap, and pulls the
+  model off the people — the one thing it gets wrong unaided. The user does
+  not care HOW the scenery changes. What the prompt owes instead is a
+  PATH: an ordinary, walkable route from where each person stands in the
+  start frame to where they stand in the end frame — no appearing,
+  materialising, floating or sliding into place. The old "WORLD FLOW
+  SECOND" priority (light shifts, weather rolls in, environment transforms)
+  is GONE; its replacement is "if they cannot travel, they stay put" —
+  people stand, turn in place, share a look, and the frames carry the rest.
+  Also pinned now: an exit past the camera is only HALF the staging (the
+  walk back in must be written too), and a prompt's last beat is never
+  people LEAVING, because the clip must land on the end frame. Triggered by
+  a real plan for a salt-flat → Machu Picchu pair (swap + setting change):
+  "…squeeze a little closer, share a quiet smile, then slowly step toward
+  the camera and past it" — hold-steady staging on swapped people, ending
+  on the exit. Pinned by TestMotionPromptsDescribeSubjectsOnly.
 - Motion prompts are BEAT-BUDGETED to the clip length: 5s = exactly one
   continuous action, 10s = max two beats. User-verified on a real clip: an
   overloaded 5s prompt (lift-carry-seat-examine) made Kling swap in another
