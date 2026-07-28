@@ -68,6 +68,7 @@ from .intake import (
     read_order_record,
 )
 from .logging_setup import logger, setup_logging
+from .media.audio_files import looks_like_audio
 from .media.letter import read_letter, save_letter
 from .media.music_url import fetch_music
 from .models import Storyboard, changed_transition_ids
@@ -85,9 +86,9 @@ _ALLOWED_OPTIONS = {f.name for f in dataclasses.fields(RunOptions)}
 # Uploads into input_images/ — the same formats a user would drop there.
 _PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".bmp", ".tif", ".tiff"}
 
-# Custom music-bed uploads. ffmpeg reads by content, not extension, so the
-# bytes are stored under a fixed name regardless of what was uploaded.
-_AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus"}
+# Custom music-bed uploads are recognised by content (media/audio_files.py):
+# ffmpeg reads by content, not extension, and the bytes are stored under a
+# fixed name regardless of what was uploaded.
 
 # Per-file cap for photo uploads. Phone photos top out around 15-20 MB; this
 # only exists so an unauthenticated-looking-but-authenticated mistake (or a
@@ -854,19 +855,22 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         any older output/music.mp3 left on disk.
         """
         ws = _workspace(name)
-        suffix = Path(file.filename or "").suffix.lower()
-        if suffix not in _AUDIO_EXTENSIONS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Not an audio file: {file.filename!r} "
-                       f"(accepted: {', '.join(sorted(_AUDIO_EXTENSIONS))})",
-            )
         data = await file.read()
         if len(data) > _MAX_UPLOAD_BYTES:
             raise HTTPException(
                 status_code=413,
                 detail=f"Music file is larger than "
                        f"{_MAX_UPLOAD_BYTES // (1024 * 1024)} MB",
+            )
+        # Judged by CONTENT first, not by the filename: a phone upload of a
+        # real mp3 named "Lights(chosic.com)" — no extension — was rejected
+        # by the old extension-only check. See media/audio_files.py.
+        if not looks_like_audio(data, file.filename or "", file.content_type or ""):
+            raise HTTPException(
+                status_code=400,
+                detail=f"That doesn't look like an audio file: "
+                       f"{file.filename or 'the upload'!r}. Upload an mp3, "
+                       f"m4a, wav, ogg or flac.",
             )
         dst = ws.custom_music_file
         dst.parent.mkdir(parents=True, exist_ok=True)

@@ -176,7 +176,14 @@ function MusicBed({ info, onUpload, onRemove, onFetchUrl, busy, note }) {
   };
   return (
     <>
-      <input ref={inputRef} type="file" accept="audio/*" style={{ display: 'none' }}
+      {/* The accept list is deliberately wide. A bare accept="audio/*" makes
+          the iOS Files picker grey out tracks it can't type — including an
+          mp3 saved without a .mp3 on the end, which is exactly what a real
+          phone upload hit. The server checks the CONTENT, so letting the
+          picker offer the file is safe. */}
+      <input ref={inputRef} type="file" style={{ display: 'none' }}
+        accept={'audio/*,video/mp4,application/octet-stream,'
+          + '.mp3,.m4a,.wav,.aac,.ogg,.oga,.opus,.flac,.aif,.aiff,.wma'}
         onChange={(e) => { onUpload(e.target.files?.[0]); e.target.value = ''; }} />
       <Group mt="md" gap="sm" align="center">
         <Text size="sm" fw={600}>Background music:</Text>

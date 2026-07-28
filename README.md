@@ -93,7 +93,9 @@ the `ADMIN_API_TOKEN` from `.env`:
   live — styled frames appear one by one as they come back, instead of only
   once the whole run finishes.
 - **API**: order list, per-project status, storyboard read/edit, photos, a
-  music-bed upload (`POST`/`DELETE /api/projects/<name>/music`), the closing
+  music-bed upload (`POST`/`DELETE /api/projects/<name>/music` — the track is
+  recognised by its CONTENT, so a file whose name has lost its `.mp3`, as
+  phone uploads often have, is still accepted), the closing
   letter (`PUT /api/projects/<name>/letter` with `{"text": "…"}`; the text
   comes back in the project detail as `letter_text`, and its summary as
   `letter: {exists, chars}`), and
