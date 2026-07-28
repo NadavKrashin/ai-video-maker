@@ -11,6 +11,7 @@ endpoint):
     render      generate clips (and missing frames) from the storyboard
     audio       add SFX + music to rendered clips, rebuild the final video
     combine     concatenate the clips into output/final_video.mp4
+    publish     upload the finished movie into its Cloudinary order folder
     status      show where the project stands and what to run next
     run         the whole flow in one go, with confirmation gates
 
@@ -42,6 +43,7 @@ project lifecycle:
   python pipeline.py storyboard myfilm      # style images + plan clips, stop for review
   python pipeline.py render myfilm          # generate the clips from the storyboard
   python pipeline.py combine myfilm         # stitch clips into output/final_video.mp4
+  python pipeline.py publish myfilm         # deliver it into the order's Cloudinary folder
   python pipeline.py status myfilm          # see progress + the suggested next step
   python pipeline.py run myfilm             # everything in one go (with confirmations)
 """
@@ -235,6 +237,18 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Shorthand for the full presentation: --intro "
                          "--credits-photos in one flag (an explicit "
                          "--no-intro / --no-credits-photos still wins).")
+
+    sp = command("publish",
+                 "Upload the finished movie into this project's Cloudinary "
+                 "order folder, as final_v1, final_v2, ... Nothing already "
+                 "there is ever replaced or deleted: every publish takes the "
+                 "next free version number. Asks for confirmation, showing "
+                 "the exact name the file will be saved under.")
+    sp.add_argument("--dry-run", action="store_true",
+                    help="Print the name the movie would be published under "
+                         "without uploading anything.")
+    sp.add_argument("--yes", "-y", action="store_true",
+                    help="Skip the confirmation prompt and publish immediately.")
 
     command("status",
             "Show the project's progress (frames, storyboard, clips, final "

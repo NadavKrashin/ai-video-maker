@@ -48,6 +48,11 @@ class RunOptions:
     # ingest: which Cloudinary order to download (order id / folder name /
     # any unique fragment of it).
     order: Optional[str] = None
+    # publish: the exact Cloudinary public_id the caller showed the user for
+    # approval (e.g. "video-orders/AM-1_Dana-.../final_v2"). The publish
+    # refuses to run under any other name, so an approval can never turn into
+    # an upload nobody agreed to. None = take the next free version.
+    publish_as: Optional[str] = None
     # Per-run audio override; neither set -> config.audio_mode decides.
     add_audio: bool = False
     no_audio: bool = False
@@ -92,6 +97,7 @@ class RunOptions:
             replan_clips=get("replan_clip"),
             restyle_frames=get("restyle_frame"),
             order=get("order"),
+            publish_as=get("publish_as"),
             add_audio=bool(get("add_audio")),
             no_audio=bool(get("no_audio")),
             no_combine=bool(get("no_combine")),

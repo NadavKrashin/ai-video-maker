@@ -22,6 +22,7 @@ python pipeline.py storyboard myfilm      # 2. style images + plan clips, stop f
 #    ...review/edit projects/myfilm/storyboard/storyboard.json...
 python pipeline.py render myfilm          # 3. generate the clips from the storyboard
 python pipeline.py combine myfilm         # 4. stitch clips into output/final_video.mp4
+python pipeline.py publish myfilm         # 5. (web orders) deliver it into the order's Cloudinary folder
 
 python pipeline.py status myfilm          # where am I? what's next?
 python pipeline.py run myfilm             # or: everything in one go (with confirmations)
@@ -59,6 +60,44 @@ Setup: `config.json` carries the (public) `cloudinary_cloud_name` and
 `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` (Cloudinary console →
 Settings → API Keys).
 
+### Delivering the finished movie back (`publish`)
+
+An order's photos come *from* Cloudinary, and the finished movie goes back
+*into* the very same folder, next to them:
+
+```bash
+python pipeline.py publish matan            # asks first, showing the exact file name
+python pipeline.py publish matan --dry-run  # just print the name it would use
+```
+
+```
+video-orders/AM-20260716-XY12_Dana-Cohen-16.07.2026_10-30/
+    1.jpg, 2.jpg, ...     # the customer's photos (uploaded by the web app)
+    final_v1.mp4          # ← the delivered movie
+    final_v2.mp4          # ← a later cut, delivered after a fix
+```
+
+Publishing is **strictly additive — nothing in Cloudinary is ever replaced or
+deleted.** Each publish takes the next free version number: the versions
+already in the order folder (asked live) are merged with this project's own
+delivery history (`projects/<name>/published.json`), the highest wins, and the
+upload itself carries `overwrite=false` so Cloudinary refuses to replace an
+asset even if that number were somehow wrong. Rebuild the movie and publish
+again and the customer folder simply gains a `final_v2` beside the `final_v1`
+they may already have been sent.
+
+The confirmation always names the file first (`final_v2.mp4`, plus its full
+public id) — in the terminal, and in the panel's modal. In the panel the name
+shown for approval is *pinned into the job*: if someone published from
+elsewhere in between, the job stops rather than uploading under a name nobody
+approved.
+
+`status` and the panel show what has been delivered, and flag a movie that has
+been re-combined since its last publish (`next_step: publish`). Only projects
+created by `ingest` can be published — a hand-made project has no order folder
+to publish into. The basename is `cloudinary_publish_basename` in
+`config.json` (default `final`).
+
 ### The admin server (`serve`) — run the whole flow from a browser
 
 ```bash
@@ -79,7 +118,10 @@ the `ADMIN_API_TOKEN` from `.env`:
   per-clip audio redo, uploading the music track, combine/finalize with
   intro/credits/letter toggles, **writing the closing letter itself** (a
   Hebrew-safe text box in the Combine step, saved as the project's
-  `letter.txt`), and `run` for the whole chain. Jobs stream
+  `letter.txt`), **publishing the finished movie into the order's Cloudinary
+  folder** (step 5 — the modal names the exact file, e.g. `final_v2.mp4`,
+  before anything is uploaded, and nothing there is ever replaced), and `run`
+  for the whole chain. Jobs stream
   their logs and can be cancelled from the panel.
   **Editing prompts in bulk:** saving your transition edits marks every
   already-rendered clip whose motion prompt / duration / frames changed as
@@ -98,9 +140,12 @@ the `ADMIN_API_TOKEN` from `.env`:
   phone uploads often have, is still accepted), the closing
   letter (`PUT /api/projects/<name>/letter` with `{"text": "…"}`; the text
   comes back in the project detail as `letter_text`, and its summary as
-  `letter: {exists, chars}`), and
+  `letter: {exists, chars}`), a publish preview
+  (`GET /api/projects/<name>/publish/preview` — read-only; returns the next
+  free version and the exact `public_id`/`filename`, plus what the order
+  folder already holds), and
   clip playback, plus actions (ingest / storyboard / render / redo one clip /
-  audio / combine / run) that run as **background jobs** — one at a time,
+  audio / combine / publish / run) that run as **background jobs** — one at a time,
   with their logs available at `/api/jobs/<id>`. `POST /api/jobs/<id>/cancel`
   cancels a job: a queued job is dropped immediately; a running one shows
   `cancelling` and stops between work items — whatever is mid-generation
@@ -543,6 +588,7 @@ project name as its first argument (except `orders`, which is project-less).
 | `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 5\|10`, `--add-audio`, `--no-audio` |
 | `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-file PATH`, `--music-url URL` |
 | `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--music-url URL`, `--add-audio`, `--no-audio`, `--final`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter` |
+| `publish` | `--dry-run` (print the name only), `-y/--yes` |
 | `status` | — |
 | `run` | everything above except `--clip`, plus `--no-combine` |
 
@@ -642,6 +688,8 @@ Everything below lives inside the project workspace, `projects/<name>/`:
 | `output/` | `final_video.mp4` + `music_custom.mp3` (the music track you uploaded, when you supplied one) |
 | `storyboard/` | `storyboard.json` (editable source of truth), `storyboard.md` (readable view), `preview.html` (visual contact sheet — open it in a browser) |
 | `logs/` | Run logs + `state.json` |
+| `order.json` | Which Cloudinary order this project came from (written by `ingest`) |
+| `published.json` | Delivery history: every movie version published back to that order folder |
 | `failed_jobs/` | `failed_jobs.json` |
 
 ---

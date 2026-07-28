@@ -12,7 +12,8 @@ export const stepChip = (next) =>
   next === 'storyboard' ? { label: 'needs storyboard', color: 'yellow' }
     : next === 'render' ? { label: 'needs render', color: 'blue' }
       : next === 'combine' ? { label: 'needs combine', color: 'blue' }
-        : { label: 'complete', color: 'green' };
+        : next === 'publish' ? { label: 'needs publish', color: 'grape' }
+          : { label: 'complete', color: 'green' };
 
 // What an action costs, shown in every confirmation dialog: money honesty
 // is the whole point of the modal.

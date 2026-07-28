@@ -309,8 +309,10 @@ Core design rules:
 
 Lifecycle: (`orders` → `ingest` for paid web orders, or `init` + manual
 images) → `storyboard` (stops for review; writes json/md/preview.html)
-→ `render` (plan + confirm; `--clip ID` redoes one clip) → `audio` → `combine`;
-`run` chains them with confirmation gates.
+→ `render` (plan + confirm; `--clip ID` redoes one clip) → `audio` → `combine`
+→ `publish` (web orders only: delivers the movie into the order's Cloudinary
+folder as the next `final_vN`); `run` chains them (up to `combine`) with
+confirmation gates.
 
 ## The web frontend (animoments) & order intake
 
@@ -373,6 +375,25 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
   order's Firestore `blessing` (`_seed_letter_from_order`, best-effort,
   never overwrites an existing letter). Saving is free and local, so it is
   inline like the storyboard save, not an `ask({...})` job.
+- PUBLISHING IS ADDITIVE, FOREVER (2026-07-28). `pipeline.py publish` /
+  panel step 5 / `POST /api/.../actions/publish` uploads
+  `output/final_video.mp4` back INTO the order's own Cloudinary folder as
+  `final_v1`, `final_v2`, ... **Nothing there is ever replaced or deleted**
+  — that folder holds the customer's own photos, and a delivered movie may
+  already be in their hands. Four guards, all of which must stay: the next
+  version is `max(...)+1` over the Cloudinary listing (by tag AND by prefix,
+  unioned) MERGED with the local `projects/<n>/published.json` history, so a
+  listing hiccup can't reuse a number; the upload sends `overwrite=false`
+  and an "existing" response is raised, never absorbed; `published.json` is
+  append-only; and the panel PINS the approved name into the job
+  (`publish_as`), which refuses to upload under any other name — an approval
+  is for one exact file name, shown in the modal before anything moves.
+  Publish is delivery, not generation: no API credits, and it is the one
+  action whose target name comes from the network, hence the read-only
+  `GET /api/projects/<n>/publish/preview` that fills the modal. Uploads go
+  chunked (movies exceed Cloudinary's single-request cap) and the cloud's
+  `folder_mode` decides whether `asset_folder` rides along. Pinned by
+  tests/test_publish.py + tests/test_server_publish.py.
 - The **Firestore order ledger** (`clients/firebase_client.py`, REST +
   google-auth, NOT the heavy firebase-admin SDK) is the watcher's order
   source when a service-account key exists (FIREBASE_SERVICE_ACCOUNT in

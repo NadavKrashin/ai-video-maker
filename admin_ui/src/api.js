@@ -71,6 +71,11 @@ export const api = {
     request(`/api/projects/${encodeURIComponent(name)}/storyboard`, {
       method: 'PUT', body: JSON.stringify(storyboard)
     }),
+  // What a publish would upload and under exactly what name (read-only; it
+  // asks Cloudinary for the versions already delivered). The panel shows the
+  // returned public_id in the confirmation modal and pins it into the job.
+  publishPreview: (name) =>
+    request(`/api/projects/${encodeURIComponent(name)}/publish/preview`),
   runAction: (name, command, options = {}) =>
     request(`/api/projects/${encodeURIComponent(name)}/actions/${command}`, {
       method: 'POST', body: JSON.stringify(options)

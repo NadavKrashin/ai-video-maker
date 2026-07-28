@@ -110,6 +110,12 @@ class Workspace:
         return self.root / "order.json"
 
     @property
+    def published_file(self) -> Path:
+        """Delivery history: every movie version published back to the order's
+        Cloudinary folder (written by `publish`). See publish.py."""
+        return self.root / "published.json"
+
+    @property
     def default_storyboard_json(self) -> Path:
         return self.storyboard_dir / "storyboard.json"
 

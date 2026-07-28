@@ -142,6 +142,10 @@ class Config(BaseModel):
     # never from here.
     cloudinary_cloud_name: str = ""
     cloudinary_orders_folder: str = "video-orders"
+    # `pipeline.py publish` uploads the finished movie back INTO the order's
+    # own folder, named <basename>_v1, <basename>_v2, ... Publishing never
+    # replaces anything: each publish takes the next free version number.
+    cloudinary_publish_basename: str = "final"
 
     # --- Firebase order ledger (Firestore) ---------------------------------- #
     # The frontend also writes each paid order to Firestore (collection
