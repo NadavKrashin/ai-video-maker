@@ -6,6 +6,7 @@ import io
 import json
 import math
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable, Optional, TypeVar
 
@@ -42,6 +43,56 @@ _LONG_CLIP_MAX_FRACTION = 0.5
 # clip. Over-budget prompts are condensed by a targeted text call in
 # _coerce_transition_plans, mirroring how durations are derived in code.
 _MOTION_WORD_LIMITS = {min(VALID_DURATIONS): 35, max(VALID_DURATIONS): 60}
+
+# Function words dropped when comparing two descriptions of the same person.
+# Only articles/prepositions — NEVER adjectives: 'the tall man' and 'the short
+# man' must not collapse into the same token set and be read as one person.
+_PERSON_STOPWORDS = frozenset({
+    "a", "an", "and", "at", "in", "is", "of", "on", "the", "with", "who",
+})
+
+# Phrases that show a motion prompt actually MOVES people between sides:
+# somebody leaves and comes back, or one person visibly passes the other.
+# Used to tell a real swap staging from hold-steady wording, which morphs
+# swapped people into each other.
+_CROSSING_MARKERS = (
+    "past the camera", "out of frame", "off frame", "out of the frame",
+    "back in", "re-enter", "reenter", "re-entering", "enters from",
+    "enter from", "steps in from", "step in from", "walks in from",
+    "walk in from", "crosses", "cross in front", "crossing", "in front of",
+    "behind the", "behind her", "behind him", "swap", "swaps", "switch sides",
+    "trade places", "trades places", "changes places", "around each other",
+)
+
+# Restage a motion prompt for a pair whose people trade left-right positions.
+# Detected in code from the planner's own start_order/end_order lists, because
+# the planner keeps writing hold-steady prose for these pairs however the
+# system prompt is worded — and hold-steady on a swap is exactly what makes
+# the interpolator morph one person into the other.
+_RESTAGE_SWAP_SYSTEM = (
+    "You fix motion prompts for an image-to-video model that interpolates "
+    "between two given frames. The pair you are given has a problem the "
+    "prompt ignores: the SAME people appear in both frames but they have "
+    "TRADED left-right positions. The model maps the left of the start frame "
+    "onto the left of the end frame, so a prompt that leaves them standing "
+    "where they are makes each person morph into the other — a real clip "
+    "grew hair on a bald man this way. Rewrite the prompt so every person "
+    "physically travels to their new side, staged one of two ways: (a) they "
+    "walk forward past the camera and out of frame, then step back in one at "
+    "a time — say which side each one comes back in from — or (b) one of "
+    "them visibly crosses in front of or behind the other. Keep the rest of "
+    "the original prompt's intent. Rules that still apply: describe ONLY the "
+    "people, never the setting, the background or the location (the two "
+    "frames already fix all of that); give every person a concrete physical "
+    "verb (walk, step, turn, cross, crouch) and never an abstraction "
+    "('squeeze closer', 'share a moment'); refer to each person by their "
+    "visible-appearance epithet, never a name or a relationship word, and "
+    "never a bare collective 'they' for an action belonging to one of them; "
+    "stay within the stated word limit; and END with them standing where the "
+    "END frame shows them, each on their end-frame side — never end on "
+    "people leaving. Present tense. Return ONLY the rewritten motion prompt, "
+    "with no preamble or quotes."
+)
 
 # Condense an over-budget motion prompt down to what the clip can hold.
 _CONDENSE_MOTION_SYSTEM = (
@@ -605,11 +656,25 @@ _TRANSITIONS_SCHEMA: dict[str, Any] = {
                     # not chosen by the model — prompt-side "prefer 5" biases
                     # produced all-5s and all-10s plans on real projects.
                     "difficulty": {"type": "integer", "enum": [1, 2, 3, 4, 5]},
+                    # Who stands where, left to right, in each frame. Asked
+                    # for as DATA because the planner reliably sees it but
+                    # unreliably acts on it: it has twice written
+                    # hold-steady prose for a pair whose people trade sides,
+                    # which morphs them into each other. Code compares these
+                    # two lists (is_arrangement_swap) and restages the
+                    # prompt itself when they disagree.
+                    "start_order": {
+                        "type": "array", "items": {"type": "string"},
+                    },
+                    "end_order": {
+                        "type": "array", "items": {"type": "string"},
+                    },
                     "motion_prompt": {"type": "string"},
                     "sound_prompt": {"type": "string"},
                 },
                 "required": [
-                    "pair_index", "difficulty", "motion_prompt", "sound_prompt",
+                    "pair_index", "difficulty", "start_order", "end_order",
+                    "motion_prompt", "sound_prompt",
                 ],
                 "additionalProperties": False,
             },
@@ -707,6 +772,103 @@ def _realign_by_pair_index(items: list[Any], count: int) -> list[Any]:
             return items
         by_index[idx] = item
     return [by_index.get(i, {}) for i in range(1, count + 1)]
+
+
+def _person_tokens(name: Any) -> frozenset[str]:
+    """A person description reduced to comparable words.
+
+    Two planning answers describe the same person slightly differently ('the
+    bearded young man with short dark hair' in one frame, 'the bearded man'
+    in the other), so comparison is on words, minus pure function words.
+    """
+    if not isinstance(name, str):
+        return frozenset()
+    words = re.findall(r"[a-z0-9]+", name.lower())
+    return frozenset(w for w in words if w not in _PERSON_STOPWORDS)
+
+
+# How two descriptions of a person are matched, strictest rule first. Order
+# matters: 'the tall man in a red shirt' and 'the short man in a red shirt'
+# overlap enough to look alike, so they must be paired by EXACT wording
+# before any fuzzy rule gets to call them ambiguous (or, worse, the same).
+_PERSON_MATCH_RULES = (
+    lambda a, b: a == b,
+    lambda a, b: a <= b or b <= a,
+    lambda a, b: len(a & b) / len(a | b) >= 0.75,
+)
+
+
+def _match_people(
+    starts: list[frozenset[str]], ends: list[frozenset[str]]
+) -> Optional[list[tuple[int, int]]]:
+    """Pair up the same person across the two frames, or None if unclear.
+
+    Each rule runs over everyone still unmatched, and a person who matches
+    two candidates under the same rule aborts the whole comparison: a wrong
+    pairing invents a swap that isn't there, which buys a 10-second clip and
+    restages a prompt that was fine. Ambiguity is always answered with "no
+    opinion", never with a guess.
+    """
+    pairs: list[tuple[int, int]] = []
+    matched_starts: set[int] = set()
+    matched_ends: set[int] = set()
+    for rule in _PERSON_MATCH_RULES:
+        for i, s in enumerate(starts):
+            if i in matched_starts or not s:
+                continue
+            found = [
+                j for j, e in enumerate(ends)
+                if j not in matched_ends and e and rule(s, e)
+            ]
+            if len(found) > 1:
+                return None
+            if found:
+                matched_starts.add(i)
+                matched_ends.add(found[0])
+                pairs.append((i, found[0]))
+    return pairs
+
+
+def is_arrangement_swap(start_order: Any, end_order: Any) -> bool:
+    """Did the same people trade left-right positions between the frames?
+
+    ``start_order``/``end_order`` are the planner's left-to-right lists of
+    who is visible in each frame. Code compares them instead of trusting the
+    planner to NOTICE the swap while writing prose: it has now missed one
+    twice on real orders (a couple who trade sides between the boat and the
+    salt flat got 'step closer together, come to rest side by side'), and a
+    swap staged as hold-steady makes the interpolator morph each person into
+    the other.
+
+    Only people present in BOTH frames count, at least two of them, and the
+    matching must be unambiguous — anything else returns False so the
+    pipeline behaves exactly as it did before.
+    """
+    if not isinstance(start_order, list) or not isinstance(end_order, list):
+        return False
+    starts = [_person_tokens(n) for n in start_order]
+    ends = [_person_tokens(n) for n in end_order]
+    if len(starts) < 2 or len(ends) < 2:
+        return False
+
+    pairs = _match_people(starts, ends)
+    if pairs is None or len(pairs) < 2:
+        return False
+    # Same people, different left-to-right order.
+    pairs.sort()
+    end_positions = [j for _, j in pairs]
+    return end_positions != sorted(end_positions)
+
+
+def stages_a_crossing(motion_prompt: str) -> bool:
+    """Does the prompt physically move people between sides?
+
+    An exit past the camera and a walk back in, or one person passing the
+    other. Without one of these a swapped pair is pinned in place and the
+    video model resolves the contradiction by morphing them.
+    """
+    text = (motion_prompt or "").lower()
+    return any(marker in text for marker in _CROSSING_MARKERS)
 
 
 _STORYBOARD_JSON_SHAPE = (
@@ -968,6 +1130,7 @@ class OpenAIClient:
             "{\n"
             '  "transitions": [\n'
             '    {"pair_index": int, "difficulty": 1-5, '
+            '"start_order": [str, ...], "end_order": [str, ...], '
             '"motion_prompt": str, "sound_prompt": str}, ...\n'
             "  ],\n"
             '  "characters": [{"id": str, "epithet": str}, ...]\n'
@@ -976,10 +1139,14 @@ class OpenAIClient:
             "order. pair_index anchors each item to its frames: the item with "
             "pair_index k animates frame k into frame k+1 (pair_index 1 = "
             "frame 001 into 002), and its motion_prompt must END at exactly "
-            "what frame k+1 shows. Rate difficulty by how much the two frames "
-            "differ, per the system instructions; clip lengths are derived "
-            "from it, so budget the motion's beats accordingly (1-3: one "
-            "action; 4-5: at most two)."
+            "what frame k+1 shows. start_order and end_order list every "
+            "person visible in frame k and in frame k+1 respectively, LEFT TO "
+            "RIGHT as they appear in that image, each by the same epithet the "
+            "motion_prompt uses — fill these in by LOOKING at the two images "
+            "before writing the motion. Rate difficulty by how much the two "
+            "frames differ, per the system instructions; clip lengths are "
+            "derived from it, so budget the motion's beats accordingly (1-3: "
+            "one action; 4-5: at most two)."
         )
         if default_duration:
             instruction += (
@@ -1064,9 +1231,18 @@ class OpenAIClient:
         prompt-side guidance alone hasn't held on real plans.
         """
         items = _realign_by_pair_index(data.get("transitions") or [], count)
+        # Pairs whose people trade sides, decided from the planner's own
+        # left-to-right lists rather than from how it worded the motion.
+        swaps = {
+            i for i in range(count)
+            if isinstance(items[i] if i < len(items) else None, dict)
+            and is_arrangement_swap(
+                items[i].get("start_order"), items[i].get("end_order")
+            )
+        }
         long_indices = (
             set() if default_duration
-            else self._select_long_clips(items, count)
+            else self._select_long_clips(items, count, swaps)
         )
         plans: list[tuple[str, int, str]] = []
         for i in range(count):
@@ -1075,11 +1251,72 @@ class OpenAIClient:
             duration = default_duration or (
                 max(VALID_DURATIONS) if i in long_indices else min(VALID_DURATIONS)
             )
+            # Restage BEFORE the word cap: the rewrite adds the crossing the
+            # prompt was missing, and may come back over budget.
+            if i in swaps and not stages_a_crossing(motion):
+                motion = self._restage_swapped_pair(
+                    motion, duration,
+                    item.get("start_order"), item.get("end_order"),
+                )
             if len(motion.split()) > _motion_word_limit(duration):
                 motion = self._condense_motion_prompt(motion, duration)
             sound = str(item.get("sound_prompt") or "").strip()
             plans.append((motion, duration, sound))
         return plans
+
+    def _restage_swapped_pair(
+        self, prompt: str, duration: int,
+        start_order: Any, end_order: Any,
+    ) -> str:
+        """Rewrite a swapped pair's prompt so the people actually change sides.
+
+        Falls back to the original prompt on any failure: a badly staged clip
+        still renders, and planning must never hard-stop over it.
+        """
+        limit = _motion_word_limit(duration)
+
+        def _names(order: Any) -> str:
+            if not isinstance(order, list):
+                return "(not reported)"
+            return ", ".join(str(n) for n in order) or "(nobody listed)"
+
+        logger.info(
+            "Pair's people trade sides but the motion prompt keeps them in "
+            "place; restaging it (left-to-right %s -> %s)",
+            _names(start_order), _names(end_order),
+        )
+        try:
+            client = self._ensure_client()
+            resp = client.chat.completions.create(
+                model=self.config.openai_text_model,
+                messages=[
+                    {"role": "system", "content": _RESTAGE_SWAP_SYSTEM},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Clip length: {duration} seconds. "
+                            f"Word limit: {limit}.\n"
+                            f"Start frame, left to right: {_names(start_order)}\n"
+                            f"End frame, left to right: {_names(end_order)}\n\n"
+                            f"{prompt}"
+                        ),
+                    },
+                ],
+            )
+            restaged = (resp.choices[0].message.content or "").strip()
+            # Only accept a rewrite that actually fixed the thing it was
+            # called for; anything else leaves the original in place.
+            if restaged and stages_a_crossing(restaged):
+                return restaged
+            logger.warning(
+                "Restage came back without any crossing; keeping the original"
+            )
+        except Exception as exc:  # noqa: BLE001 - keep planning alive
+            logger.warning(
+                "Restaging the swapped pair failed (%s); keeping the original",
+                exc,
+            )
+        return prompt
 
     def _condense_motion_prompt(self, prompt: str, duration: int) -> str:
         """Rewrite an over-budget motion prompt down to the clip's word budget.
@@ -1118,20 +1355,31 @@ class OpenAIClient:
             )
         return prompt
 
-    def _select_long_clips(self, items: list[Any], count: int) -> set[int]:
+    def _select_long_clips(
+        self, items: list[Any], count: int,
+        swaps: Optional[set[int]] = None,
+    ) -> set[int]:
         """Pick which pairs get the long duration from their difficulty ratings.
 
         Difficulty >= 4 qualifies; if more qualify than
         ``config.long_clip_max_fraction`` allows, only the highest-rated
         (earliest on ties) keep the long clip.
+
+        A pair whose people trade sides is forced to at least 4 whatever the
+        planner rated it: the staging that keeps them from morphing (walk out
+        past the camera, walk back in one at a time) cannot play out in five
+        seconds, and the planner has rated real swaps a 2.
         """
+        swaps = swaps or set()
+
         def rating(i: int) -> int:
             item = items[i] if i < len(items) and isinstance(items[i], dict) else {}
             try:
                 d = int(item.get("difficulty"))
             except (TypeError, ValueError):
-                return 3  # unrated -> ordinary pair, short clip
-            return min(5, max(1, d))
+                d = 3  # unrated -> ordinary pair
+            d = min(5, max(1, d))
+            return max(d, 4) if i in swaps else d
 
         candidates = [i for i in range(count) if rating(i) >= 4]
         fraction = getattr(

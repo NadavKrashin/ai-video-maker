@@ -7,6 +7,8 @@ from ai_video_maker.clients.openai_client import (
     _merge_cast,
     _motion_word_limit,
     _realign_by_pair_index,
+    is_arrangement_swap,
+    stages_a_crossing,
 )
 from ai_video_maker.models import Character
 
@@ -321,6 +323,149 @@ class TestInSceneTextIsPreserved:
         terms = {t.strip() for t in negative.split(",")}
         assert "text overlay" in terms and "watermark" in terms
         assert "text" not in terms and "on-screen text" not in terms
+
+
+MAN = "the bearded young man with short dark hair"
+WOMAN = "the young woman with long brown hair"
+
+
+class TestArrangementSwapDetection:
+    """Who stands where is compared in CODE, not left to the planner.
+
+    The planner sees the swap perfectly well and still writes hold-steady
+    prose for it — twice on real orders, most recently a couple who trade
+    sides between a boat and the salt flat and got "sit side by side, share
+    a quick laugh, then both stand up ... step closer together, and come to
+    rest standing side by side". Pinned in place, a swapped pair morphs into
+    each other, so the planner now reports the left-to-right order of each
+    frame as DATA and this comparison decides.
+    """
+
+    def test_traded_sides_is_a_swap(self):
+        assert is_arrangement_swap([WOMAN, MAN], [MAN, WOMAN])
+
+    def test_same_order_is_not_a_swap(self):
+        assert not is_arrangement_swap([WOMAN, MAN], [WOMAN, MAN])
+
+    def test_shorter_description_of_the_same_person_still_matches(self):
+        # The planner rarely repeats an epithet word for word between the
+        # two lists; a subset of the words is the same person.
+        assert is_arrangement_swap(
+            [WOMAN, MAN], ["the bearded man", "the woman with brown hair"]
+        )
+
+    def test_similar_but_distinct_people_are_not_merged(self):
+        # Two men separated only by an adjective: the tokens must not
+        # collapse, or an ordinary pair is read as a swap and buys a 10s clip.
+        a, b = "the tall man in a red shirt", "the short man in a red shirt"
+        assert not is_arrangement_swap([a, b], [a, b])
+        assert is_arrangement_swap([a, b], [b, a])
+
+    def test_three_people_reordering_counts(self):
+        c = "the small girl with curly hair"
+        assert is_arrangement_swap([WOMAN, MAN, c], [WOMAN, c, MAN])
+
+    def test_a_person_only_in_one_frame_cannot_anchor_a_swap(self):
+        assert not is_arrangement_swap([MAN], [WOMAN])
+        assert not is_arrangement_swap([MAN, WOMAN], [WOMAN])
+
+    def test_ambiguous_or_missing_lists_fall_through(self):
+        # Anything unclear must behave exactly as before the guard existed.
+        assert not is_arrangement_swap(None, None)
+        assert not is_arrangement_swap([], [])
+        assert not is_arrangement_swap(["", ""], ["", ""])
+        # Two identical descriptions: which one moved is unknowable.
+        assert not is_arrangement_swap([MAN, MAN], [MAN, MAN])
+
+    def test_crossing_markers_tell_real_staging_from_hold_steady(self):
+        assert not stages_a_crossing(
+            "the bearded man and the woman stand up, step closer together, "
+            "and come to rest side by side facing forward"
+        )
+        assert stages_a_crossing(
+            "they walk forward past the camera and out of frame, then step "
+            "back in one at a time"
+        )
+        assert stages_a_crossing(
+            "the bearded man crosses in front of the woman with brown hair"
+        )
+
+
+class TestSwappedPairsAreForcedLong:
+    """A swap can't be staged in five seconds, whatever the planner rated it."""
+
+    def _swap_item(self, difficulty, motion="m"):
+        return {
+            "motion_prompt": motion, "difficulty": difficulty,
+            "sound_prompt": "s",
+            "start_order": [WOMAN, MAN], "end_order": [MAN, WOMAN],
+        }
+
+    def test_low_rated_swap_still_gets_the_long_clip(self, config, monkeypatch):
+        # The real plan rated this pair easy and wrote hold-steady prose.
+        monkeypatch.setattr(
+            OpenAIClient, "_restage_swapped_pair",
+            lambda self, prompt, *a, **k: prompt,
+        )
+        data = {"transitions": [self._swap_item(2)]}
+        assert _durations(_plans(config, data, 1)) == [10]
+
+    def test_non_swapped_pairs_are_unaffected(self, config):
+        data = {"transitions": [_item(2), _item(3)]}
+        assert _durations(_plans(config, data, 2)) == [5, 5]
+
+
+class TestSwappedPairsAreRestaged:
+    """The prompt itself is rewritten when it leaves swapped people in place."""
+
+    def _data(self, motion, start=None, end=None):
+        return {"transitions": [{
+            "motion_prompt": motion, "difficulty": 3, "sound_prompt": "s",
+            "start_order": start if start is not None else [WOMAN, MAN],
+            "end_order": end if end is not None else [MAN, WOMAN],
+        }]}
+
+    def _capture(self, monkeypatch):
+        calls: list[str] = []
+
+        def fake(self, prompt, duration, start_order, end_order):
+            calls.append(prompt)
+            return ("the bearded man and the woman walk past the camera and "
+                    "out of frame, then step back in one at a time")
+
+        monkeypatch.setattr(OpenAIClient, "_restage_swapped_pair", fake)
+        return calls
+
+    def test_hold_steady_prompt_on_a_swap_is_restaged(self, config, monkeypatch):
+        calls = self._capture(monkeypatch)
+        motion = "they stand up and step closer together, side by side"
+        plans = _plans(config, self._data(motion), 1)
+        assert calls == [motion]
+        assert "past the camera" in plans[0][0]
+
+    def test_prompt_that_already_crosses_is_left_alone(self, config, monkeypatch):
+        calls = self._capture(monkeypatch)
+        motion = ("the bearded man crosses in front of the woman with brown "
+                  "hair and they turn to the camera")
+        plans = _plans(config, self._data(motion), 1)
+        assert calls == []
+        assert plans[0][0] == motion
+
+    def test_no_swap_means_no_restage(self, config, monkeypatch):
+        calls = self._capture(monkeypatch)
+        motion = "they stand up and step closer together, side by side"
+        _plans(config, self._data(motion, [WOMAN, MAN], [WOMAN, MAN]), 1)
+        assert calls == []
+
+    def test_restage_failure_keeps_the_original_prompt(self, config, monkeypatch):
+        # The rewrite is a network call; planning must survive it failing.
+        def boom(self, *a, **k):
+            raise RuntimeError("no network")
+
+        monkeypatch.setattr(OpenAIClient, "_ensure_client", boom)
+        motion = "they stand up and step closer together, side by side"
+        plans = _plans(config, self._data(motion), 1)
+        assert plans[0][0] == motion
 
 
 class TestMotionPromptsDescribeSubjectsOnly:

@@ -168,6 +168,22 @@ Core design rules:
   changes), or one person visibly crossing in front of/behind the other.
   A swap rates difficulty ≥4; swap + setting change = 5. Enforced in
   `_MODE_A_SYSTEM` and the difficulty rubric.
+- ...AND THE SWAP RULE IS ENFORCED IN CODE, because prompt text did not
+  hold (2026-07-28). The planner missed the same swap twice on real orders
+  even with the rule spelled out — a couple trading sides between a boat
+  and the salt flat got "stand up ... step closer together, and come to
+  rest standing side by side" (rated easy, 5s, no crossing). It SEES
+  positions reliably but does not ACT on them, so each transition now
+  reports `start_order`/`end_order` — everyone in that frame, left to
+  right — as DATA, and code decides: `is_arrangement_swap` (token matching,
+  strictest rule first, ambiguity always answers "no swap") forces the pair
+  to difficulty ≥4 (10s, since exit + re-entry cannot play in 5s) and, when
+  `stages_a_crossing` finds no crossing/exit wording in the prompt, fires a
+  targeted `_restage_swapped_pair` rewrite. The rewrite is accepted only if
+  it actually contains a crossing; any failure keeps the original prompt.
+  Same shape as the word-cap condense: model for perception, code for the
+  decision. Pinned by TestArrangementSwapDetection /
+  TestSwappedPairsAreForcedLong / TestSwappedPairsAreRestaged.
 - PACE AND DISTANCE: a motion prompt that spans a ROUTE makes Kling cover
   that route inside the clip — the people sprint or skate across the ground.
   Two real clips died this way ("stroll side by side along the meadow trail
