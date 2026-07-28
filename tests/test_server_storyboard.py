@@ -321,6 +321,49 @@ class TestLetterEndpoint:
         assert res.status_code == 401
 
 
+class TestMusicUploadEndpoint:
+    """Uploading a track is judged by CONTENT, not by the filename.
+
+    A real phone upload failed here: iOS handed over an mp3 named
+    "Lights(chosic.com)" with no extension, and the extension-only check
+    refused it. ffmpeg reads by content and the file is stored under a fixed
+    name, so the extension was never load-bearing.
+    """
+
+    MP3 = b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\x00" * 64
+
+    def _post(self, client: TestClient, name: str, data: bytes,
+              content_type: str = "application/octet-stream"):
+        return client.post(
+            f"/api/projects/{PROJECT}/music",
+            files={"file": (name, data, content_type)},
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+
+    def test_mp3_without_an_extension_is_accepted(self, client):
+        res = self._post(client, "Lights(chosic.com)", self.MP3)
+        assert res.status_code == 200
+        assert Workspace.for_project(PROJECT).custom_music_file.read_bytes() == self.MP3
+
+    def test_extension_alone_still_works(self, client):
+        # A tagless stream whose bytes we don't recognise, but named .wav.
+        res = self._post(client, "track.wav", b"\x00" * 128)
+        assert res.status_code == 200
+
+    def test_declared_audio_mime_is_enough(self, client):
+        res = self._post(client, "blob", b"\x00" * 128, "audio/mpeg")
+        assert res.status_code == 200
+
+    def test_a_pdf_is_still_refused(self, client):
+        res = self._post(client, "invoice.pdf", b"%PDF-1.7\n%\xe2\xe3\xcf\xd3")
+        assert res.status_code == 400
+        assert "audio file" in res.json()["detail"]
+
+    def test_oversized_upload_is_413_before_any_sniffing(self, client):
+        res = self._post(client, "huge.mp3", b"\x00" * (41 * 1024 * 1024))
+        assert res.status_code == 413
+
+
 class TestMusicFromUrlEndpoint:
     """POST /music/url writes the same file the upload does."""
 
