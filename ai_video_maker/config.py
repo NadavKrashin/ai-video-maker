@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
+from .costs import Pricing
 from .errors import ConfigError
 
 
@@ -211,6 +212,23 @@ class Config(BaseModel):
     # Raise it when hard pairs are being squeezed into 5s and teleporting;
     # remember a 10s clip costs about twice a 5s one.
     long_clip_max_fraction: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    # --- Spending ledger (projects/<name>/logs/costs.json) ----------------- #
+    # Unit prices used to value every API call the pipeline makes, so each
+    # project can report what it cost. ESTIMATES from these numbers, never
+    # billed amounts — correct them here when a provider changes its rates.
+    pricing: Pricing = Field(default_factory=Pricing)
+
+    # --- Learning from rendered clips (see feedback.py) -------------------- #
+    # Feedback on a clip is distilled into a short rule and appended to the
+    # planner's system prompt (and the style prompt) on every later run, so
+    # the same mistake isn't planned twice. Off = notes are still recorded,
+    # but nothing reaches the model.
+    learning_enabled: bool = True
+    # Ceiling on how many lessons ride along with one call. Lessons compete
+    # with the instructions they refine for the model's attention, and a
+    # planning call already carries ~20 frames; newest lessons win.
+    max_lessons_in_prompt: int = 25
 
     @classmethod
     def load(cls, path: Path, override_path: Path | None = None) -> "Config":

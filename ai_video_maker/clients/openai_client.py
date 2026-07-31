@@ -12,6 +12,13 @@ from typing import Any, Callable, Optional, TypeVar
 
 from ..config import Config
 from ..constants import VALID_DURATIONS
+from ..costs import KIND_IMAGE, KIND_TEXT
+from ..feedback import (
+    MAX_LESSON_CHARS,
+    SCOPE_MOTION,
+    SCOPES,
+    lesson_prompt_block,
+)
 from ..media.images import (
     encode_image_data_url,
     normalize_image,
@@ -206,6 +213,69 @@ _REWORD_MOTION_SYSTEM = (
     "in present tense; no editing effects, no morphing between people. Return "
     "ONLY the rewritten motion prompt, with no preamble or quotes."
 )
+
+# --- Learning from a rendered clip ----------------------------------------- #
+# The feedback loop's one model call: a human watched a clip and said what was
+# wrong with it; this turns that into a rule the planner can obey on a pair it
+# has never seen. The hard part is GENERALITY — a note about "Michal" on
+# "03_to_04" must come back as a rule about people and staging, because the
+# next movie has neither. It is also allowed to return nothing: a note that
+# teaches nothing beyond one clip ("this one is perfect") must not mint a
+# lesson that then rides along with every future planning call forever.
+_DISTILL_LESSON_SYSTEM = (
+    "You maintain the standing instructions of an automated film planner. The "
+    "planner writes a MOTION PROMPT for each pair of still frames; an "
+    "image-to-video model then renders the clip between them. A human has "
+    "just watched one rendered clip and written what was wrong (or right) "
+    "with it. Turn that note into at most two GENERAL RULES the planner "
+    "should follow from now on. "
+    "A rule must be: (1) GENERAL — it applies to films, people and frames "
+    "this planner has never seen, so never name the project, the clip id, "
+    "the specific people, or the specific place; write 'a person', 'the "
+    "subjects', 'a pair of frames' instead; (2) ACTIONABLE — it tells the "
+    "planner what to DO or NOT DO when writing a prompt ('when the two "
+    "frames show the same person at different distances, stage the approach "
+    "as the last few steps only'), never a description of what went wrong "
+    "('the clip looked bad'); (3) SHORT — one sentence, at most 35 words, "
+    "imperative mood; (4) ABOUT THE PROMPT, not about the renderer's "
+    "settings, the model choice, the pricing or the software. "
+    "Choose each rule's scope: 'motion' for anything about what happens in a "
+    "clip (movement, staging, pace, identity, beats, wording of the motion "
+    "prompt) and 'style' for anything about how a STILL FRAME is drawn "
+    "(likeness, framing, cropping, colour, background detail). Most notes "
+    "are 'motion'. "
+    "If the note is praise, write the rule as the behaviour to KEEP doing, "
+    "in the same imperative form. "
+    "RETURN NO RULES AT ALL (an empty list) when the note carries nothing "
+    "generalisable — it is only about this one clip's content, it is too "
+    "vague to act on ('didn't like it'), or it merely repeats an instruction "
+    "the planner obviously already has. An empty list is a perfectly good "
+    "answer and is much better than a vague rule, because every rule you "
+    "write is sent with every future planning call and competes with the "
+    "instructions that are already there. "
+    "Return ONLY JSON of the shape "
+    '{"lessons": [{"scope": "motion"|"style", "text": str}, ...]}.'
+)
+
+_LESSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "lessons": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "scope": {"type": "string", "enum": list(SCOPES)},
+                    "text": {"type": "string"},
+                },
+                "required": ["scope", "text"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["lessons"],
+    "additionalProperties": False,
+}
 
 # Deterministic fallback used when even the reword model call fails: bolt an
 # explicit safe-for-work clause onto the prompt so the next attempt has a chance.
@@ -905,6 +975,39 @@ class OpenAIClient:
     def __init__(self, config: Config) -> None:
         self.config = config
         self._client = None  # lazily created
+        # Optional spending hook: (kind, usd, detail) -> None, set by the
+        # Pipeline to its cost ledger. Every OpenAI call that COMPLETES
+        # reports through here, which is why it sits on the client rather
+        # than being dotted around the runner: the planner alone makes
+        # condense/restage/reword calls the runner never sees.
+        self.on_spend: Optional[Callable[[str, float, str], None]] = None
+
+    # --- spending ----------------------------------------------------------- #
+    def _spend(self, kind: str, usd: float, detail: str) -> None:
+        """Report one paid call. Never raises: billing notes can't fail a run."""
+        if self.on_spend is None or usd <= 0:
+            return
+        try:
+            self.on_spend(kind, usd, detail)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not record OpenAI spend: %s", exc)
+
+    def _note_text_usage(self, resp: Any, detail: str) -> None:
+        """Price a chat/vision response from the token usage it reports."""
+        if self.on_spend is None:
+            return
+        usage = getattr(resp, "usage", None)
+        if usage is None:
+            return
+        pricing = self.config.pricing
+        self._spend(
+            KIND_TEXT,
+            pricing.text(
+                getattr(usage, "prompt_tokens", 0) or 0,
+                getattr(usage, "completion_tokens", 0) or 0,
+            ),
+            detail,
+        )
 
     def _ensure_client(self):
         if self._client is None:
@@ -944,6 +1047,10 @@ class OpenAIClient:
                 prompt=prompt,
                 size=self._IMAGE_API_SIZE,
             )
+            # Billed per returned image, so a rewording retry that finally
+            # succeeds pays for each attempt that came back — record here,
+            # inside the attempt, not once per style_image call.
+            self._spend(KIND_IMAGE, self.config.pricing.image(), src.name)
             return base64.b64decode(resp.data[0].b64_json)
 
         raw = self._image_with_moderation_recovery(
@@ -962,6 +1069,7 @@ class OpenAIClient:
                 prompt=prompt,
                 size=self._IMAGE_API_SIZE,
             )
+            self._spend(KIND_IMAGE, self.config.pricing.image(), dst.name)
             return base64.b64decode(resp.data[0].b64_json)
 
         raw = self._image_with_moderation_recovery(
@@ -994,6 +1102,80 @@ class OpenAIClient:
         """
         return self._reword_prompt_for_safety(prompt, system=_REWORD_MOTION_SYSTEM)
 
+    # --- Learning: one clip's feedback -> reusable rules -------------------- #
+    def distill_lesson(
+        self,
+        note: str,
+        *,
+        verdict: str = "bad",
+        motion_prompt: str = "",
+        duration: int = 0,
+        existing: Optional[list[str]] = None,
+    ) -> list[dict[str, str]]:
+        """Turn one human note about a rendered clip into general rules.
+
+        Returns ``[{"scope": ..., "text": ...}, ...]`` — possibly empty, which
+        is a legitimate answer (see ``_DISTILL_LESSON_SYSTEM``): a note that
+        teaches nothing general must not become a rule that then rides along
+        with every future planning call.
+
+        ``existing`` are the rules already in force; they are shown to the
+        model so it doesn't mint a near-duplicate of a rule the planner
+        already has. Raises on API failure — the caller decides what to do,
+        and here that means saving the raw note anyway and telling the user
+        the distillation did not happen.
+        """
+        text = (note or "").strip()
+        if not text:
+            return []
+        client = self._ensure_client()
+        user = (
+            f"The human's verdict: {'this clip is GOOD' if verdict == 'good' else 'this clip is BAD'}.\n"
+            f"What they wrote:\n{text}\n"
+        )
+        if motion_prompt.strip():
+            user += (
+                f"\nThe motion prompt that produced the clip"
+                f"{f' ({duration}s)' if duration else ''}:\n"
+                f"{motion_prompt.strip()}\n"
+            )
+        if existing:
+            user += (
+                "\nRules the planner already follows (do not restate these; "
+                "return nothing if the note only repeats one):\n"
+                + "\n".join(f"- {rule}" for rule in existing)
+            )
+
+        def _call() -> str:
+            resp = client.chat.completions.create(
+                model=self.config.openai_text_model,
+                messages=[
+                    {"role": "system", "content": _DISTILL_LESSON_SYSTEM},
+                    {"role": "user", "content": user},
+                ],
+                response_format=_json_schema_format("lessons", _LESSON_SCHEMA),
+            )
+            self._note_text_usage(resp, "distill lesson")
+            return resp.choices[0].message.content or "{}"
+
+        raw = self._retry(_call, "OpenAI distill_lesson")
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        out: list[dict[str, str]] = []
+        for item in (data.get("lessons") or [])[:2]:
+            if not isinstance(item, dict):
+                continue
+            rule = " ".join(str(item.get("text", "")).split())[:MAX_LESSON_CHARS]
+            scope = str(item.get("scope", SCOPE_MOTION))
+            if not rule:
+                continue
+            out.append(
+                {"scope": scope if scope in SCOPES else SCOPE_MOTION, "text": rule}
+            )
+        return out
+
     def _reword_prompt_for_safety(
         self, prompt: str, system: str = _REWORD_SYSTEM
     ) -> str:
@@ -1011,6 +1193,7 @@ class OpenAIClient:
                     {"role": "user", "content": prompt},
                 ],
             )
+            self._note_text_usage(resp, "reword prompt")
             reworded = (resp.choices[0].message.content or "").strip()
             if reworded:
                 return reworded
@@ -1082,6 +1265,7 @@ class OpenAIClient:
                 # the default, and the default is fine for this planning work.
                 response_format=_json_schema_format("storyboard", _STORYBOARD_SCHEMA),
             )
+            self._note_text_usage(resp, "create_storyboard")
             return resp.choices[0].message.content or "{}"
 
         raw = self._retry(_call, "OpenAI create_storyboard")
@@ -1095,6 +1279,7 @@ class OpenAIClient:
         default_duration: Optional[int] = None,
         global_context: str = "",
         cast: Optional[list[Character]] = None,
+        lessons: Optional[list[str]] = None,
     ) -> tuple[list[tuple[str, int, str]], list[Character]]:
         """Vision-analyze consecutive frames and plan each clip between them.
 
@@ -1113,6 +1298,11 @@ class OpenAIClient:
         the rest of the movie does), and the returned cast is the given one
         plus any genuinely new people the model saw. When None/empty the
         model builds the cast from scratch.
+
+        ``lessons`` are the studio's learned rules (see feedback.py): short
+        corrections written from clips that came back wrong, appended to the
+        system prompt so the same mistake isn't planned twice. Empty = the
+        prompt is byte-for-byte what it was before learning existed.
 
         When ``default_duration`` is set (5 or 10) every clip is forced to that
         length instead of one chosen per pair.
@@ -1180,6 +1370,11 @@ class OpenAIClient:
                 f"{global_context.strip()}"
             )
 
+        # Learned rules go in the SYSTEM prompt, right after the standing
+        # instructions they correct: they are policy, not per-request
+        # context, and a targeted re-plan of one pair must get them too.
+        system = _MODE_A_SYSTEM + lesson_prompt_block(lessons or [], SCOPE_MOTION)
+
         content: list[dict[str, Any]] = [{"type": "text", "text": instruction}]
         for i, fp in enumerate(frames, start=1):
             content.append({"type": "text", "text": f"Frame {i:03d}:"})
@@ -1201,13 +1396,14 @@ class OpenAIClient:
             resp = client.chat.completions.create(
                 model=self.config.openai_text_model,
                 messages=[
-                    {"role": "system", "content": _MODE_A_SYSTEM},
+                    {"role": "system", "content": system},
                     {"role": "user", "content": content},
                 ],
                 response_format=_json_schema_format(
                     "transition_plans", _TRANSITIONS_SCHEMA
                 ),
             )
+            self._note_text_usage(resp, "analyze_frame_transitions")
             return resp.choices[0].message.content or "{}"
 
         raw = self._retry(_call, "OpenAI analyze_frame_transitions")
@@ -1303,6 +1499,7 @@ class OpenAIClient:
                     },
                 ],
             )
+            self._note_text_usage(resp, "restage swapped pair")
             restaged = (resp.choices[0].message.content or "").strip()
             # Only accept a rewrite that actually fixed the thing it was
             # called for; anything else leaves the original in place.
@@ -1345,6 +1542,7 @@ class OpenAIClient:
                     },
                 ],
             )
+            self._note_text_usage(resp, "condense motion prompt")
             condensed = (resp.choices[0].message.content or "").strip()
             if condensed and len(condensed.split()) < len(prompt.split()):
                 return condensed
