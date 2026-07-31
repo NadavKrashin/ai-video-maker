@@ -54,11 +54,19 @@ from .clients.firebase_client import (
     FirebaseClient,
 )
 from .config import Config
+from .costs import KIND_LABELS, merge_totals
 from .errors import (
     InvalidProjectName,
     PipelineCancelled,
     PipelineError,
     StoryboardError,
+)
+from .feedback import (
+    MAX_NOTE_CHARS,
+    SCOPES,
+    VERDICTS,
+    FeedbackStore,
+    LessonStore,
 )
 from .intake import (
     derive_project_name,
@@ -74,7 +82,13 @@ from .media.music_url import fetch_music
 from .models import Storyboard, changed_transition_ids
 from .options import RunOptions
 from .runner import Pipeline
-from .workspace import PROJECT_ROOT, PROJECTS_DIR, Workspace
+from .workspace import (
+    PROJECT_ROOT,
+    PROJECTS_DIR,
+    Workspace,
+    is_project_dir,
+    lessons_file,
+)
 
 # Pipeline commands the API may enqueue ("ingest" only via /api/orders/ingest),
 # and the RunOptions fields a request body may set — every per-run knob the
@@ -476,7 +490,7 @@ class OrderWatcher:
         handled = ingested_orders(PROJECTS_DIR)  # folder leaf -> project
         active = self._jobs.active_ingest_orders()
         existing_names = {
-            p.name for p in PROJECTS_DIR.iterdir() if p.is_dir()
+            p.name for p in PROJECTS_DIR.iterdir() if is_project_dir(p)
         } if PROJECTS_DIR.exists() else set()
         return handled, active, existing_names
 
@@ -779,7 +793,7 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         if not folder:
             raise HTTPException(status_code=400, detail="'order' is required")
         existing = {
-            p.name for p in PROJECTS_DIR.iterdir() if p.is_dir()
+            p.name for p in PROJECTS_DIR.iterdir() if is_project_dir(p)
         } if PROJECTS_DIR.exists() else set()
         project = str(body.get("project", "")).strip() or derive_project_name(
             folder, existing
@@ -922,7 +936,7 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         out = []
         if PROJECTS_DIR.exists():
             for path in sorted(PROJECTS_DIR.iterdir()):
-                if not path.is_dir():
+                if not is_project_dir(path):
                     continue
                 ws = Workspace(path)
                 try:
@@ -1054,6 +1068,166 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
                 "changed": changed,
                 "outdated": [c.removesuffix(".mp4") for c in outdated],
                 "orphaned_renders": orphaned}
+
+    # --------------------------- spending ---------------------------------- #
+
+    @app.get("/api/costs", dependencies=guarded)
+    async def costs_overview() -> dict[str, Any]:
+        """What every project has cost, plus the studio-wide total.
+
+        Estimates priced from ``config.pricing`` (see costs.py) — never a
+        provider invoice, which is why every figure the panel prints from
+        this says "estimated".
+        """
+        rows: list[dict[str, Any]] = []
+        for path in sorted(PROJECTS_DIR.iterdir()) if PROJECTS_DIR.exists() else []:
+            if not is_project_dir(path):
+                continue
+            ws = Workspace(path)
+            try:
+                report = _pipeline(ws).cost_report()
+            except Exception as exc:  # noqa: BLE001 - one broken project can't
+                # hide the rest of the studio's spending
+                rows.append({"project": path.name, "error": str(exc)})
+                continue
+            order = read_order_record(ws.order_file)
+            rows.append({"project": path.name, "order": order, **report})
+        return {
+            "projects": rows,
+            "totals": merge_totals([r for r in rows if "error" not in r]),
+            "labels": KIND_LABELS,
+            "pricing": config.pricing.model_dump(),
+        }
+
+    @app.get("/api/projects/{name}/costs", dependencies=guarded)
+    async def project_costs(name: str, limit: int = 200) -> dict[str, Any]:
+        """One project's ledger: the totals plus the individual paid calls."""
+        ws = _workspace(name)
+        pipeline = _pipeline(ws)
+        return {
+            "summary": pipeline.cost_report(),
+            "entries": pipeline.costs.entries(max(1, min(limit, 1000))),
+            "labels": KIND_LABELS,
+        }
+
+    # --------------------- feedback & learned lessons ---------------------- #
+
+    @app.get("/api/projects/{name}/feedback", dependencies=guarded)
+    async def list_feedback(name: str) -> dict[str, Any]:
+        ws = _workspace(name)
+        return {
+            "feedback": [e.model_dump() for e in FeedbackStore(ws.feedback_file).all()]
+        }
+
+    # Deliberately a SYNC handler: distilling a lesson is a blocking OpenAI
+    # call, and FastAPI runs sync endpoints in a worker thread — an `async
+    # def` would park the whole event loop (and every other panel request)
+    # for the length of the call.
+    @app.post("/api/projects/{name}/feedback", dependencies=guarded)
+    def add_feedback(name: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Record what a rendered clip got wrong and learn a rule from it.
+
+        Runs inline rather than as a job: it is one short call, the panel
+        wants the distilled rule back in the same interaction, and the serial
+        job runner may be halfway through a 20-minute render. The note is
+        saved even when the distillation fails — see Pipeline.record_feedback.
+        """
+        ws = _workspace(name)
+        note = str((body or {}).get("note", "")).strip()
+        if not note:
+            raise HTTPException(status_code=400, detail="'note' is required")
+        if len(note) > MAX_NOTE_CHARS:
+            raise HTTPException(
+                status_code=413,
+                detail=f"The note is longer than {MAX_NOTE_CHARS} characters",
+            )
+        verdict = str((body or {}).get("verdict", "bad")).lower()
+        if verdict not in VERDICTS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"'verdict' must be one of: {', '.join(VERDICTS)}",
+            )
+        options = RunOptions(
+            feedback_clip=str((body or {}).get("clip", "")).strip(),
+            feedback_note=note,
+            feedback_verdict=verdict,
+            # Learning is the point, but it costs an OpenAI call, so the
+            # caller can record the note alone.
+            feedback_learn=bool((body or {}).get("learn", True)),
+        )
+        cfg = Config.load(config_path, override_path=ws.root / "config.json")
+        try:
+            return Pipeline(cfg, ws, options).record_feedback()
+        except PipelineError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/lessons", dependencies=guarded)
+    async def list_lessons() -> dict[str, Any]:
+        """Every rule the planner has learned, newest last (studio-wide)."""
+        return {
+            "lessons": [l.model_dump() for l in LessonStore(lessons_file()).all()],
+            # So the panel can say "learning is off in config" instead of
+            # showing rules that are quietly going nowhere.
+            "enabled": config.learning_enabled,
+            "max_in_prompt": config.max_lessons_in_prompt,
+        }
+
+    @app.get("/api/feedback", dependencies=guarded)
+    async def all_feedback(limit: int = 100) -> dict[str, Any]:
+        """Recent feedback across every project, newest first."""
+        entries: list[dict[str, Any]] = []
+        for path in sorted(PROJECTS_DIR.iterdir()) if PROJECTS_DIR.exists() else []:
+            if not is_project_dir(path):
+                continue
+            try:
+                store = FeedbackStore(Workspace(path).feedback_file)
+                entries.extend(e.model_dump() for e in store.all())
+            except Exception:  # noqa: BLE001 - one bad file can't hide the rest
+                continue
+        entries.sort(key=lambda e: e.get("created_at", ""), reverse=True)
+        return {"feedback": entries[: max(1, min(limit, 500))]}
+
+    @app.post("/api/lessons", dependencies=guarded)
+    async def add_lesson(body: dict[str, Any]) -> dict[str, Any]:
+        """Write a rule by hand (free — no model call)."""
+        try:
+            lesson = LessonStore(lessons_file()).add(
+                str((body or {}).get("text", "")),
+                str((body or {}).get("scope", "motion")),
+                origin="manual",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"lesson": lesson.model_dump()}
+
+    @app.patch("/api/lessons/{lesson_id}", dependencies=guarded)
+    async def update_lesson(lesson_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Edit a rule's text, scope, or whether it is sent to the model."""
+        body = body or {}
+        scope = body.get("scope")
+        if scope is not None and str(scope) not in SCOPES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"'scope' must be one of: {', '.join(SCOPES)}",
+            )
+        try:
+            lesson = LessonStore(lessons_file()).update(
+                lesson_id,
+                text=None if body.get("text") is None else str(body["text"]),
+                active=None if body.get("active") is None else bool(body["active"]),
+                scope=None if scope is None else str(scope),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if lesson is None:
+            raise HTTPException(status_code=404, detail="No such lesson")
+        return {"lesson": lesson.model_dump()}
+
+    @app.delete("/api/lessons/{lesson_id}", dependencies=guarded)
+    async def delete_lesson(lesson_id: str) -> dict[str, Any]:
+        if not LessonStore(lessons_file()).remove(lesson_id):
+            raise HTTPException(status_code=404, detail="No such lesson")
+        return {"ok": True}
 
     @app.post("/api/projects/{name}/actions/{command}", dependencies=guarded)
     async def run_action(

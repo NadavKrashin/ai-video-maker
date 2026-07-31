@@ -53,6 +53,14 @@ class RunOptions:
     # refuses to run under any other name, so an approval can never turn into
     # an upload nobody agreed to. None = take the next free version.
     publish_as: Optional[str] = None
+    # feedback: one human judgement of a rendered clip (see feedback.py).
+    # `feedback_clip` is the transition id it is about ("003_to_004"); empty
+    # means feedback about the movie in general. `feedback_learn` off records
+    # the note without spending an OpenAI call to distil a rule from it.
+    feedback_clip: Optional[str] = None
+    feedback_note: Optional[str] = None
+    feedback_verdict: str = "bad"
+    feedback_learn: bool = True
     # Per-run audio override; neither set -> config.audio_mode decides.
     add_audio: bool = False
     no_audio: bool = False
@@ -98,6 +106,12 @@ class RunOptions:
             restyle_frames=get("restyle_frame"),
             order=get("order"),
             publish_as=get("publish_as"),
+            feedback_clip=get("clip_id"),
+            feedback_note=get("note"),
+            # --good flips the verdict; the default is that feedback is a
+            # complaint, because that is what people write notes about.
+            feedback_verdict="good" if get("good") else "bad",
+            feedback_learn=not get("no_learn", False),
             add_audio=bool(get("add_audio")),
             no_audio=bool(get("no_audio")),
             no_combine=bool(get("no_combine")),

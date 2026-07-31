@@ -15,6 +15,17 @@ export const stepChip = (next) =>
         : next === 'publish' ? { label: 'needs publish', color: 'grape' }
           : { label: 'complete', color: 'green' };
 
+// Money, always rendered the same way. Every figure in the panel is an
+// ESTIMATE priced from config.pricing (see costs.py) — never a provider
+// invoice — so anywhere one is shown prominently must say so in words.
+export const usd = (amount) => {
+  const value = Number(amount || 0);
+  if (!value) return '$0';
+  // Sub-cent figures (a single planning call) would all render as "$0.00"
+  // and look like nothing was spent.
+  return value < 0.01 ? `$${value.toFixed(3)}` : `$${value.toFixed(2)}`;
+};
+
 // What an action costs, shown in every confirmation dialog: money honesty
 // is the whole point of the modal.
 export const COST = {

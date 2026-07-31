@@ -41,6 +41,15 @@
   "max_parallel_requests": 8,
   "max_retries": 5,
   "retry_base_delay_seconds": 2.0,
+  "pricing": {
+    "openai_image_usd": 0.19,
+    "openai_text_input_usd_per_1m": 1.25,
+    "openai_text_output_usd_per_1m": 10.0,
+    "clip_usd_per_second": 0.07,
+    "sfx_usd": 0.02
+  },
+  "learning_enabled": true,
+  "max_lessons_in_prompt": 25,
   "cloudinary_cloud_name": "dmxkoz4jo",
   "cloudinary_orders_folder": "video-orders"
 }

@@ -38,7 +38,18 @@ from .clients.download import download_file
 from .clients.openai_client import OpenAIClient
 from .clients.video import VideoClient
 from .config import Config
+from .costs import KIND_CLIP, KIND_SFX, CostLedger, estimate_usd
 from .errors import PipelineCancelled, PipelineError, StoryboardError
+from .feedback import (
+    MAX_NOTE_CHARS,
+    SCOPE_MOTION,
+    SCOPE_STYLE,
+    VERDICTS,
+    FeedbackEntry,
+    FeedbackStore,
+    LessonStore,
+    lesson_prompt_block,
+)
 from .intake import parse_order_folder, read_order_record, write_order_record
 from .logging_setup import logger
 from .media.ffmpeg import (
@@ -80,7 +91,7 @@ from .state import FailedJobStore, StateStore
 from .storyboard_html import write_storyboard_preview
 from .storyboard_md import write_storyboard_markdown
 from .summary import RunSummary
-from .workspace import PROJECT_ROOT, Workspace
+from .workspace import PROJECT_ROOT, Workspace, lessons_file
 
 # Bump when the presentation sections (intro / credits stills / letter) are
 # DRAWN differently, so already-rendered ones in output/segments/ are redone
@@ -200,7 +211,18 @@ class Pipeline:
         self.state = StateStore(workspace.state_file)
         self.failed = FailedJobStore(workspace.failed_jobs_file)
         self.summary = RunSummary()
+        # What this movie has cost so far. Recording is best-effort by
+        # design (see costs.py): a run that can't write its ledger still
+        # renders.
+        self.costs = CostLedger(workspace.costs_file)
+        # Lessons learned from earlier renders — studio-wide, so a mistake
+        # corrected on one order is corrected for every later one too.
+        self.lessons = LessonStore(lessons_file())
+        self.feedback_store = FeedbackStore(workspace.feedback_file)
         self.openai = OpenAIClient(config)
+        # Every OpenAI call (including the condense/restage/reword ones the
+        # runner never sees directly) prices itself into this project's ledger.
+        self.openai.on_spend = self._record_cost
         # The state store lets interrupted fal renders resume by request_id
         # instead of re-billing (falreq:<clip> entries).
         self.video_client = VideoClient(
@@ -241,12 +263,16 @@ class Pipeline:
             "combine": self.cmd_combine,
             "publish": self.cmd_publish,
             "status": self.cmd_status,
+            "feedback": self.cmd_feedback,
             "run": self.cmd_run,
         }
         handler = handlers.get(command)
         if handler is None:
             raise PipelineError(f"Unknown command: {command}")
-        if command == "status":
+        if command in ("status", "feedback"):
+            # Neither produces pipeline outputs, so neither gets a summary —
+            # and crucially neither flushes the failure report, which would
+            # delete the record of the last run that actually had problems.
             handler()
             return
         try:
@@ -321,6 +347,37 @@ class Pipeline:
             return True
         logger.info(decline_log)
         return False
+
+    # ------------------------- spending & learning ------------------------ #
+    def _record_cost(
+        self, kind: str, usd: float, detail: str = "", **extra: Any
+    ) -> None:
+        """Price one completed API call into this project's ledger.
+
+        A dry-run never reaches a provider, so it must never book money
+        either — the guard is here rather than at each call site so no future
+        caller can forget it.
+        """
+        if self.dry_run:
+            return
+        self.costs.record(kind, usd, detail, **extra)
+
+    def _lesson_texts(self, scope: str = SCOPE_MOTION) -> list[str]:
+        """Active lessons for `scope`, newest last, capped for the prompt.
+
+        The cap keeps learned rules from crowding out the instructions they
+        refine: when there are more than `max_lessons_in_prompt`, the NEWEST
+        win — they encode the most recent correction of the same behaviour.
+        """
+        if not self.config.learning_enabled:
+            return []
+        try:
+            lessons = self.lessons.active(scope)
+        except Exception as exc:  # noqa: BLE001 - learning never sinks a run
+            logger.warning("Could not read the lessons store: %s", exc)
+            return []
+        limit = max(0, self.config.max_lessons_in_prompt)
+        return [l.text for l in lessons[-limit:]] if limit else []
 
     def _next_command(self, command: str, *flags: str) -> str:
         """A copy-pasteable command for this project's next step."""
@@ -595,6 +652,17 @@ class Pipeline:
         redoes everything without asking.
         """
         style_prompt = self.options.style_prompt or self.config.style_prompt
+        # Lessons learned from earlier styled frames ride along with the
+        # prompt for the CALL only — the storyboard keeps recording the plain
+        # style prompt, so a new lesson never looks like a changed style and
+        # never makes existing frames look out of date.
+        style_lessons = self._lesson_texts(SCOPE_STYLE)
+        if style_lessons:
+            logger.info(
+                "Applying %d learned styling lesson(s) to this pass.",
+                len(style_lessons),
+            )
+            style_prompt += lesson_prompt_block(style_lessons, SCOPE_STYLE)
         targets = self._styled_targets(images)
         jobs = list(zip(images, targets))
 
@@ -865,6 +933,15 @@ class Pipeline:
         )
         if self.dry_run or not self.options.analyze_frames:
             return {i: fallback for i in dirty}, cast
+        # Rules distilled from clips that came back wrong on earlier runs.
+        # They join the planner's system prompt, so a targeted re-plan of one
+        # pair gets exactly the same corrections a full plan does.
+        lessons = self._lesson_texts(SCOPE_MOTION)
+        if lessons:
+            logger.info(
+                "Applying %d learned lesson(s) from earlier renders to this plan.",
+                len(lessons),
+            )
         plans: dict[int, tuple[str, int, str]] = {}
         for run in _consecutive_runs(dirty):
             segment = styled[run[0]: run[-1] + 2]
@@ -878,6 +955,7 @@ class Pipeline:
                     default_duration=self.options.duration,
                     global_context=global_context,
                     cast=cast,
+                    lessons=lessons,
                 )
                 for offset, i in enumerate(run):
                     plans[i] = seg_plans[offset]
@@ -1271,6 +1349,16 @@ class Pipeline:
                         start, end, motion, duration, dst,
                         reword=self.openai.reword_motion_prompt,
                     )
+                    # Booked on the finished clip, not on submission: a job
+                    # that was submitted and billed but never collected shows
+                    # up as a pending render (money the ledger can't see yet)
+                    # and lands here when it is finally downloaded.
+                    self._record_cost(
+                        KIND_CLIP,
+                        self.config.pricing.clip(duration),
+                        dst.name,
+                        seconds=duration,
+                    )
                     with self._lock:
                         # A fresh clip file invalidates its per-clip audio work:
                         # without this, a regenerated clip would skip SFX/fade
@@ -1396,6 +1484,7 @@ class Pipeline:
             prompt = sound_prompt.strip() or self.config.default_sfx_prompt
             try:
                 self.audio_client.add_sfx(clip, prompt, duration)
+                self._record_cost(KIND_SFX, self.config.pricing.sfx_usd, clip.name)
                 with self._lock:
                     self.state.set(job_id, "done")
                     self.summary.sfx_created += 1
@@ -2269,6 +2358,15 @@ class Pipeline:
             # produces no letter (see _letter_text), so status and the panel
             # have to be able to say whether there is one at all.
             "letter": letter_state(ws.letter_file),
+            # Estimated money spent on this project (see cost_report). Built
+            # from what snapshot already knows, so it costs no extra I/O.
+            "cost": self.cost_report(
+                storyboard=storyboard, clips=clips,
+                images=len(styled) + len(generated),
+            ),
+            # Human judgements of this project's clips, and how many lessons
+            # they taught the planner (see feedback.py).
+            "feedback": self._feedback_summary(),
             "music": ws.music_file.exists(),
             "custom_music": ws.custom_music_file.exists(),
             "has_failed_jobs": self.failed.path.exists(),
@@ -2277,6 +2375,224 @@ class Pipeline:
             # was indistinguishable from a clean one without opening the log.
             "failed_jobs": self._recorded_failures(),
             "next_step": next_step,
+        }
+
+    # ------------------------------ feedback ------------------------------ #
+    def _feedback_summary(self) -> dict[str, Any]:
+        """Per-clip verdicts + counts for status/snapshot (never raises)."""
+        try:
+            return self.feedback_store.summary()
+        except Exception as exc:  # noqa: BLE001 - a note can't break status
+            logger.warning("Could not read the feedback file: %s", exc)
+            return {"count": 0, "good": 0, "bad": 0, "lessons": 0,
+                    "by_transition": {}}
+
+    def record_feedback(self) -> dict[str, Any]:
+        """Record one judgement of a rendered clip and learn a rule from it.
+
+        This is the loop the whole feature exists for: the planner writes a
+        motion prompt blind (it never sees the clip it caused), so the only
+        way it improves is a human watching the result and saying what went
+        wrong. The note is saved verbatim with the exact prompt that produced
+        the clip — evidence that must survive later storyboard edits — and
+        then distilled into short, general rules that join EVERY later
+        planning call (see feedback.py / _lesson_texts).
+
+        Two failure modes are handled deliberately:
+
+        * the distillation call costs OpenAI credits, so ``feedback_learn``
+          can turn it off — the note is still recorded and can be turned into
+          a lesson by hand later;
+        * if that call fails (quota, network), the note is STILL saved and
+          the result says so. Losing what someone wrote because a model call
+          timed out is not an acceptable outcome.
+
+        Returns the saved entry, the lessons minted from it, and any
+        distillation error, for the CLI to print and the API to return.
+        """
+        options = self.options
+        note = (options.feedback_note or "").strip()[:MAX_NOTE_CHARS]
+        if not note:
+            raise PipelineError(
+                "Feedback needs a note — what was wrong (or right) with the clip?"
+            )
+        verdict = (options.feedback_verdict or "bad").strip().lower()
+        if verdict not in VERDICTS:
+            raise PipelineError(
+                f"Unknown verdict {verdict!r}; use one of: {', '.join(VERDICTS)}"
+            )
+
+        tid = (options.feedback_clip or "").strip().removesuffix(".mp4")
+        motion_prompt, duration = "", 0
+        if tid:
+            # Feedback about a clip has to name a real one: a typo'd id would
+            # otherwise teach a lesson attributed to nothing.
+            storyboard = self._require_storyboard("feedback")
+            transition = next(
+                (t for t in storyboard.transitions if t.id == tid), None
+            )
+            if transition is None:
+                raise PipelineError(
+                    f"No transition '{tid}' in this project's storyboard.\n"
+                    "Valid ids: "
+                    + ", ".join(t.id for t in storyboard.transitions)
+                )
+            # Copied now, on purpose: the storyboard is hand-edited between
+            # steps, so "the prompt this clip came from" is only knowable here.
+            motion_prompt = _with_global_motion(
+                storyboard.global_motion_prompt, transition.motion_prompt
+            )
+            duration = transition.duration
+
+        entry = FeedbackEntry(
+            project=self.workspace.root.name,
+            transition_id=tid,
+            verdict=verdict,
+            note=note,
+            motion_prompt=motion_prompt,
+            duration=duration,
+        )
+
+        learned: list[dict[str, Any]] = []
+        learn_error = ""
+        if self.dry_run:
+            logger.info("[dry-run] would record feedback and distil lessons")
+        elif options.feedback_learn:
+            try:
+                existing = [l.text for l in self.lessons.all() if l.active]
+                proposals = self.openai.distill_lesson(
+                    note, verdict=verdict, motion_prompt=motion_prompt,
+                    duration=duration, existing=existing,
+                )
+                for proposal in proposals:
+                    lesson = self.lessons.add(
+                        proposal["text"], proposal["scope"],
+                        origin="feedback",
+                        source={
+                            "project": self.workspace.root.name,
+                            "transition": tid,
+                            "verdict": verdict,
+                            "feedback_id": entry.id,
+                        },
+                    )
+                    learned.append(lesson.model_dump())
+                    logger.info("Learned (%s): %s", lesson.scope, lesson.text)
+                if not proposals:
+                    logger.info(
+                        "Nothing general enough to learn from this note — it is "
+                        "recorded, but no rule was added."
+                    )
+            except Exception as exc:  # noqa: BLE001 - never lose the note
+                learn_error = str(exc)
+                logger.warning(
+                    "Could not distil a lesson (%s); the feedback itself is "
+                    "saved and can be turned into a lesson by hand.", exc,
+                )
+
+        entry.lesson_ids = [l["id"] for l in learned]
+        if not self.dry_run:
+            self.feedback_store.add(entry)
+        return {
+            "feedback": entry.model_dump(),
+            "lessons": learned,
+            "learn_error": learn_error,
+        }
+
+    def cmd_feedback(self) -> None:
+        """CLI face of :meth:`record_feedback` — say it, then show what stuck."""
+        result = self.record_feedback()
+        entry = result["feedback"]
+        target = entry["transition_id"] or "the movie in general"
+        print(f"\nFeedback recorded for {target} ({entry['verdict']}).")
+        if result["learn_error"]:
+            print(
+                "  The lesson could not be distilled "
+                f"({result['learn_error']}) — the note itself is saved."
+            )
+        elif result["lessons"]:
+            print(f"  {len(result['lessons'])} lesson(s) now apply to every "
+                  "future plan:")
+            for lesson in result["lessons"]:
+                print(f"    [{lesson['scope']}] {lesson['text']}")
+        elif self.options.feedback_learn:
+            print("  Nothing general enough to turn into a rule — note kept.")
+        print(f"  Notes: {self.workspace.feedback_file}")
+        print(f"  Lessons: {lessons_file()}")
+
+    def cost_report(
+        self,
+        storyboard: Optional[Storyboard] = None,
+        clips: Optional[list[dict[str, Any]]] = None,
+        images: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """What this project has cost: the ledger, plus a from-disk estimate.
+
+        Two numbers, because they answer different questions:
+
+        * ``total_usd`` — the sum of what was actually recorded while the
+          calls happened. Exact about WHAT was bought, priced with
+          ``config.pricing``.
+        * ``estimated_usd`` — what the artifacts sitting on disk (styled
+          frames, rendered clips, SFX passes) would cost to buy today. Every
+          project that predates the ledger has a full movie and an empty
+          ledger, and reporting those as "$0 spent" would be worse than an
+          approximation.
+
+        The panel shows the recorded figure and falls back to the estimate
+        when it is clearly the more truthful of the two (``estimated``).
+        The optional arguments let ``snapshot`` hand over what it has already
+        computed instead of re-reading the project.
+        """
+        ws = self.workspace
+        recorded = self.costs.summary()
+
+        if images is None:
+            images = sum(
+                1 for directory in (ws.styled_images_dir, ws.generated_frames_dir)
+                if directory.exists()
+                for p in directory.iterdir()
+                if p.is_file() and p.suffix.lower() == ".png"
+            )
+        if storyboard is None:
+            path = ws.default_storyboard_json
+            if path.exists():
+                try:
+                    storyboard = Storyboard.load(path)
+                except StoryboardError:
+                    storyboard = None
+        seconds_by_clip = {
+            Path(t.output_path).stem: t.duration
+            for t in (storyboard.transitions if storyboard else [])
+        }
+        if clips is None:
+            found = find_generated_clips(ws.clips_dir) if ws.clips_dir.exists() else []
+            clips = [
+                {"id": p.stem, "file": p.name, "rendered": True,
+                 "sfx": self.state.is_done(f"sfx:{p.name}")}
+                for p in found
+            ]
+        rendered = [c for c in clips if c.get("rendered")]
+        clip_seconds = sum(
+            seconds_by_clip.get(str(c.get("id", "")), self.config.duration)
+            for c in rendered
+        )
+        estimated = estimate_usd(
+            self.config.pricing,
+            images=images,
+            clip_seconds=clip_seconds,
+            sfx_clips=sum(1 for c in rendered if c.get("sfx")),
+        )
+        return {
+            **recorded,
+            "estimated_usd": estimated,
+            # True when the ledger is missing most of the story (a project
+            # made before tracking existed, or one whose ledger was lost):
+            # the panel then leads with the estimate and says so.
+            "estimated": estimated > recorded["total_usd"] * 1.05,
+            "currency": "USD",
+            "clips_rendered": len(rendered),
+            "clip_seconds": clip_seconds,
+            "images": images,
         }
 
     def _recorded_failures(self) -> list[dict[str, Any]]:
@@ -2440,6 +2756,33 @@ class Pipeline:
 
         final = ws.final_video
         print(f"  Final video      : {'ready — ' + str(final) if final.exists() else 'not built'}")
+
+        # Money. Always described as an estimate: it is priced from
+        # config.pricing, never read from a provider's invoice.
+        cost = snap["cost"]
+        if cost["estimated"]:
+            print(
+                f"  Spent (est.)     : ${cost['estimated_usd']:.2f} from the "
+                f"files on disk (${cost['total_usd']:.2f} recorded — this "
+                "project predates cost tracking)"
+            )
+        elif cost["total_usd"] or cost["entries"]:
+            parts = ", ".join(
+                f"{kind} ${bucket['usd']:.2f}"
+                for kind, bucket in cost["by_kind"].items() if bucket["usd"]
+            )
+            print(
+                f"  Spent (est.)     : ${cost['total_usd']:.2f}"
+                + (f"  ({parts})" if parts else "")
+            )
+
+        fb = snap["feedback"]
+        if fb["count"]:
+            print(
+                f"  Clip feedback    : {fb['count']} note(s) "
+                f"({fb['good']} good / {fb['bad']} bad), "
+                f"{fb['lessons']} lesson(s) taught"
+            )
 
         published = snap["published"]
         if published["latest"]:

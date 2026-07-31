@@ -13,6 +13,9 @@ endpoint):
     combine     concatenate the clips into output/final_video.mp4
     publish     upload the finished movie into its Cloudinary order folder
     status      show where the project stands and what to run next
+    feedback    tell the planner what a rendered clip got wrong, and learn from it
+    lessons     show/edit what it has learned so far (project-less)
+    costs       what each project has cost, and the total (project-less)
     run         the whole flow in one go, with confirmation gates
 
 All interactivity lives here (the ``confirm`` callback handed to the
@@ -46,6 +49,11 @@ project lifecycle:
   python pipeline.py publish myfilm         # deliver it into the order's Cloudinary folder
   python pipeline.py status myfilm          # see progress + the suggested next step
   python pipeline.py run myfilm             # everything in one go (with confirmations)
+
+learning & money:
+  python pipeline.py feedback myfilm "the boy teleports across the lawn" --clip 003_to_004
+  python pipeline.py lessons                # what the planner has learned so far
+  python pipeline.py costs                  # estimated spend, per project and in total
 """
 
 
@@ -97,6 +105,45 @@ def build_parser() -> argparse.ArgumentParser:
                     "first). Each printed folder name starts with the order "
                     "id from the confirmation email; ingest one with "
                     "`python pipeline.py ingest <project> <order-id>`.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    # `lessons` and `costs` are project-less too: lessons are studio-wide by
+    # design (see feedback.py) and the spending report spans every project.
+    sp = sub.add_parser(
+        "lessons",
+        help="Show (and edit) the rules the planner has learned from clip "
+             "feedback.",
+        description="Show the rules distilled from clip feedback — they are "
+                    "appended to every planning call, so this is the planner's "
+                    "learned standing instructions. Rules are studio-wide, not "
+                    "per project. Add one by hand with --add, switch a bad one "
+                    "off with --disable (kept for the record), or delete it "
+                    "with --forget.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sp.add_argument("--add", metavar="TEXT", default=None,
+                    help="Add a rule by hand (no OpenAI call). Keep it short, "
+                         "general and imperative.")
+    sp.add_argument("--scope", choices=["motion", "style"], default="motion",
+                    help="With --add: which prompt the rule joins — the clip "
+                         "planner (motion, default) or image styling (style).")
+    sp.add_argument("--disable", metavar="ID", default=None,
+                    help="Stop sending this rule to the model (it stays in the "
+                         "file).")
+    sp.add_argument("--enable", metavar="ID", default=None,
+                    help="Send this rule to the model again.")
+    sp.add_argument("--forget", metavar="ID", default=None,
+                    help="Delete this rule for good.")
+
+    sub.add_parser(
+        "costs",
+        help="Show what every project has cost so far (estimated).",
+        description="Show what each project has cost and the total across all "
+                    "of them. Figures are ESTIMATES: every API call is priced "
+                    "from the `pricing` block in config.json, not read off a "
+                    "provider's invoice. Projects that predate cost tracking "
+                    "are valued from the files on disk and marked ~.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
@@ -254,6 +301,31 @@ def build_parser() -> argparse.ArgumentParser:
             "Show the project's progress (frames, storyboard, clips, final "
             "video) and the suggested next command.")
 
+    sp = command("feedback",
+                 "Tell the planner what a rendered clip got wrong (or right). "
+                 "The note is saved with the exact motion prompt that produced "
+                 "the clip, and — unless --no-learn — distilled into a short, "
+                 "general rule that is added to EVERY future planning call, so "
+                 "the same mistake isn't planned again. Costs one small OpenAI "
+                 "text call; review or remove the rules with "
+                 "`python pipeline.py lessons`.")
+    sp.add_argument("note",
+                    help="What was wrong (or right) with the clip, in your own "
+                         "words.")
+    sp.add_argument("--clip", dest="clip_id", metavar="ID", default=None,
+                    help="Which transition the feedback is about (e.g. "
+                         "003_to_004). Omit for feedback about the movie in "
+                         "general.")
+    sp.add_argument("--good", action="store_true",
+                    help="This clip came out well — learn what to KEEP doing "
+                         "(the default is that feedback describes a problem).")
+    sp.add_argument("--no-learn", action="store_true",
+                    help="Record the note only; don't spend an OpenAI call "
+                         "turning it into a rule.")
+    sp.add_argument("--dry-run", action="store_true",
+                    help="Show what would be recorded without writing or "
+                         "spending anything.")
+
     sp = command("run",
                  "The whole flow in one command: storyboard (reused if already "
                  "saved) -> confirm -> clips -> confirm -> final video.")
@@ -343,6 +415,113 @@ def _cmd_orders(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_lessons(args: argparse.Namespace) -> int:
+    """Project-less view/edit of the studio's learned planning rules."""
+    from .feedback import LessonStore
+    from .workspace import lessons_file
+
+    path = lessons_file()
+    store = LessonStore(path)
+    try:
+        if args.add:
+            lesson = store.add(args.add, args.scope, origin="manual")
+            print(f"Added [{lesson.scope}] {lesson.id}: {lesson.text}")
+        for flag, active in (("disable", False), ("enable", True)):
+            lesson_id = getattr(args, flag)
+            if not lesson_id:
+                continue
+            lesson = store.update(lesson_id, active=active)
+            if lesson is None:
+                print(f"error: no lesson {lesson_id}", file=sys.stderr)
+                return 1
+            print(f"{'Enabled' if active else 'Disabled'} {lesson.id}: {lesson.text}")
+        if args.forget:
+            if not store.remove(args.forget):
+                print(f"error: no lesson {args.forget}", file=sys.stderr)
+                return 1
+            print(f"Forgot {args.forget}.")
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    lessons = store.all()
+    if not lessons:
+        print(
+            "No lessons yet. They are written by `python pipeline.py feedback "
+            "<project> \"...\" --clip <ID>` after watching a clip, or by hand "
+            "with --add."
+        )
+        return 0
+    print(f"{len(lessons)} lesson(s) in {path}:")
+    for lesson in lessons:
+        state = "" if lesson.active else "  (off)"
+        origin = lesson.source.get("project", lesson.origin)
+        print(f"  [{lesson.scope}] {lesson.id}{state}  {lesson.text}")
+        print(f"        from {origin} · {lesson.created_at[:19]}")
+    print("\nThese are appended to every planning call. Turn one off with:")
+    print("  python pipeline.py lessons --disable <ID>")
+    return 0
+
+
+def _cmd_costs(args: argparse.Namespace) -> int:
+    """Project-less spending report: per project and studio-wide."""
+    from .costs import KIND_LABELS, merge_totals
+    from .workspace import PROJECTS_DIR, is_project_dir
+
+    load_dotenv(PROJECT_ROOT / ".env")
+    try:
+        shared = _shared_config_path(args)
+        Config.load(shared)  # fail early on a broken config
+    except PipelineError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if not PROJECTS_DIR.exists():
+        print("No projects yet.")
+        return 0
+
+    rows: list[tuple[str, dict]] = []
+    for path in sorted(PROJECTS_DIR.iterdir()):
+        if not is_project_dir(path):
+            continue
+        ws = Workspace(path)
+        try:
+            config = Config.load(shared, override_path=path / "config.json")
+            report = Pipeline(config, ws, RunOptions()).cost_report()
+        except PipelineError as exc:
+            print(f"  {path.name}: unreadable ({exc})", file=sys.stderr)
+            continue
+        rows.append((path.name, report))
+
+    if not rows:
+        print("No projects yet.")
+        return 0
+    totals = merge_totals([r for _, r in rows])
+    print("\nEstimated spend per project (priced from config.pricing):\n")
+    print(f"  {'project':<28}{'recorded':>10}{'from files':>12}  clips")
+    for name, report in rows:
+        marker = "~" if report["estimated"] else " "
+        print(
+            f"  {name:<28}{'$%.2f' % report['total_usd']:>10}"
+            f"{'$%.2f' % report['estimated_usd']:>12}{marker} "
+            f"{report['clips_rendered']}"
+        )
+    print(
+        f"\n  {'TOTAL':<28}{'$%.2f' % totals['total_usd']:>10}"
+        f"{'$%.2f' % totals['estimated_usd']:>12}"
+    )
+    print("\n  Recorded, by kind:")
+    for kind, bucket in totals["by_kind"].items():
+        if bucket["count"]:
+            print(f"    {KIND_LABELS.get(kind, kind):<26} "
+                  f"${bucket['usd']:.2f}  ({bucket['count']} call(s))")
+    print(
+        "\n  ~ = valued from the files on disk; this project's calls happened "
+        "before\n    cost tracking existed (or its ledger is incomplete). "
+        "All figures are\n    estimates, not provider invoices."
+    )
+    return 0
+
+
 def _cmd_serve(args: argparse.Namespace) -> int:
     """Run the admin API server (uvicorn) with the order watcher."""
     load_dotenv(PROJECT_ROOT / ".env")
@@ -363,10 +542,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    # `orders` and `serve` are project-less (they span all projects) — handle
-    # them before any project resolution (they have no `project` argument).
+    # `orders`, `lessons`, `costs` and `serve` are project-less (they span all
+    # projects) — handle them before any project resolution (they have no
+    # `project` argument).
     if args.command == "orders":
         return _cmd_orders(args)
+    if args.command == "lessons":
+        return _cmd_lessons(args)
+    if args.command == "costs":
+        return _cmd_costs(args)
     if args.command == "serve":
         return _cmd_serve(args)
 

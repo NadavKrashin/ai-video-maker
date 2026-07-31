@@ -480,7 +480,7 @@ class TestCastAcrossPlanningCalls:
         batches = list(new_people or [])
 
         def fake_analyze(frames, style, default_duration=None,
-                         global_context="", cast=None):
+                         global_context="", cast=None, lessons=None):
             seen.append([c.epithet for c in (cast or [])])
             found = batches.pop(0) if batches else []
             merged = list(cast or []) + [

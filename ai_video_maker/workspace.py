@@ -21,6 +21,37 @@ from .errors import InvalidProjectName
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PROJECTS_DIR = PROJECT_ROOT / "projects"
 
+def lessons_file() -> Path:
+    """Where the studio's learned planning rules live (see feedback.py).
+
+    Studio-wide (not per-movie) state that is still USER DATA, so it belongs
+    under projects/ rather than in the checkout: the dev tree symlinks
+    projects/ to the production one, and a deploy's `git checkout` never
+    touches it.
+
+    A function, not a module constant, on purpose: several modules need this
+    path, and a constant would freeze ``PROJECTS_DIR`` at import time in each
+    of them independently — one redirected copy and the panel would read a
+    different lessons file than the pipeline writes.
+    """
+    return PROJECTS_DIR / "_learning" / "lessons.json"
+
+
+# Names under projects/ that are NOT movies. Reserved rather than filtered by
+# a leading underscore: `_smoketest` is a legitimate throwaway project, so the
+# rule is an explicit list of one, not a naming convention.
+RESERVED_PROJECT_NAMES = frozenset({"_learning"})
+
+
+def is_project_dir(path: Path) -> bool:
+    """Is this entry under projects/ an actual movie workspace?
+
+    Every place that enumerates projects (the CLI, the API listing, order
+    intake) goes through here, so studio-wide state stored alongside them
+    never shows up as a project with no photos in it.
+    """
+    return path.is_dir() and path.name not in RESERVED_PROJECT_NAMES
+
 
 @dataclass(frozen=True)
 class Workspace:
@@ -38,6 +69,10 @@ class Workspace:
         cleaned = (name or "").strip().strip("/")
         if not cleaned or cleaned in {".", ".."} or "/" in cleaned or "\\" in cleaned:
             raise InvalidProjectName(f"Invalid project name: {name!r}")
+        if cleaned in RESERVED_PROJECT_NAMES:
+            raise InvalidProjectName(
+                f"'{cleaned}' is reserved for studio-wide data, not a project."
+            )
         return cls(PROJECTS_DIR / cleaned)
 
     # --- directories ------------------------------------------------------- #
@@ -107,6 +142,22 @@ class Workspace:
     @property
     def failed_jobs_file(self) -> Path:
         return self.failed_jobs_dir / "failed_jobs.json"
+
+    @property
+    def costs_file(self) -> Path:
+        """What this movie has cost so far, one line per paid API call.
+
+        Lives with the other runtime bookkeeping (logs/) rather than at the
+        project root: it is a record OF the run, like state.json."""
+        return self.logs_dir / "costs.json"
+
+    @property
+    def feedback_file(self) -> Path:
+        """Human judgements of this movie's rendered clips (see feedback.py).
+
+        Project-level, next to order.json/published.json, because it is
+        content about the movie — the LESSONS distilled from it are global."""
+        return self.root / "feedback.json"
 
     @property
     def letter_file(self) -> Path:

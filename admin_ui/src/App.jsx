@@ -8,6 +8,8 @@ import { api, getToken, hasSettings, saveSettings } from './api.js';
 import OrdersTab from './OrdersTab.jsx';
 import ProjectsTab from './ProjectsTab.jsx';
 import ProjectDetail from './ProjectDetail.jsx';
+import SpendingTab from './SpendingTab.jsx';
+import LearningTab from './LearningTab.jsx';
 
 function Settings({ onConnected }) {
   const [token, setToken] = useState(getToken());
@@ -66,7 +68,9 @@ export default function App() {
           onChange={(value) => { setTab(value); setProject(''); }}
           data={[
             { label: 'Orders', value: 'orders' },
-            { label: 'Projects', value: 'projects' }
+            { label: 'Projects', value: 'projects' },
+            { label: 'Spending', value: 'spending' },
+            { label: 'Learning', value: 'learning' }
           ]} />
         <div style={{ flex: 1 }} />
         <Button variant="default" size="xs" onClick={() => setConnected(false)}>
@@ -75,6 +79,8 @@ export default function App() {
       </Group>
       {tab === 'orders' && <OrdersTab onOpenProject={openProject} />}
       {tab === 'projects' && <ProjectsTab onOpenProject={openProject} />}
+      {tab === 'spending' && <SpendingTab onOpenProject={openProject} />}
+      {tab === 'learning' && <LearningTab onOpenProject={openProject} />}
       {tab === 'project' && project && (
         <ProjectDetail name={project} onBack={() => setTab('projects')} />
       )}
