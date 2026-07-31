@@ -262,6 +262,37 @@ Core design rules:
   against the live config.json. If prompt-side framing proves unreliable,
   the deterministic fix is padding a portrait source to 3:2 before upload
   in `prepare_image_for_upload` — not weakening this text.
+- THE APP LEARNS FROM RENDERED CLIPS (2026-07-31). The planner writes each
+  motion prompt blind — it never sees the clip it caused — so every rule in
+  this file got here by a human watching a render and editing prompt text by
+  hand. `feedback <project> "..." --clip ID` (panel: the Feedback button on
+  a rendered clip) saves the note WITH the exact motion prompt that produced
+  the clip, then distils it into one short GENERAL rule appended to every
+  later planning call (`_MODE_A_SYSTEM` + `lesson_prompt_block`); scope
+  `style` rules join the style prompt instead. Rules are STUDIO-WIDE
+  (`projects/_learning/lessons.json`; `_learning` is a reserved project
+  name, filtered by `is_project_dir`) — a lesson learned on one order must
+  not be relearned on the next. Invariants: the note is never lost (a failed
+  distillation is reported and the note still saved), an EMPTY distillation
+  is a valid answer (a rule that teaches nothing competes with the
+  instructions it refines), with zero lessons the prompt is byte-for-byte
+  what it was before, and a wrong rule is switched OFF (kept for the record)
+  rather than deleted. `lessons` lists/edits them; `learning_enabled` and
+  `max_lessons_in_prompt` (newest win) bound the mechanism. Pinned by
+  tests/test_feedback.py + tests/test_server_learning.py.
+- MONEY IS TRACKED PER PROJECT, AS AN ESTIMATE (2026-07-31). Every completed
+  API call prices itself into `projects/<n>/logs/costs.json` from the
+  `pricing` block in config.json — OpenAI calls report through
+  `OpenAIClient.on_spend`, so the condense/restage/reword calls the runner
+  never sees are counted too. NEVER present these as billed amounts: nothing
+  reads a provider's billing API, so every surface (status, panel, README)
+  says "estimated". Projects that predate the ledger are valued from the
+  FILES ON DISK and flagged (`estimated: true`) — a finished movie reading
+  "$0 spent" is worse than an approximation. Recording is best-effort by
+  construction: an unwritable ledger is a warning, a dry-run books nothing,
+  and a clip is booked when it is DOWNLOADED (a submitted-but-uncollected
+  render is money the ledger can't see yet — that's what `pending_renders`
+  is for). `costs` reports across projects. Pinned by tests/test_costs.py.
 - BALDNESS GETS "CORRECTED" BY THE IMAGE MODEL unless forbidden: a real
   styling gave a cleanly bald man a horseshoe of dark hair around his ears
   (frame 920acc69 on Ari&Michal), and changed wraparound mirrored
@@ -312,7 +343,9 @@ images) → `storyboard` (stops for review; writes json/md/preview.html)
 → `render` (plan + confirm; `--clip ID` redoes one clip) → `audio` → `combine`
 → `publish` (web orders only: delivers the movie into the order's Cloudinary
 folder as the next `final_vN`); `run` chains them (up to `combine`) with
-confirmation gates.
+confirmation gates. Alongside: `feedback <project> "..." --clip ID` teaches
+the planner from a rendered clip, `lessons` shows/edits what it learned, and
+`costs` reports estimated spend (both project-less, like `orders`).
 
 ## The web frontend (animoments) & order intake
 
@@ -351,8 +384,9 @@ confirmation gates.
   install && npm run build`; `serve` serves `admin_ui/dist` at `/` (API
   routes win). `npm run dev` proxies `/api` to 127.0.0.1:8300. The panel
   covers the full CLI surface (init/photo upload, storyboard incl. --idea
-  options, per-clip render/audio/re-plan, combine toggles, run) — keep that
-  parity when adding CLI features. The layout is a numbered pipeline stepper
+  options, per-clip render/audio/re-plan, combine toggles, run, per-clip
+  feedback, and the Spending / Learning tabs) — keep that parity when adding
+  CLI features. The layout is a numbered pipeline stepper
   (Storyboard → Render → Audio → Combine + a dashed "Run everything" tile),
   and EVERY mutating action goes through a confirmation modal that lists
   exactly what will change and whether money is spent (user requirement,

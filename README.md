@@ -26,6 +26,11 @@ python pipeline.py publish myfilm         # 5. (web orders) deliver it into the 
 
 python pipeline.py status myfilm          # where am I? what's next?
 python pipeline.py run myfilm             # or: everything in one go (with confirmations)
+
+python pipeline.py feedback myfilm "the boy slid across the lawn" --clip 2_to_3
+                                          # tell the planner what a clip got wrong;
+                                          # it learns a rule for every future movie
+python pipeline.py costs                  # what each project has cost (estimated)
 ```
 
 **The storyboard is the source of truth.** `storyboard` writes it, you edit it,
@@ -132,8 +137,12 @@ the `ADMIN_API_TOKEN` from `.env`:
   `letter.txt`), **publishing the finished movie into the order's Cloudinary
   folder** (step 5 — the modal names the exact file, e.g. `final_v2.mp4`,
   before anything is uploaded, and nothing there is ever replaced), and `run`
-  for the whole chain. Jobs stream
-  their logs and can be cancelled from the panel.
+  for the whole chain, plus a **Feedback** button on every rendered clip
+  (tell the planner what it got wrong — see
+  [Teaching the planner](#teaching-the-planner-feedback--lessons)) and two
+  studio-wide tabs: **Spending** (what each project cost and the total) and
+  **Learning** (every rule the planner has learned, editable and switchable).
+  Jobs stream their logs and can be cancelled from the panel.
   **Editing prompts in bulk:** saving your transition edits marks every
   already-rendered clip whose motion prompt / duration / frames changed as
   OUTDATED (a sound-prompt-only edit doesn't — that's the audio step's
@@ -283,6 +292,83 @@ Notes:
 > asks before re-styling. To migrate a project to filename-keyed naming,
 > delete its `styled_images/` and `storyboard/` and re-run `storyboard`
 > (re-styles everything once).
+
+### Teaching the planner (feedback → lessons)
+
+The planner writes each motion prompt **blind**: it sees two still frames and
+never sees the clip that comes back. So when Kling does something silly —
+sliding a person across the grass instead of walking them, morphing one face
+into another — nothing in the pipeline learns from it unless you say so.
+
+That is what `feedback` is for. Watch a rendered clip, say what went wrong,
+and the note is distilled into one short, general **rule** that is appended to
+every planning call from then on — in this project and every future one:
+
+```bash
+python pipeline.py feedback myfilm \
+  "the boy slid across the lawn without taking a step" --clip 2_to_3
+#   -> Learned (motion): When a person stands somewhere different in the end
+#      frame, write the walk that gets them there — never state the new
+#      position alone.
+```
+
+- **`--good`** learns what to KEEP doing from a clip that came out well.
+- **`--no-learn`** records the note without spending the (small) OpenAI call.
+- **No `--clip`** gives feedback about the movie in general.
+- In the admin panel this is the **Feedback** button on every rendered clip,
+  and the **Learning** tab lists every rule.
+
+Rules are **studio-wide** — a mistake corrected on one order must not be
+relearned on the next — so they live in `projects/_learning/lessons.json`
+(`_learning` is a reserved name, never a project). Review and edit them with:
+
+```bash
+python pipeline.py lessons                      # what it has learned
+python pipeline.py lessons --add "Keep a 5s clip to one continuous action."
+python pipeline.py lessons --disable a1b2c3d4   # stop using it, keep the record
+python pipeline.py lessons --forget  a1b2c3d4   # delete it
+```
+
+Details worth knowing:
+
+- A rule the model can't generalise is **not** written: "nothing to learn
+  here" is a valid outcome, because every rule competes for the planner's
+  attention with the instructions it refines.
+- Your note is **never lost**. If the distillation call fails (quota,
+  network), the note is still saved and you are told — add the rule by hand.
+- Scope `motion` rules join the clip planner's system prompt; `style` rules
+  join the image style prompt. Only the newest `max_lessons_in_prompt`
+  (default 25) active rules ride along with a call; `learning_enabled: false`
+  turns the whole mechanism off without deleting anything.
+- With no lessons stored, every prompt is byte-for-byte what it was before
+  this feature existed.
+
+### What it costs (spending)
+
+Every paid call — styling an image, a planning/vision call, a clip render, an
+SFX pass — is written to `projects/<name>/logs/costs.json` as it happens, so a
+project can say what it cost:
+
+```bash
+python pipeline.py costs        # every project + the studio total
+python pipeline.py status myfilm    # one project's spend, with a breakdown
+```
+
+The admin panel has the same in its **Spending** tab, and each project view
+shows a "Spent on this project" card that expands into the individual calls.
+
+**These are estimates, not invoices.** Nothing here reads a provider's billing
+API: each call is priced from the `pricing` block in `config.json` (`$0.35`
+for a 5s clip, `$0.70` for 10s, `$0.19` per styled image, OpenAI text priced
+from the token usage the API reports). Correct those numbers when a provider
+changes its rates and every total follows.
+
+Projects that predate the ledger have a full movie and an empty ledger, so
+their figure is priced from the **files on disk** instead and marked as such
+(`~` in the CLI, a "from files" badge in the panel). Recording can never sink
+a run: an unwritable ledger is a warning, a dry-run books nothing, and a
+render that was submitted and billed but never collected only appears once its
+result is downloaded (`status` lists those separately as pending renders).
 
 ### From an idea instead of images
 
@@ -587,7 +673,8 @@ after the clips.
 ## All commands & flags
 
 Global: `--config config.json` (before the command). Every command takes the
-project name as its first argument (except `orders`, which is project-less).
+project name as its first argument (except `orders`, `lessons` and `costs`,
+which are project-less).
 
 | Command | Flags |
 |---------|-------|
@@ -601,6 +688,9 @@ project name as its first argument (except `orders`, which is project-less).
 | `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--music-url URL`, `--add-audio`, `--no-audio`, `--final`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter` |
 | `publish` | `--dry-run` (print the name only), `-y/--yes` |
 | `status` | — |
+| `feedback` | `"<note>"` (required), `--clip ID`, `--good`, `--no-learn`, `--dry-run` |
+| `lessons` | — (no project argument) `--add TEXT`, `--scope motion\|style`, `--disable ID`, `--enable ID`, `--forget ID` |
+| `costs` | — (no project argument; per-project + total spend) |
 | `run` | everything above except `--clip`, plus `--no-combine` |
 
 Shared flag meanings:
@@ -699,8 +789,9 @@ Everything below lives inside the project workspace, `projects/<name>/`:
 | `output/` | `final_video.mp4` + `music_custom.mp3` (the music track you uploaded, when you supplied one) |
 | `output/published/` | A copy of every version delivered to the customer (`final_v1.mp4`, …) — `final_video.mp4` itself is overwritten by the next combine |
 | `storyboard/` | `storyboard.json` (editable source of truth), `storyboard.md` (readable view), `preview.html` (visual contact sheet — open it in a browser) |
-| `logs/` | Run logs + `state.json` |
+| `logs/` | Run logs + `state.json` + `costs.json` (what each paid call cost) |
 | `order.json` | Which Cloudinary order this project came from (written by `ingest`) |
+| `feedback.json` | Your notes on this project's rendered clips (the rules they taught are studio-wide, in `projects/_learning/lessons.json`) |
 | `published.json` | Delivery history: every movie version published back to that order folder |
 | `failed_jobs/` | `failed_jobs.json` |
 
@@ -790,6 +881,20 @@ bed costs nothing — it is your own file). Requires `ffmpeg`/`ffprobe` on your
 | `sfx_volume` | `0..1`, how loud the per-clip SFX sits **under** the music (default `0.35`). |
 | `music_volume` | `0..1`, how loud the background bed plays (default `0.85`). |
 | `music_loop` | `false` (default): the track plays once; if the video is longer, the rest continues with SFX only. `true`: the track repeats for the whole video. A track longer than the video is trimmed either way. |
+
+### Spending & learning keys
+
+| Key | Meaning |
+|-----|---------|
+| `pricing.openai_image_usd` | Price of one styled/generated frame (default `0.19`). |
+| `pricing.openai_text_input_usd_per_1m` / `pricing.openai_text_output_usd_per_1m` | Text/vision token prices (defaults `1.25` / `10.0` per 1M). |
+| `pricing.clip_usd_per_second` | Video model price per second (default `0.07` → `$0.35` for 5s, `$0.70` for 10s). |
+| `pricing.sfx_usd` | Price of one video→audio pass (default `0.02`). |
+| `learning_enabled` | `true` (default): rules learned from clip feedback are appended to planning/style prompts. `false` stops sending them (nothing is deleted). |
+| `max_lessons_in_prompt` | How many active rules ride along with one call (default `25`, newest win). |
+
+All spending figures are **estimates** derived from these prices — see
+[What it costs](#what-it-costs-spending).
 
 Swap the SFX or music model by changing the id (e.g. `fal-ai/lyria2`,
 `cassetteai/music-generator`, `fal-ai/thinksound`) — no code changes. SFX and
