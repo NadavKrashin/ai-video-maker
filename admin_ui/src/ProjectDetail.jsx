@@ -6,10 +6,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert, Badge, Button, Card, Checkbox, Divider, Group, Image, Modal, Paper,
-  ScrollArea, Select, Stack, Text, Textarea, TextInput, Title, UnstyledButton
+  ScrollArea, SegmentedControl, Select, Stack, Text, Textarea, TextInput,
+  Title, UnstyledButton
 } from '@mantine/core';
 import { api, fileUrl } from './api.js';
-import { ConfirmModal, notify, stepChip } from './ui.jsx';
+import { COST, ConfirmModal, notify, stepChip, usd } from './ui.jsx';
 
 // A transition's start_frame/end_frame is the styled image path in practice
 // ("styled_images/img1.png"), but may also be a frame id — handle both.
@@ -78,7 +79,133 @@ function JobRow({ job, onShowLog, onCancel, cancelBusy }) {
   );
 }
 
-function TransitionCard({ project, tr, framesById, clip, edited, placeholder, onEdit, onRegenerate, onReplan, onRedoAudio, busy, replanBusy, audioBusy, mediaV }) {
+// Telling the planner what a rendered clip got wrong. This is the only place
+// in the app where the AI's work is judged AFTER seeing the result, so it is
+// deliberately a full form and not a thumbs icon: the note is what teaches
+// the rule, and a vague note teaches nothing.
+//
+// It doubles as its own confirmation (rather than stacking a second modal on
+// top): it says exactly what will happen and carries the same cost badge
+// every other action's confirmation does.
+function FeedbackModal({ opened, clipId, motionPrompt, onClose, onSubmit, busy }) {
+  const [verdict, setVerdict] = useState('bad');
+  const [note, setNote] = useState('');
+  const [learn, setLearn] = useState(true);
+  useEffect(() => {
+    // A fresh form per clip — a note left over from the previous clip would
+    // be attributed to this one.
+    if (opened) { setVerdict('bad'); setNote(''); setLearn(true); }
+  }, [opened, clipId]);
+  const cost = learn ? COST.openai : COST.free;
+  return (
+    <Modal opened={opened} onClose={onClose} centered size="lg"
+      title={clipId ? `Feedback on ${clipId}` : 'Feedback on this movie'}>
+      <Text size="sm" c="dimmed" mb="sm">
+        Say what this clip got wrong (or right) in your own words. It is saved
+        with the exact motion prompt that produced it, and turned into a short
+        general rule that the planner follows on every clip it writes from now
+        on — in this project and every future one.
+      </Text>
+      {motionPrompt && (
+        <Paper withBorder p="xs" mb="sm" bg="dark.6">
+          <Text size="xs" c="dimmed">The prompt this clip was rendered from:</Text>
+          <Text size="xs">{motionPrompt}</Text>
+        </Paper>
+      )}
+      <SegmentedControl fullWidth value={verdict} onChange={setVerdict}
+        data={[
+          { label: '👎 Something went wrong', value: 'bad' },
+          { label: '👍 This one worked', value: 'good' }
+        ]} />
+      <Textarea mt="sm" autosize minRows={3} maxRows={10} value={note}
+        onChange={(e) => setNote(e.currentTarget.value)}
+        label="What happened?"
+        description={verdict === 'bad'
+          ? 'Be concrete: what did the video model do that it should not have?'
+          : 'What is worth keeping — what did the prompt get right?'}
+        placeholder={verdict === 'bad'
+          ? 'e.g. the boy slid across the lawn without ever taking a step, and the dad turned into a different man halfway'
+          : 'e.g. keeping it to one action for the whole 5 seconds made the movement look natural'} />
+      <Checkbox mt="md" checked={learn} onChange={(e) => setLearn(e.currentTarget.checked)}
+        label="Turn this into a rule the planner follows from now on"
+        description="One small OpenAI text call. Off: the note is only recorded." />
+      <Badge variant="light" color={cost.color} mt="md">{cost.text}</Badge>
+      <Group justify="flex-end" mt="lg">
+        <Button variant="default" onClick={onClose}>Cancel</Button>
+        <Button loading={busy} disabled={!note.trim()}
+          onClick={() => onSubmit({ note: note.trim(), verdict, learn })}>
+          {learn ? 'Send & learn from it' : 'Save the note'}
+        </Button>
+      </Group>
+    </Modal>
+  );
+}
+
+// What this project has cost. Estimated, always: the figures are priced from
+// config.pricing, never read off a provider invoice — so the card says so
+// rather than presenting them as billed amounts.
+function SpendCard({ project, cost }) {
+  const [entries, setEntries] = useState(null);
+  const [busy, setBusy] = useState(false);
+  if (!cost) return null;
+  const headline = cost.estimated ? cost.estimated_usd : cost.total_usd;
+  const kinds = Object.entries(cost.by_kind || {}).filter(([, b]) => b.usd > 0);
+
+  const showCalls = async () => {
+    setBusy(true);
+    try {
+      const data = await api.projectCosts(project);
+      setEntries(data.entries.slice().reverse());
+    } catch (e) { notify(`Could not load the ledger: ${e.message}`, 'red'); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <Card withBorder padding="md">
+      <Group gap="sm" align="baseline">
+        <Text fw={600}>Spent on this project</Text>
+        <Text fw={700} fz={24} c="orange.4">≈ {usd(headline)}</Text>
+        {kinds.map(([kind, bucket]) => (
+          <Badge key={kind} variant="light" color="gray">
+            {kind} {usd(bucket.usd)}
+          </Badge>
+        ))}
+        <div style={{ flex: 1 }} />
+        {cost.entries > 0 && (
+          <Button size="compact-xs" variant="subtle" loading={busy}
+            onClick={() => (entries ? setEntries(null) : showCalls())}>
+            {entries ? 'hide calls' : `${cost.entries} calls`}
+          </Button>
+        )}
+      </Group>
+      <Text size="xs" c="dimmed" mt={4}>
+        {cost.estimated
+          ? `Priced from the ${cost.images} styled image(s) and ${cost.clips_rendered} `
+            + `clip(s) on disk (${cost.clip_seconds}s of video) — this project's calls `
+            + `ran before spending was tracked, so only ${usd(cost.total_usd)} is recorded.`
+          : `${cost.clips_rendered} clip(s), ${cost.clip_seconds}s of video, `
+            + `${cost.images} styled image(s).`}
+        {' '}An estimate from the prices in config.json, not a provider invoice.
+      </Text>
+      {entries && (
+        <ScrollArea.Autosize mah={220} mt="sm">
+          <Stack gap={2}>
+            {entries.map((e, i) => (
+              <Group key={`${e.at}-${i}`} gap="xs" wrap="nowrap">
+                <Text size="xs" c="dimmed" w={140}>{localTime(e.at)}</Text>
+                <Badge size="xs" variant="light">{e.kind}</Badge>
+                <Text size="xs" style={{ flex: 1 }} truncate>{e.detail}</Text>
+                <Text size="xs" fw={600}>{usd(e.usd)}</Text>
+              </Group>
+            ))}
+          </Stack>
+        </ScrollArea.Autosize>
+      )}
+    </Card>
+  );
+}
+
+function TransitionCard({ project, tr, framesById, clip, edited, placeholder, verdict, onEdit, onRegenerate, onReplan, onRedoAudio, onFeedback, busy, replanBusy, audioBusy, mediaV }) {
   const startImg = frameName(framesById, tr.start_frame);
   const endImg = frameName(framesById, tr.end_frame);
   const clipFile = tr.output_path.split('/').pop();
@@ -101,6 +228,12 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, on
           <Badge variant="light" color="red"
             title="Planning failed for this pair; it still has the generic fallback prompt. Re-running Storyboard re-plans it.">
             generic prompt
+          </Badge>
+        )}
+        {verdict && (
+          <Badge variant="light" color={verdict === 'good' ? 'green' : 'orange'}
+            title="You have given feedback on this clip — see the Learning tab for what it taught.">
+            {verdict === 'good' ? 'you liked this' : 'you flagged this'}
           </Badge>
         )}
       </Group>
@@ -143,6 +276,14 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, on
             onClick={() => onRedoAudio(tr.id)}
             title="Redo just this clip's SFX (use after editing its sound prompt)">
             Redo audio
+          </Button>
+        )}
+        {clip?.rendered && (
+          // Only for a clip that EXISTS: feedback is a judgement of a result,
+          // and there is nothing to judge before the render.
+          <Button variant="light" size="xs" onClick={() => onFeedback(tr)}
+            title="Watched it? Tell the planner what it got wrong — it learns a rule from your note and applies it to every future clip.">
+            Feedback
           </Button>
         )}
         <Button variant="default" size="xs" loading={busy}
@@ -705,6 +846,9 @@ export default function ProjectDetail({ name, onBack }) {
   const [musicBusy, setMusicBusy] = useState(false);
   const [letterBusy, setLetterBusy] = useState(false);
   const [confirm, setConfirm] = useState(null);
+  // Which transition the feedback form is open for (null = closed).
+  const [feedbackFor, setFeedbackFor] = useState(null);
+  const [feedbackBusy, setFeedbackBusy] = useState(false);
   // Cache-buster for styled frames and clips: they are replaced in place, so
   // the browser would otherwise keep showing the pre-render version. Bumped
   // on every poll while a job runs, and once more when it settles.
@@ -1057,6 +1201,37 @@ export default function ProjectDetail({ name, onBack }) {
     finally { setBusyAction(''); }
   };
 
+  // Feedback runs inline (it is one short call, and the serial job runner may
+  // be halfway through a render). The form stays open on failure so a note
+  // nobody wants to retype isn't lost to a network blip.
+  const sendFeedback = async ({ note, verdict, learn }) => {
+    setFeedbackBusy(true);
+    try {
+      const res = await api.sendFeedback(name, {
+        clip: feedbackFor?.id || '', note, verdict, learn,
+      });
+      setFeedbackFor(null);
+      if (res.learn_error) {
+        notify(
+          `Note saved, but the rule could not be written (${res.learn_error}). `
+          + 'You can add it by hand in the Learning tab.', 'yellow');
+      } else if (res.lessons?.length) {
+        notify(
+          `Thanks — the planner learned: “${res.lessons[0].text}”`, 'green');
+      } else if (learn) {
+        notify(
+          'Note saved. There was nothing general enough in it to turn into a '
+          + 'rule — say what the video model DID wrong for that.', 'gray');
+      } else {
+        // Learning was switched off on purpose: don't imply the note was
+        // too vague to teach anything.
+        notify('Note saved — no rule was written from it.', 'gray');
+      }
+      await load();
+    } catch (e) { notify(`Feedback failed: ${e.message}`, 'red'); }
+    finally { setFeedbackBusy(false); }
+  };
+
   // Fetching can take a few seconds (a page URL is extracted + transcoded
   // server-side), so it shares the same busy flag as the file upload.
   const fetchMusicUrl = async (url, onDone) => {
@@ -1192,6 +1367,10 @@ export default function ProjectDetail({ name, onBack }) {
     <Stack gap="sm">
       <ConfirmModal confirm={confirm} onCancel={() => setConfirm(null)} onConfirm={confirmed} />
 
+      <FeedbackModal opened={Boolean(feedbackFor)} clipId={feedbackFor?.id}
+        motionPrompt={feedbackFor?.motion_prompt} busy={feedbackBusy}
+        onClose={() => setFeedbackFor(null)} onSubmit={sendFeedback} />
+
       <Modal opened={Boolean(logJob)} onClose={() => setLogJob(null)} centered size="xl"
         title={logJob ? `${logJob.command} — ${logJob.state}` : ''}>
         {logJob?.error && <Text c="red" size="sm" mb="sm">{logJob.error}</Text>}
@@ -1247,6 +1426,8 @@ export default function ProjectDetail({ name, onBack }) {
           </>
         )}
       </Card>
+
+      <SpendCard project={name} cost={snap.cost} />
 
       {/* The last run's failures. The pipeline survives individual failures
           on purpose, so a command can finish having produced nothing — this
@@ -1488,8 +1669,10 @@ export default function ProjectDetail({ name, onBack }) {
             <TransitionCard key={tr.id} project={name} tr={tr} framesById={framesById}
               clip={clipsById[tr.output_path.split('/').pop()?.replace(/\.mp4$/, '')]}
               edited={dirty.has(tr.id)} placeholder={placeholderIds.has(tr.id)}
+              verdict={(snap.feedback?.by_transition || {})[tr.id]}
               onEdit={editTransition}
               onRegenerate={regenerate} onReplan={replanPrompt} onRedoAudio={redoAudio}
+              onFeedback={setFeedbackFor}
               busy={busyAction === `render ${tr.id}`}
               replanBusy={busyAction === `re-plan ${tr.id}`}
               audioBusy={busyAction === `audio ${tr.id}`}

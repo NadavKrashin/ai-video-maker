@@ -80,6 +80,31 @@ export const api = {
     request(`/api/projects/${encodeURIComponent(name)}/actions/${command}`, {
       method: 'POST', body: JSON.stringify(options)
     }),
+  // What the studio has spent: every project's estimate + the grand total.
+  costs: () => request('/api/costs'),
+  // One project's ledger, line by line (what each paid call bought).
+  projectCosts: (name) =>
+    request(`/api/projects/${encodeURIComponent(name)}/costs`),
+  // Learning: tell the planner what a rendered clip got wrong. `learn`
+  // spends a small OpenAI call to distil a reusable rule from the note; with
+  // it off the note is only recorded.
+  sendFeedback: (name, { clip, note, verdict, learn }) =>
+    request(`/api/projects/${encodeURIComponent(name)}/feedback`, {
+      method: 'POST',
+      body: JSON.stringify({ clip, note, verdict, learn })
+    }),
+  projectFeedback: (name) =>
+    request(`/api/projects/${encodeURIComponent(name)}/feedback`),
+  feedback: (limit = 100) => request(`/api/feedback?limit=${limit}`),
+  lessons: () => request('/api/lessons'),
+  addLesson: (text, scope) =>
+    request('/api/lessons', { method: 'POST', body: JSON.stringify({ text, scope }) }),
+  updateLesson: (id, patch) =>
+    request(`/api/lessons/${encodeURIComponent(id)}`, {
+      method: 'PATCH', body: JSON.stringify(patch)
+    }),
+  deleteLesson: (id) =>
+    request(`/api/lessons/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   jobs: (project) =>
     request(`/api/jobs${project ? `?project=${encodeURIComponent(project)}` : ''}`),
   job: (id) => request(`/api/jobs/${id}`),
