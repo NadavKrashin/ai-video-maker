@@ -159,6 +159,20 @@ Core design rules:
   `_CONDENSE_MOTION_SYSTEM` (condense swaps relationship words for
   epithets), and `_REWORD_MOTION_SYSTEM` (identity anchors are not "risky
   detail" to drop); pinned by TestIdentityPromptRules.
+- IDENTITY IS ITS OWN STEP, BETWEEN PLANNING AND RENDERING (user call,
+  2026-08-02). The flow is PLAN → CORRECT → RE-PLAN → render: `storyboard`
+  styles, plans, builds the cast AND ends by proposing who is in each
+  untagged photo (`_propose_tags`, skippable with `--no-tag`) — the cast
+  only exists once the planner has built it, so that is the earliest a tag
+  can point at anything. The panel's stepper has a matching step 2,
+  "People", holding the fragile-epithet warning, the tag count, the AI
+  proposal and `--replan-all`. Nothing already planned uses corrected tags
+  or epithets until its pair is planned AGAIN, and a plain `storyboard` run
+  won't do it (it reconciles), so `--replan-all` / "Re-plan all with these"
+  is the action that closes the loop. Keep the tag pass best-effort (a
+  failed proposal must never lose the plan that was just written) and keep
+  the step OPTIONAL — an untagged movie is a normal movie, so `next_step`
+  must not start demanding tags on every existing project.
 - WHO IS IN EACH FRAME IS A HUMAN'S CALL, NOT THE PLANNER'S (user request,
   2026-08-02). The cast fixes what a person is CALLED; which of them stands
   in a given photo is a separate judgement and the one the planner is worst

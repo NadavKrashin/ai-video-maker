@@ -1337,3 +1337,129 @@ class TestFrameTagsSurviveStoryboardRuns:
         p._reconcile_storyboard(saved, pairs)
         # Resolved through the cast, and None (not []) where nobody tagged.
         assert seen["frame_people"] == [["the bald man"], None]
+
+
+class TestPlanThenTagThenReplan:
+    """The three-part flow: plan (+ first tagging) → correct → re-plan.
+
+    The cast only exists after the first plan, and tags point at cast ids, so
+    the first tagging pass can only happen at the END of planning. What the
+    human corrects in between then reaches the prompts through a re-plan —
+    never on its own, because nothing already planned is touched until its
+    pair is planned again.
+    """
+
+    def _pipeline(self, make_pipeline, proposals=None, **options):
+        p = make_pipeline(analyze_frames=False, **options)
+        calls: list[list] = []
+
+        def fake_identify(frames, cast):
+            calls.append([f.name for f in frames])
+            return proposals if proposals is not None else [
+                [{"id": "dad", "x": 0.4, "y": 0.5}] for _ in frames
+            ]
+
+        p.openai.identify_people = fake_identify
+        return p, calls
+
+    def _saved_with_cast(self, workspace, names):
+        sb = _save_slug_storyboard(workspace, names)
+        sb.characters = [Character(id="dad", epithet="the bald man")]
+        sb.save(workspace.default_storyboard_json)
+        return Storyboard.load(workspace.default_storyboard_json)
+
+    def test_planning_ends_by_proposing_who_is_in_each_photo(
+        self, make_pipeline, workspace
+    ):
+        p, calls = self._pipeline(make_pipeline)
+        _make_frame_pairs(workspace, ["a", "b"])
+        self._saved_with_cast(workspace, ["a", "b"])
+        p._prepare_mode_a_storyboard()
+        assert calls == [["a.png", "b.png"]]
+        saved = Storyboard.load(workspace.default_storyboard_json)
+        assert [f.people[0].id for f in saved.frames] == ["dad", "dad"]
+
+    def test_frames_already_tagged_are_never_re_proposed(
+        self, make_pipeline, workspace
+    ):
+        # The corrections are the whole point; a later plan must not undo them.
+        p, calls = self._pipeline(make_pipeline)
+        _make_frame_pairs(workspace, ["a", "b"])
+        sb = self._saved_with_cast(workspace, ["a", "b"])
+        sb.frames[0].people = [FramePerson(id="dad", x=0.9)]
+        sb.save(workspace.default_storyboard_json)
+        p._prepare_mode_a_storyboard()
+        assert calls == [["b.png"]]  # only the untagged frame
+        saved = Storyboard.load(workspace.default_storyboard_json)
+        assert saved.frames[0].people[0].x == 0.9  # the human's placement
+
+    def test_the_tag_pass_can_be_skipped(self, make_pipeline, workspace):
+        p, calls = self._pipeline(make_pipeline, tag_frames=False)
+        _make_frame_pairs(workspace, ["a", "b"])
+        self._saved_with_cast(workspace, ["a", "b"])
+        p._prepare_mode_a_storyboard()
+        assert calls == []
+
+    def test_a_project_with_no_cast_is_not_tagged(self, make_pipeline, workspace):
+        # Nothing to point a tag at until the planner has named people.
+        p, calls = self._pipeline(make_pipeline)
+        _make_frame_pairs(workspace, ["a", "b"])
+        _save_slug_storyboard(workspace, ["a", "b"])  # no characters
+        p._prepare_mode_a_storyboard()
+        assert calls == []
+
+    def test_a_failed_proposal_never_loses_the_plan(self, make_pipeline, workspace):
+        p, _ = self._pipeline(make_pipeline)
+
+        def boom(frames, cast):
+            raise RuntimeError("insufficient_quota")
+
+        p.openai.identify_people = boom
+        _make_frame_pairs(workspace, ["a", "b"])
+        self._saved_with_cast(workspace, ["a", "b"])
+        assert p._prepare_mode_a_storyboard() is not None
+        assert Storyboard.load(workspace.default_storyboard_json).transitions
+
+    def test_an_empty_answer_leaves_the_frame_untagged(
+        self, make_pipeline, workspace
+    ):
+        # "I couldn't see anyone" is a question for the human, not a record
+        # that the photo has nobody in it.
+        p, _ = self._pipeline(make_pipeline, proposals=[[], []])
+        _make_frame_pairs(workspace, ["a", "b"])
+        self._saved_with_cast(workspace, ["a", "b"])
+        p._prepare_mode_a_storyboard()
+        saved = Storyboard.load(workspace.default_storyboard_json)
+        assert all(f.people == [] for f in saved.frames)
+
+    def test_a_dry_run_proposes_nothing(self, make_pipeline, workspace):
+        p, calls = self._pipeline(make_pipeline, dry_run=True)
+        _make_frame_pairs(workspace, ["a", "b"])
+        self._saved_with_cast(workspace, ["a", "b"])
+        p._prepare_mode_a_storyboard()
+        assert calls == []
+
+    def test_replan_all_replans_every_pair(self, make_pipeline, workspace):
+        # The batch that applies corrected tags/epithets: without it, pairs
+        # whose frames never changed are carried over verbatim forever.
+        p = make_pipeline(analyze_frames=False, motion_prompt="a fresh plan",
+                          replan_all=True, tag_frames=False)
+        pairs = _make_frame_pairs(workspace, ["a", "b", "c"])
+        saved = _save_slug_storyboard(workspace, ["a", "b", "c"])
+        sb, replanned, stale = p._reconcile_storyboard(saved, pairs)
+        assert replanned == ["a_to_b", "b_to_c"]
+        assert [t.motion_prompt for t in sb.transitions] == [
+            "a fresh plan", "a fresh plan",
+        ]
+        assert stale == ["a_to_b", "b_to_c"]
+
+    def test_without_replan_all_untouched_pairs_are_kept(
+        self, make_pipeline, workspace
+    ):
+        p = make_pipeline(analyze_frames=False, motion_prompt="a fresh plan",
+                          tag_frames=False)
+        pairs = _make_frame_pairs(workspace, ["a", "b", "c"])
+        saved = _save_slug_storyboard(workspace, ["a", "b", "c"])
+        sb, replanned, _ = p._reconcile_storyboard(saved, pairs)
+        assert replanned == []
+        assert [t.motion_prompt for t in sb.transitions] == ["motion a", "motion b"]

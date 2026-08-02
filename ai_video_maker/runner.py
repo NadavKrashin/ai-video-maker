@@ -605,6 +605,13 @@ class Pipeline:
         self._mark_stale_clips(stale_tids)
         if not self.dry_run:
             self._save_storyboard(storyboard)
+            # The cast exists only now (the planner builds it), and tags
+            # point at cast ids — so the first pass at "who is in each photo"
+            # can only happen here, at the end of planning. It is a draft for
+            # the human review this step already stops for; the tags then
+            # feed the re-plan that follows it.
+            if self._propose_tags(storyboard):
+                self._save_storyboard(storyboard)
         return storyboard
 
     def _load_saved_storyboard_tolerant(self) -> Optional[Storyboard]:
@@ -836,8 +843,14 @@ class Pipeline:
         # Explicitly requested re-plans (--replan-clip / the panel's
         # "re-plan prompt" button): planned fresh even though nothing
         # changed. A typo must fail loudly, not silently keep the old plan.
-        requested = set(self.options.replan_clips or [])
         all_tids = {f"{a.id}_to_{b.id}" for a, b in pairs}
+        # --replan-all / the panel's "Re-plan all": every pair is treated as
+        # explicitly requested, which is what makes corrected cast epithets
+        # and photo tags reach prompts that were planned before them.
+        requested = (
+            set(all_tids) if self.options.replan_all
+            else set(self.options.replan_clips or [])
+        )
         unknown = requested - all_tids
         if unknown:
             raise PipelineError(
@@ -2435,6 +2448,61 @@ class Pipeline:
         }
 
     # --------------------- who is in each frame (tagging) ------------------ #
+    def _propose_tags(self, storyboard: Storyboard) -> int:
+        """Fill in who is in each UNTAGGED frame; returns how many were tagged.
+
+        The shared core of `tag` and the first pass that `storyboard` runs at
+        the end of planning. Never touches a frame that already carries tags
+        (unless ``--retag``): a proposal must never overwrite the human
+        corrections that are the whole point of tagging.
+
+        Best-effort by construction — this is a convenience on top of a
+        finished plan, so a failure here is a warning, never something that
+        loses the storyboard that was just written.
+        """
+        if not self.options.tag_frames or self.dry_run:
+            return 0
+        if not storyboard.characters:
+            return 0
+        root = self.workspace.root
+        frames = [f for f in storyboard.frames if (root / f.output_path).exists()]
+        targets = (
+            frames if self.options.retag else [f for f in frames if not f.people]
+        )
+        if not targets:
+            return 0
+        logger.info(
+            "Proposing who is in %d untagged frame(s) — a draft to correct.",
+            len(targets),
+        )
+        try:
+            proposed = self.openai.identify_people(
+                [root / f.output_path for f in targets], storyboard.characters
+            )
+        except Exception as exc:  # noqa: BLE001 - never lose the plan over this
+            logger.warning(
+                "Could not propose identities (%s); tag the frames yourself in "
+                "the panel, or run `%s`.",
+                exc, self._next_command("tag"),
+            )
+            return 0
+        by_path = {f.output_path: people for f, people in zip(targets, proposed)}
+        tagged = 0
+        for frame in storyboard.frames:
+            people = by_path.get(frame.output_path)
+            # An empty answer means "I couldn't see anyone" — a question for
+            # the human, not a recorded fact that nobody is in the photo.
+            if not people:
+                continue
+            frame.people = [FramePerson(**p) for p in people]
+            tagged += 1
+        if tagged:
+            logger.info(
+                "Proposed identities for %d frame(s). CHECK THEM before "
+                "re-planning — especially where two people look alike.", tagged,
+            )
+        return tagged
+
     def cmd_tag(self) -> None:
         """Propose who is in each frame, for a human to correct.
 
@@ -2500,18 +2568,7 @@ class Pipeline:
         ):
             return
 
-        paths = [root / f.output_path for f in targets]
-        proposed = self.openai.identify_people(paths, storyboard.characters)
-        by_path = {f.output_path: people for f, people in zip(targets, proposed)}
-        tagged = 0
-        for frame in storyboard.frames:
-            people = by_path.get(frame.output_path)
-            if not people:
-                # An empty answer is "I couldn't see anyone", which is a
-                # question for the human — not a recorded fact.
-                continue
-            frame.people = [FramePerson(**p) for p in people]
-            tagged += 1
+        tagged = self._propose_tags(storyboard)
         self._save_storyboard(storyboard)
         epithets = {c.id: c.epithet for c in storyboard.characters}
         print(f"\nTagged {tagged} of {len(targets)} frame(s):")
