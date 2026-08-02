@@ -1125,17 +1125,29 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
     # for the length of the call.
     @app.post("/api/projects/{name}/feedback", dependencies=guarded)
     def add_feedback(name: str, body: dict[str, Any]) -> dict[str, Any]:
-        """Record what a rendered clip got wrong and learn a rule from it.
+        """Record what a rendered clip got wrong, watch it, and learn from it.
 
-        Runs inline rather than as a job: it is one short call, the panel
-        wants the distilled rule back in the same interaction, and the serial
-        job runner may be halfway through a 20-minute render. The note is
-        saved even when the distillation fails — see Pipeline.record_feedback.
+        Runs inline rather than as a job: it is two short calls, the panel
+        wants the review and the suggested prompt back in the same
+        interaction, and the serial job runner may be halfway through a
+        20-minute render. The note is saved even when the review or the
+        distillation fails — see Pipeline.record_feedback.
+
+        The suggested prompt/duration is RETURNED, never applied: adopting it
+        is a storyboard edit the panel makes (which marks the clip outdated),
+        and re-rendering stays a separate, confirmed, paid action.
         """
         ws = _workspace(name)
         note = str((body or {}).get("note", "")).strip()
-        if not note:
-            raise HTTPException(status_code=400, detail="'note' is required")
+        clip = str((body or {}).get("clip", "")).strip()
+        # A note is required unless the reviewer is being asked to watch a
+        # named clip and report on it.
+        review = bool((body or {}).get("review", True))
+        if not note and not (review and clip):
+            raise HTTPException(
+                status_code=400,
+                detail="'note' is required (or name a 'clip' to have it watched)",
+            )
         if len(note) > MAX_NOTE_CHARS:
             raise HTTPException(
                 status_code=413,
@@ -1148,12 +1160,13 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
                 detail=f"'verdict' must be one of: {', '.join(VERDICTS)}",
             )
         options = RunOptions(
-            feedback_clip=str((body or {}).get("clip", "")).strip(),
+            feedback_clip=clip,
             feedback_note=note,
             feedback_verdict=verdict,
-            # Learning is the point, but it costs an OpenAI call, so the
-            # caller can record the note alone.
+            # Learning is the point, but each step costs an OpenAI call, so
+            # the caller can record the note alone.
             feedback_learn=bool((body or {}).get("learn", True)),
+            feedback_review=review,
         )
         cfg = Config.load(config_path, override_path=ws.root / "config.json")
         try:

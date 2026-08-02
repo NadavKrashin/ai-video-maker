@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -63,6 +64,7 @@ from .media.ffmpeg import (
     render_letter_overlay,
     render_letter_scroll,
     render_photo_still,
+    sample_clip_frames,
 )
 from .media.letter import (
     find_emoji_font,
@@ -2392,29 +2394,48 @@ class Pipeline:
 
         This is the loop the whole feature exists for: the planner writes a
         motion prompt blind (it never sees the clip it caused), so the only
-        way it improves is a human watching the result and saying what went
-        wrong. The note is saved verbatim with the exact prompt that produced
-        the clip — evidence that must survive later storyboard edits — and
-        then distilled into short, general rules that join EVERY later
-        planning call (see feedback.py / _lesson_texts).
+        way it improves is someone watching the result and saying what went
+        wrong. There are TWO witnesses to that, and the difference matters:
 
-        Two failure modes are handled deliberately:
+        * the human, who knows which faults are worth caring about but is
+          usually brief ("it looks weird");
+        * the reviewer (``feedback_review``), which is handed stills sampled
+          across the rendered clip plus the two key frames and the prompt,
+          and can name precisely what happened — and propose a corrected
+          prompt and length for THIS clip.
 
-        * the distillation call costs OpenAI credits, so ``feedback_learn``
-          can turn it off — the note is still recorded and can be turned into
-          a lesson by hand later;
-        * if that call fails (quota, network), the note is STILL saved and
-          the result says so. Losing what someone wrote because a model call
-          timed out is not an acceptable outcome.
+        Both accounts go into the distillation, so the rule that comes out
+        describes a mechanism rather than a mood. The note is saved verbatim
+        with the exact prompt that produced the clip — evidence that must
+        survive later storyboard edits, and the only lasting record of what
+        the clip contained once it is regenerated over.
 
-        Returns the saved entry, the lessons minted from it, and any
-        distillation error, for the CLI to print and the API to return.
+        Nothing here changes the movie. The suggested prompt is RETURNED, not
+        applied: adopting it is a storyboard edit the user makes (which marks
+        the clip outdated), and re-rendering stays the separate, confirmed,
+        paid action it has always been.
+
+        Failure modes handled deliberately:
+
+        * both model calls cost credits, so ``feedback_review`` and
+          ``feedback_learn`` can each be turned off — the note is still
+          recorded either way;
+        * if either call fails (quota, network), the note is STILL saved and
+          the result says which part didn't happen. Losing what someone wrote
+          because a model call timed out is not an acceptable outcome.
+
+        Returns the saved entry, the review, the lessons minted, and any
+        errors, for the CLI to print and the API to return.
         """
         options = self.options
         note = (options.feedback_note or "").strip()[:MAX_NOTE_CHARS]
-        if not note:
+        tid_given = bool((options.feedback_clip or "").strip())
+        if not note and not (options.feedback_review and tid_given):
+            # A note is the point — unless the user is asking the reviewer to
+            # watch a specific clip and report, which is an account of its own.
             raise PipelineError(
-                "Feedback needs a note — what was wrong (or right) with the clip?"
+                "Feedback needs a note — what was wrong (or right) with the "
+                "clip? (Or name a clip and let the reviewer watch it.)"
             )
         verdict = (options.feedback_verdict or "bad").strip().lower()
         if verdict not in VERDICTS:
@@ -2424,6 +2445,7 @@ class Pipeline:
 
         tid = (options.feedback_clip or "").strip().removesuffix(".mp4")
         motion_prompt, duration = "", 0
+        start_frame = end_frame = None
         if tid:
             # Feedback about a clip has to name a real one: a typo'd id would
             # otherwise teach a lesson attributed to nothing.
@@ -2443,6 +2465,8 @@ class Pipeline:
                 storyboard.global_motion_prompt, transition.motion_prompt
             )
             duration = transition.duration
+            start_frame = self.workspace.root / transition.start_frame
+            end_frame = self.workspace.root / transition.end_frame
 
         entry = FeedbackEntry(
             project=self.workspace.root.name,
@@ -2453,16 +2477,34 @@ class Pipeline:
             duration=duration,
         )
 
+        review: dict[str, Any] = {}
+        review_error = ""
+        if self.dry_run:
+            logger.info("[dry-run] would watch the clip and distil lessons")
+        elif options.feedback_review and tid:
+            review, review_error = self._review_clip(
+                tid, motion_prompt, duration, note, start_frame, end_frame,
+                global_context=storyboard.global_motion_prompt,
+            )
+            entry.ai_observation = review.get("observed", "")
+            entry.ai_problems = review.get("problems", [])
+            entry.suggested_motion_prompt = review.get(
+                "suggested_motion_prompt", ""
+            )
+            entry.suggested_duration = review.get("suggested_duration", 0)
+
         learned: list[dict[str, Any]] = []
         learn_error = ""
         if self.dry_run:
-            logger.info("[dry-run] would record feedback and distil lessons")
+            pass  # already reported above
         elif options.feedback_learn:
             try:
                 existing = [l.text for l in self.lessons.all() if l.active]
                 proposals = self.openai.distill_lesson(
                     note, verdict=verdict, motion_prompt=motion_prompt,
                     duration=duration, existing=existing,
+                    observation=review.get("observed", ""),
+                    problems=review.get("problems", []),
                 )
                 for proposal in proposals:
                     lesson = self.lessons.add(
@@ -2494,9 +2536,68 @@ class Pipeline:
             self.feedback_store.add(entry)
         return {
             "feedback": entry.model_dump(),
+            "review": review,
+            "review_error": review_error,
             "lessons": learned,
             "learn_error": learn_error,
         }
+
+    def _review_clip(
+        self,
+        tid: str,
+        motion_prompt: str,
+        duration: int,
+        note: str,
+        start_frame: Optional[Path],
+        end_frame: Optional[Path],
+        global_context: str = "",
+    ) -> tuple[dict[str, Any], str]:
+        """Let the reviewer watch the rendered clip; never raise.
+
+        Returns ``(review, error)`` — an empty review with a spoken reason is
+        a normal outcome (the clip was never rendered, ffmpeg is missing, the
+        call failed), and the feedback around it must still be saved. The
+        sampled stills live in a temporary directory: they exist only for the
+        duration of the call, and keeping them would quietly grow the project
+        by a few hundred KB per note.
+        """
+        clip = self.workspace.clips_dir / f"{tid}.mp4"
+        if not clip.exists():
+            return {}, (
+                f"{clip.name} has not been rendered yet, so there was nothing "
+                "to watch."
+            )
+        try:
+            with tempfile.TemporaryDirectory(prefix="clip-review-") as tmp:
+                frames = sample_clip_frames(
+                    clip, Path(tmp), count=self.config.clip_review_frames
+                )
+                if not frames:
+                    return {}, (
+                        f"No frames could be read from {clip.name}."
+                    )
+                logger.info(
+                    "Watching %s (%d sampled frame(s))...", clip.name, len(frames)
+                )
+                review = self.openai.review_clip(
+                    frames, motion_prompt, duration or self.config.duration,
+                    start_frame=start_frame, end_frame=end_frame,
+                    user_note=note, lessons=self._lesson_texts(SCOPE_MOTION),
+                    # So its rewrite replaces the per-clip prompt only — the
+                    # global part is prepended again at render time.
+                    global_context=global_context,
+                )
+        except Exception as exc:  # noqa: BLE001 - a review never sinks a note
+            logger.warning(
+                "Could not review %s (%s); the feedback itself is saved.",
+                clip.name, exc,
+            )
+            return {}, str(exc)
+        if review.get("problems"):
+            logger.info("Reviewer found: %s", "; ".join(review["problems"]))
+        else:
+            logger.info("Reviewer found no fault with the clip.")
+        return review, ""
 
     def cmd_feedback(self) -> None:
         """CLI face of :meth:`record_feedback` — say it, then show what stuck."""
@@ -2504,6 +2605,36 @@ class Pipeline:
         entry = result["feedback"]
         target = entry["transition_id"] or "the movie in general"
         print(f"\nFeedback recorded for {target} ({entry['verdict']}).")
+
+        review = result["review"]
+        if result["review_error"]:
+            print(f"  The clip could not be watched: {result['review_error']}")
+        elif review:
+            print(f"\n  Watching {target}, the reviewer saw:")
+            print(f"    {review['observed']}")
+            for problem in review["problems"]:
+                print(f"    - {problem}")
+            if not review["problems"]:
+                print("    - no faults found")
+            if review["changes_clip"]:
+                # Printed, never applied: adopting it is an edit the user
+                # makes, and re-rendering is a separate paid action.
+                print(
+                    f"\n  It suggests rendering this pair at "
+                    f"{review['suggested_duration']}s with:\n"
+                    f"    {review['suggested_motion_prompt']}"
+                )
+                if review["why"]:
+                    print(f"    ({review['why']})")
+                print(
+                    "  To use it: put that prompt (and duration) into the "
+                    "transition in\n"
+                    f"    {self.workspace.default_storyboard_json}\n"
+                    "  then render just this clip:\n    "
+                    + self._next_command(
+                        'render', '--clip', entry['transition_id'] or 'ID')
+                )
+
         if result["learn_error"]:
             print(
                 "  The lesson could not be distilled "

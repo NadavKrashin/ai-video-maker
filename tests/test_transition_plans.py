@@ -647,3 +647,74 @@ class TestDistinguishingEpithetRules:
     def test_reword_keeps_the_distinguishing_part(self):
         from ai_video_maker.clients import openai_client as oc
         assert "bald man in pink sunglasses" in oc._REWORD_MOTION_SYSTEM
+
+
+class TestClipReviewCoercion:
+    """Guards on what the clip reviewer proposes.
+
+    Same division of labour as planning: the model observes, code decides.
+    A suggestion the pipeline itself would have rejected must never reach the
+    user as an "improvement".
+    """
+
+    def _review(self, config, data, motion="the bald man walks in", duration=5):
+        return OpenAIClient(config)._coerce_review(data, motion, duration)
+
+    def test_a_clean_review_passes_through(self, config):
+        out = self._review(config, {
+            "observed": "he walks in and sits down",
+            "problems": [],
+            "matches_prompt": True,
+            "suggested_motion_prompt": "the bald man walks in",
+            "suggested_duration": 5,
+            "why": "no change needed",
+        })
+        assert out["problems"] == []
+        assert out["matches_prompt"] is True
+        # Nothing would change, so the panel must not offer an "apply".
+        assert out["changes_clip"] is False
+
+    def test_an_empty_suggestion_falls_back_to_the_current_prompt(self, config):
+        # Never let "apply the suggestion" blank a transition.
+        out = self._review(config, {"suggested_motion_prompt": "   ",
+                                    "suggested_duration": 5})
+        assert out["suggested_motion_prompt"] == "the bald man walks in"
+        assert out["changes_clip"] is False
+
+    def test_an_impossible_duration_keeps_the_clip_length(self, config):
+        out = self._review(config, {"suggested_motion_prompt": "x",
+                                    "suggested_duration": 7}, duration=10)
+        assert out["suggested_duration"] == 10
+
+    def test_a_longer_clip_is_a_change_worth_applying(self, config):
+        out = self._review(config, {
+            "suggested_motion_prompt": "the bald man walks in",
+            "suggested_duration": 10,
+        }, duration=5)
+        assert out["changes_clip"] is True
+
+    def test_an_over_budget_suggestion_is_condensed(self, config, monkeypatch):
+        # 5s clips are capped at 35 words; the reviewer's rewrite is held to
+        # the same budget a planned prompt is, via the same condense call.
+        long_prompt = " ".join(["walks"] * 60)
+        monkeypatch.setattr(
+            OpenAIClient, "_condense_motion_prompt",
+            lambda self, prompt, duration: "the bald man takes a few steps",
+        )
+        out = self._review(config, {
+            "suggested_motion_prompt": long_prompt, "suggested_duration": 5,
+        })
+        assert out["suggested_motion_prompt"] == "the bald man takes a few steps"
+
+    def test_problems_are_normalised_and_capped(self, config):
+        out = self._review(config, {
+            "problems": ["  slides   across  ", "", "morphs"] + ["x"] * 8,
+            "suggested_motion_prompt": "y", "suggested_duration": 5,
+        })
+        assert out["problems"][:2] == ["slides across", "morphs"]
+        assert len(out["problems"]) == 6
+
+    def test_junk_fields_do_not_crash_the_review(self, config):
+        out = self._review(config, {})
+        assert out["observed"] == ""
+        assert out["suggested_motion_prompt"] == "the bald man walks in"

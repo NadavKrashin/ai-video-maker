@@ -50,6 +50,7 @@
   },
   "learning_enabled": true,
   "max_lessons_in_prompt": 25,
+  "clip_review_frames": 8,
   "cloudinary_cloud_name": "dmxkoz4jo",
   "cloudinary_orders_folder": "video-orders"
 }

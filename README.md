@@ -300,21 +300,46 @@ never sees the clip that comes back. So when Kling does something silly —
 sliding a person across the grass instead of walking them, morphing one face
 into another — nothing in the pipeline learns from it unless you say so.
 
-That is what `feedback` is for. Watch a rendered clip, say what went wrong,
-and the note is distilled into one short, general **rule** that is appended to
-every planning call from then on — in this project and every future one:
+That is what `feedback` is for — and it has **two witnesses**, not one:
+
+* **you**, who know which faults matter but are usually brief ("it looks weird");
+* **the reviewer**, a vision call that actually WATCHES the clip. The clip is
+  sampled into stills with ffmpeg (free, local) and shown to the model next to
+  the two key frames and the prompt that produced it, so it can say precisely
+  what happened — and propose a corrected motion prompt and clip length.
+
+Both accounts go into the rule, so what gets learned describes a mechanism
+rather than a mood:
 
 ```bash
 python pipeline.py feedback myfilm \
   "the boy slid across the lawn without taking a step" --clip 2_to_3
+#   Watching 2_to_3, the reviewer saw:
+#     the boy is in a different place at the end but never takes a step;
+#     the background stretches to cover the move
+#     - subject slides instead of walking
+#
+#   It suggests rendering this pair at 10s with:
+#     the small boy in the red shirt takes the last few steps to the bench
+#     and sits down
+#
 #   -> Learned (motion): When a person stands somewhere different in the end
 #      frame, write the walk that gets them there — never state the new
 #      position alone.
 ```
 
+**Nothing is applied or re-rendered automatically.** The suggestion is shown;
+adopting it is a storyboard edit you make (which marks the clip outdated), and
+re-rendering stays the separate, confirmed, paid action it always was. In the
+panel that is one click — “Use this prompt for the clip” drops it into the
+transition as an unsaved edit, then the usual Save → “Generate everything that
+needs it” flow renders it.
+
 - **`--good`** learns what to KEEP doing from a clip that came out well.
-- **`--no-learn`** records the note without spending the (small) OpenAI call.
-- **No `--clip`** gives feedback about the movie in general.
+- **`--no-watch`** skips the review; **`--no-learn`** skips the rule.
+- **No note at all** is fine when `--clip` is given: the reviewer watches it
+  and reports on its own ("just tell me what's wrong with this one").
+- **No `--clip`** gives feedback about the movie in general (nothing to watch).
 - In the admin panel this is the **Feedback** button on every rendered clip,
   and the **Learning** tab lists every rule.
 
@@ -334,8 +359,13 @@ Details worth knowing:
 - A rule the model can't generalise is **not** written: "nothing to learn
   here" is a valid outcome, because every rule competes for the planner's
   attention with the instructions it refines.
-- Your note is **never lost**. If the distillation call fails (quota,
-  network), the note is still saved and you are told — add the rule by hand.
+- Your note is **never lost**. If either call fails (quota, network, an
+  unrendered clip, no ffmpeg), the note is still saved and you are told which
+  part didn't happen — add the rule by hand if you want it.
+- The reviewer is held to the planner's own rulebook: it gets the same
+  instructions and the same learned lessons, and its suggested prompt goes
+  through the same word-budget check, so accepting one can't smuggle in a
+  prompt the planner itself would have been refused.
 - Scope `motion` rules join the clip planner's system prompt; `style` rules
   join the image style prompt. Only the newest `max_lessons_in_prompt`
   (default 25) active rules ride along with a call; `learning_enabled: false`
@@ -688,7 +718,7 @@ which are project-less).
 | `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--music-url URL`, `--add-audio`, `--no-audio`, `--final`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter` |
 | `publish` | `--dry-run` (print the name only), `-y/--yes` |
 | `status` | — |
-| `feedback` | `"<note>"` (required), `--clip ID`, `--good`, `--no-learn`, `--dry-run` |
+| `feedback` | `"<note>"` (optional with `--clip`), `--clip ID`, `--good`, `--no-watch`, `--no-learn`, `--dry-run` |
 | `lessons` | — (no project argument) `--add TEXT`, `--scope motion\|style`, `--disable ID`, `--enable ID`, `--forget ID` |
 | `costs` | — (no project argument; per-project + total spend) |
 | `run` | everything above except `--clip`, plus `--no-combine` |
@@ -892,6 +922,7 @@ bed costs nothing — it is your own file). Requires `ffmpeg`/`ffprobe` on your
 | `pricing.sfx_usd` | Price of one video→audio pass (default `0.02`). |
 | `learning_enabled` | `true` (default): rules learned from clip feedback are appended to planning/style prompts. `false` stops sending them (nothing is deleted). |
 | `max_lessons_in_prompt` | How many active rules ride along with one call (default `25`, newest win). |
+| `clip_review_frames` | How many stills are sampled across a clip when the reviewer watches it (default `8`). |
 
 All spending figures are **estimates** derived from these prices — see
 [What it costs](#what-it-costs-spending).

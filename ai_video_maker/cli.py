@@ -303,15 +303,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = command("feedback",
                  "Tell the planner what a rendered clip got wrong (or right). "
-                 "The note is saved with the exact motion prompt that produced "
-                 "the clip, and — unless --no-learn — distilled into a short, "
-                 "general rule that is added to EVERY future planning call, so "
-                 "the same mistake isn't planned again. Costs one small OpenAI "
-                 "text call; review or remove the rules with "
-                 "`python pipeline.py lessons`.")
-    sp.add_argument("note",
+                 "Two things then happen: a vision call WATCHES the clip "
+                 "(stills sampled across it, next to its key frames and the "
+                 "prompt) and proposes a corrected motion prompt and length "
+                 "for it, and your note plus what it saw are distilled into a "
+                 "short, general rule added to EVERY future planning call. "
+                 "Nothing is applied or re-rendered automatically. Costs two "
+                 "small OpenAI calls (--no-watch / --no-learn skip either); "
+                 "review or remove the rules with `python pipeline.py "
+                 "lessons`.")
+    sp.add_argument("note", nargs="?", default="",
                     help="What was wrong (or right) with the clip, in your own "
-                         "words.")
+                         "words. Optional when --clip is given: the reviewer "
+                         "will watch it and report on its own.")
     sp.add_argument("--clip", dest="clip_id", metavar="ID", default=None,
                     help="Which transition the feedback is about (e.g. "
                          "003_to_004). Omit for feedback about the movie in "
@@ -319,6 +323,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--good", action="store_true",
                     help="This clip came out well — learn what to KEEP doing "
                          "(the default is that feedback describes a problem).")
+    sp.add_argument("--no-watch", action="store_true",
+                    help="Don't let the reviewer look at the rendered clip; "
+                         "learn from your note alone. (By default the clip is "
+                         "sampled into stills and shown to a vision call, "
+                         "which also proposes a corrected prompt and length.)")
     sp.add_argument("--no-learn", action="store_true",
                     help="Record the note only; don't spend an OpenAI call "
                          "turning it into a rule.")

@@ -130,6 +130,74 @@ class TestFeedbackEndpoint:
             f"/api/projects/{PROJECT}/feedback", json={"note": "hm"})
         assert res.status_code == 401
 
+    def test_the_review_and_its_suggestion_come_back_to_the_panel(
+        self, client, monkeypatch
+    ):
+        # The panel offers "apply this prompt" from the response alone, so
+        # the suggestion has to ride back with the request that produced it.
+        monkeypatch.setattr(
+            "ai_video_maker.runner.sample_clip_frames",
+            lambda *a, **kw: [Path("f1.jpg")],
+        )
+        monkeypatch.setattr(
+            "ai_video_maker.clients.openai_client.OpenAIClient.review_clip",
+            lambda self, frames, motion, duration, **kw: {
+                "observed": "he slides across without stepping",
+                "problems": ["no walk between the positions"],
+                "matches_prompt": False,
+                "suggested_motion_prompt": "the bald man takes the last steps",
+                "suggested_duration": 5,
+                "why": "names the walk",
+                "changes_clip": True,
+            },
+        )
+        monkeypatch.setattr(
+            "ai_video_maker.clients.openai_client.OpenAIClient.distill_lesson",
+            lambda self, note, **kw: [],
+        )
+        body = client.post(
+            f"/api/projects/{PROJECT}/feedback",
+            json={"clip": "a_to_b", "note": "looks off"}, headers=_auth(),
+        ).json()
+        assert body["review"]["suggested_motion_prompt"] == (
+            "the bald man takes the last steps"
+        )
+        assert body["review"]["changes_clip"] is True
+        assert body["review_error"] == ""
+        # ...and the storyboard is untouched: applying is the user's move.
+        ws = Workspace.for_project(PROJECT)
+        assert "the bald man walks to the door" in ws.default_storyboard_json.read_text(
+            encoding="utf-8")
+
+    def test_watching_a_clip_needs_no_note(self, client, monkeypatch):
+        monkeypatch.setattr(
+            "ai_video_maker.runner.sample_clip_frames",
+            lambda *a, **kw: [Path("f1.jpg")],
+        )
+        monkeypatch.setattr(
+            "ai_video_maker.clients.openai_client.OpenAIClient.review_clip",
+            lambda self, frames, motion, duration, **kw: {
+                "observed": "nothing much happens", "problems": [],
+                "matches_prompt": True,
+                "suggested_motion_prompt": motion, "suggested_duration": duration,
+                "why": "", "changes_clip": False,
+            },
+        )
+        res = client.post(
+            f"/api/projects/{PROJECT}/feedback",
+            json={"clip": "a_to_b", "note": "", "learn": False},
+            headers=_auth(),
+        )
+        assert res.status_code == 200
+        assert res.json()["review"]["observed"] == "nothing much happens"
+
+    def test_a_noteless_request_without_a_clip_is_refused(self, client):
+        res = client.post(
+            f"/api/projects/{PROJECT}/feedback", json={"note": ""},
+            headers=_auth(),
+        )
+        assert res.status_code == 400
+
 
 class TestLessonEndpoints:
     def test_lessons_can_be_written_edited_and_forgotten_by_hand(self, client):
