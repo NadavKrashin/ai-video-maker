@@ -12,6 +12,8 @@ from ai_video_maker.models import (
     Storyboard,
     Transition,
     changed_transition_ids,
+    identity_fingerprint,
+    outdated_identity_plans,
     tagged_people,
 )
 from ai_video_maker.workspace import Workspace
@@ -208,3 +210,91 @@ class TestTaggedPeople:
         after = before.model_copy(deep=True)
         after.frames[0].people = [FramePerson(id="dad", x=0.5)]
         assert changed_transition_ids(before, after) == []
+
+
+class TestOutdatedPlans:
+    """"Which prompts don't know what I just told the app?"
+
+    Tagging a photo and renaming a cast member are both plan-time inputs:
+    they change nothing on their own. Without this, the only way to apply
+    them was to re-plan everything and hope.
+    """
+
+    def _sb(self, people=None, epithet="the bald man"):
+        return Storyboard(
+            project_title="t", style="s",
+            characters=[Character(id="dad", epithet=epithet)],
+            frames=[
+                Frame(id="a", description="", image_prompt="",
+                      output_path="styled_images/a.png",
+                      people=people or []),
+                Frame(id="b", description="", image_prompt="",
+                      output_path="styled_images/b.png"),
+            ],
+            transitions=[Transition(
+                id="a_to_b", start_frame="styled_images/a.png",
+                end_frame="styled_images/b.png", motion_prompt="m",
+                output_path="clips/a_to_b.mp4")],
+        )
+
+    def _stamp(self, sb):
+        sb.transitions[0].planned_identity = identity_fingerprint(
+            sb, sb.transitions[0])
+        return sb
+
+    def test_a_freshly_planned_prompt_is_current(self):
+        assert outdated_identity_plans(self._stamp(self._sb())) == []
+
+    def test_tagging_a_photo_makes_its_pairs_outdated(self):
+        sb = self._stamp(self._sb())
+        sb.frames[0].people = [FramePerson(id="dad", x=0.4)]
+        assert outdated_identity_plans(sb) == ["a_to_b"]
+
+    def test_renaming_a_cast_member_makes_their_pairs_outdated(self):
+        sb = self._stamp(self._sb(people=[FramePerson(id="dad", x=0.4)]))
+        sb.characters[0].epithet = "the man with grey hair"
+        assert outdated_identity_plans(sb) == ["a_to_b"]
+
+    def test_moving_a_marker_across_another_matters(self):
+        # Left-to-right order is what the video model maps region to region,
+        # so a swap of the markers is a different plan.
+        sb = Storyboard(
+            project_title="t", style="s",
+            characters=[Character(id="dad", epithet="the bald man"),
+                        Character(id="son", epithet="the smaller boy")],
+            frames=[
+                Frame(id="a", description="", image_prompt="",
+                      output_path="styled_images/a.png",
+                      people=[FramePerson(id="dad", x=0.2),
+                              FramePerson(id="son", x=0.8)]),
+                Frame(id="b", description="", image_prompt="",
+                      output_path="styled_images/b.png"),
+            ],
+            transitions=[Transition(
+                id="a_to_b", start_frame="styled_images/a.png",
+                end_frame="styled_images/b.png", motion_prompt="m",
+                output_path="clips/a_to_b.mp4")],
+        )
+        self._stamp(sb)
+        sb.frames[0].people = [FramePerson(id="dad", x=0.8),
+                               FramePerson(id="son", x=0.2)]
+        assert outdated_identity_plans(sb) == ["a_to_b"]
+
+    def test_an_untagged_project_never_reports_anything(self):
+        # Nothing has been said about identity, so no prompt can be behind —
+        # including every project that predates this bookkeeping (their
+        # transitions carry no stamp at all).
+        sb = self._sb()  # no stamp, no tags
+        assert sb.transitions[0].planned_identity == ""
+        assert outdated_identity_plans(sb) == []
+
+    def test_an_unstamped_plan_with_tags_is_reported(self):
+        # Planned before plans recorded their inputs, but the photos have
+        # since been tagged: that prompt cannot have used them.
+        sb = self._sb(people=[FramePerson(id="dad", x=0.4)])
+        assert outdated_identity_plans(sb) == ["a_to_b"]
+
+    def test_editing_a_motion_prompt_by_hand_is_not_an_identity_change(self):
+        sb = self._stamp(self._sb(people=[FramePerson(id="dad", x=0.4)]))
+        sb.transitions[0].motion_prompt = "something I wrote myself"
+        assert outdated_identity_plans(sb) == []

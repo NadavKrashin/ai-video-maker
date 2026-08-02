@@ -57,6 +57,15 @@ class RunOptions:
     # default) only fills untagged frames, so a proposal never overwrites a
     # human's correction.
     retag: bool = False
+    # storyboard: propose who is in each untagged frame once planning is done
+    # (the cast only exists after the first plan, so this is the earliest it
+    # can happen). --no-tag skips that call.
+    tag_frames: bool = True
+    # storyboard: re-plan EVERY pair, not just the dirty ones — the batch you
+    # want after correcting the cast or the photo tags, since both only reach
+    # a prompt when its pair is planned again. Hand-written prompts are
+    # replaced, so it is never implicit.
+    replan_all: bool = False
     # feedback: one human judgement of a rendered clip (see feedback.py).
     # `feedback_clip` is the transition id it is about ("003_to_004"); empty
     # means feedback about the movie in general. `feedback_learn` off records
@@ -115,6 +124,8 @@ class RunOptions:
             order=get("order"),
             publish_as=get("publish_as"),
             retag=bool(get("retag")),
+            tag_frames=not get("no_tag", False),
+            replan_all=bool(get("replan_all")),
             feedback_clip=get("clip_id"),
             feedback_note=get("note"),
             # --good flips the verdict; the default is that feedback is a

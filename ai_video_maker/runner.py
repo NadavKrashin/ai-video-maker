@@ -88,6 +88,8 @@ from .models import (
     FramePerson,
     Storyboard,
     Transition,
+    identity_fingerprint,
+    outdated_identity_plans,
     tagged_people,
 )
 from .options import RunOptions
@@ -605,6 +607,13 @@ class Pipeline:
         self._mark_stale_clips(stale_tids)
         if not self.dry_run:
             self._save_storyboard(storyboard)
+            # The cast exists only now (the planner builds it), and tags
+            # point at cast ids — so the first pass at "who is in each photo"
+            # can only happen here, at the end of planning. It is a draft for
+            # the human review this step already stops for; the tags then
+            # feed the re-plan that follows it.
+            if self._propose_tags(storyboard):
+                self._save_storyboard(storyboard)
         return storyboard
 
     def _load_saved_storyboard_tolerant(self) -> Optional[Storyboard]:
@@ -836,8 +845,14 @@ class Pipeline:
         # Explicitly requested re-plans (--replan-clip / the panel's
         # "re-plan prompt" button): planned fresh even though nothing
         # changed. A typo must fail loudly, not silently keep the old plan.
-        requested = set(self.options.replan_clips or [])
         all_tids = {f"{a.id}_to_{b.id}" for a, b in pairs}
+        # --replan-all / the panel's "Re-plan all": every pair is treated as
+        # explicitly requested, which is what makes corrected cast epithets
+        # and photo tags reach prompts that were planned before them.
+        requested = (
+            set(all_tids) if self.options.replan_all
+            else set(self.options.replan_clips or [])
+        )
         unknown = requested - all_tids
         if unknown:
             raise PipelineError(
@@ -892,11 +907,17 @@ class Pipeline:
             if i in plans:
                 motion, duration, sound = plans[i]
                 prior = saved_tr.get((a.output_path, b.output_path))
-                if (
-                    prior is not None
-                    and motion != prior.motion_prompt
-                    and (prior.motion_prompt == self.config.motion_prompt
-                         or tid in requested)
+                # Either half of the plan invalidates the rendered clip: the
+                # DURATION alone changing (a re-plan that keeps the wording
+                # but stretches the pair from 5s to 10s, which is exactly
+                # what confirmed identities can do via swap detection) leaves
+                # a 5-second clip on disk for a 10-second plan.
+                plan_changed = prior is not None and (
+                    motion != prior.motion_prompt or duration != prior.duration
+                )
+                if plan_changed and (
+                    prior.motion_prompt == self.config.motion_prompt
+                    or tid in requested
                 ):
                     # A genuinely new prompt landed where a clip may already
                     # exist — a real plan replacing a placeholder, or an
@@ -930,6 +951,16 @@ class Pipeline:
             frames=frames,
             transitions=transitions,
         )
+        # Stamp each freshly planned prompt with the identity facts it was
+        # planned from, so a later tag or renamed cast member shows up as
+        # "this prompt doesn't know about that yet" instead of being
+        # something you have to remember. Carried-over transitions keep
+        # whatever stamp they already had — they were not re-planned.
+        for transition in storyboard.transitions:
+            if transition.id in replanned:
+                transition.planned_identity = identity_fingerprint(
+                    storyboard, transition
+                )
         return storyboard, replanned, stale_tids
 
     def _plan_pairs(
@@ -2393,6 +2424,12 @@ class Pipeline:
                     c.id for c in storyboard.characters
                     if is_clothing_anchored(c.epithet)
                 ],
+                # Prompts written before the identity facts they should have
+                # used: a photo tagged (or re-tagged) since, or a cast member
+                # renamed. Both are plan-time inputs that change nothing on
+                # their own, so without this the only way to apply them was
+                # to re-plan everything and hope.
+                "outdated_plans": outdated_identity_plans(storyboard),
             },
             "storyboard_error": storyboard_error,
             "changed_frames": changed_frames,
@@ -2400,6 +2437,12 @@ class Pipeline:
             "stray_clips": stray,
             "pending_renders": self.pending_renders(),
             "final_video": ws.final_video.exists(),
+            # The movie was built before one of its clips was (re-)rendered,
+            # so it is showing an older version of that clip. mtimes are
+            # trustworthy here in a way they are not for styled frames: both
+            # sides are written locally by this pipeline, and the worst case
+            # is a suggestion to re-run a free, local step.
+            "final_video_outdated": self._final_video_outdated(),
             # Delivery: which movie versions were published back to the
             # order's Cloudinary folder, and whether the current final video
             # is newer than the last one delivered.
@@ -2429,6 +2472,61 @@ class Pipeline:
         }
 
     # --------------------- who is in each frame (tagging) ------------------ #
+    def _propose_tags(self, storyboard: Storyboard) -> int:
+        """Fill in who is in each UNTAGGED frame; returns how many were tagged.
+
+        The shared core of `tag` and the first pass that `storyboard` runs at
+        the end of planning. Never touches a frame that already carries tags
+        (unless ``--retag``): a proposal must never overwrite the human
+        corrections that are the whole point of tagging.
+
+        Best-effort by construction — this is a convenience on top of a
+        finished plan, so a failure here is a warning, never something that
+        loses the storyboard that was just written.
+        """
+        if not self.options.tag_frames or self.dry_run:
+            return 0
+        if not storyboard.characters:
+            return 0
+        root = self.workspace.root
+        frames = [f for f in storyboard.frames if (root / f.output_path).exists()]
+        targets = (
+            frames if self.options.retag else [f for f in frames if not f.people]
+        )
+        if not targets:
+            return 0
+        logger.info(
+            "Proposing who is in %d untagged frame(s) — a draft to correct.",
+            len(targets),
+        )
+        try:
+            proposed = self.openai.identify_people(
+                [root / f.output_path for f in targets], storyboard.characters
+            )
+        except Exception as exc:  # noqa: BLE001 - never lose the plan over this
+            logger.warning(
+                "Could not propose identities (%s); tag the frames yourself in "
+                "the panel, or run `%s`.",
+                exc, self._next_command("tag"),
+            )
+            return 0
+        by_path = {f.output_path: people for f, people in zip(targets, proposed)}
+        tagged = 0
+        for frame in storyboard.frames:
+            people = by_path.get(frame.output_path)
+            # An empty answer means "I couldn't see anyone" — a question for
+            # the human, not a recorded fact that nobody is in the photo.
+            if not people:
+                continue
+            frame.people = [FramePerson(**p) for p in people]
+            tagged += 1
+        if tagged:
+            logger.info(
+                "Proposed identities for %d frame(s). CHECK THEM before "
+                "re-planning — especially where two people look alike.", tagged,
+            )
+        return tagged
+
     def cmd_tag(self) -> None:
         """Propose who is in each frame, for a human to correct.
 
@@ -2494,18 +2592,7 @@ class Pipeline:
         ):
             return
 
-        paths = [root / f.output_path for f in targets]
-        proposed = self.openai.identify_people(paths, storyboard.characters)
-        by_path = {f.output_path: people for f, people in zip(targets, proposed)}
-        tagged = 0
-        for frame in storyboard.frames:
-            people = by_path.get(frame.output_path)
-            if not people:
-                # An empty answer is "I couldn't see anyone", which is a
-                # question for the human — not a recorded fact.
-                continue
-            frame.people = [FramePerson(**p) for p in people]
-            tagged += 1
+        tagged = self._propose_tags(storyboard)
         self._save_storyboard(storyboard)
         epithets = {c.id: c.epithet for c in storyboard.characters}
         print(f"\nTagged {tagged} of {len(targets)} frame(s):")
@@ -2877,6 +2964,26 @@ class Pipeline:
             "images": images,
         }
 
+    def _final_video_outdated(self) -> bool:
+        """Is output/final_video.mp4 older than a clip it was built from?
+
+        The last "not up to date" gap in the chain: regenerating one clip
+        leaves the finished movie silently showing the previous version of
+        it, and the fix (another combine) is free and local — so this is a
+        hint worth printing, not a gate.
+        """
+        final = self.workspace.final_video
+        if not final.exists() or not self.workspace.clips_dir.exists():
+            return False
+        try:
+            built_at = final.stat().st_mtime
+            return any(
+                clip.stat().st_mtime > built_at
+                for clip in find_generated_clips(self.workspace.clips_dir)
+            )
+        except OSError:  # a clip vanished mid-check; not worth failing status
+            return False
+
     def _recorded_failures(self) -> list[dict[str, Any]]:
         """The last run's failures, from failed_jobs/failed_jobs.json.
 
@@ -2997,6 +3104,18 @@ class Pipeline:
                 + "  (newer than the storyboard - run storyboard to re-plan)"
             )
 
+        # Prompts that don't yet know what you told the app about identity.
+        outdated_plans = (snap["storyboard"] or {}).get("outdated_plans") or []
+        if outdated_plans:
+            print(
+                f"  !! {len(outdated_plans)} prompt(s) were planned before the "
+                "current photo tags / cast names: "
+                f"{', '.join(outdated_plans[:6])}"
+                f"{' …' if len(outdated_plans) > 6 else ''}\n"
+                "     Apply them with:\n     "
+                + self._next_command("storyboard", "--replan-all")
+            )
+
         for clip in snap["clips"]:
             if clip["rendered"]:
                 sfx = "sfx ✓" if clip["sfx"] else "silent"
@@ -3038,6 +3157,12 @@ class Pipeline:
 
         final = ws.final_video
         print(f"  Final video      : {'ready — ' + str(final) if final.exists() else 'not built'}")
+        if snap["final_video_outdated"]:
+            print(
+                "  !! a clip has been re-rendered since the movie was built, "
+                "so it still shows the old one.\n     Rebuild it (free, "
+                "local):\n     " + self._next_command("combine", "--force")
+            )
 
         # Money. Always described as an estimate: it is priced from
         # config.pricing, never read from a provider's invoice.

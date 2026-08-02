@@ -200,6 +200,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-analyze", action="store_true",
                     help="Skip the vision analysis; use the single global motion "
                          "prompt and one duration for every clip.")
+    sp.add_argument("--replan-all", action="store_true",
+                    help="Re-plan EVERY transition, not just the ones whose "
+                         "frames changed — the batch to run after correcting "
+                         "the cast or the photo tags, since both only reach a "
+                         "prompt when its pair is planned again. Hand-written "
+                         "motion prompts are replaced.")
+    sp.add_argument("--no-tag", action="store_true",
+                    help="Skip the pass that proposes who is in each untagged "
+                         "photo after planning (one vision call). Tag later "
+                         "with `python pipeline.py tag <project>`.")
     sp.add_argument("--replan-clip", action="append", metavar="ID",
                     help="Ask the planner for a fresh motion prompt for this "
                          "transition (e.g. 003_to_004) even though its frames "

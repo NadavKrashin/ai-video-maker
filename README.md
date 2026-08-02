@@ -348,7 +348,19 @@ The marker positions also give the left-to-right order the video model
 actually works in, so **arrangement-swap detection uses your tags** instead of
 the planner's own reading of the frames (see `--replan-clip`).
 
-Tagging 30 photos by hand is a chore nobody does, so there is a first pass:
+**`storyboard` now ends by taking that first pass itself** — the cast only
+exists once the planner has built it, so the end of planning is the earliest
+moment tags can be proposed at all. That makes the flow three parts, which is
+how the panel's stepper is laid out:
+
+1. **Storyboard** — style the photos, plan the clips, name the cast, and
+   propose who is in each photo.
+2. **People** — the review stop: fix any cast name that describes clothing,
+   correct the tags, then **Re-plan all with these** (`storyboard
+   --replan-all`) so the prompts are rewritten from what you confirmed.
+3. **Render** — buy the clips, now that the prompts say who is who.
+
+`--no-tag` skips the proposal; a standalone pass is still available:
 
 ```bash
 python pipeline.py tag myfilm          # proposes who is in each untagged frame
@@ -361,14 +373,43 @@ look alike. It never touches frames you have already tagged, and a frame it
 reports nobody in stays untagged (a question, not an answer).
 
 Tagging is free, local, and feeds the NEXT plan: it never marks a rendered
-clip outdated, so re-plan a clip (`storyboard --replan-clip ID`) when you want
-your tags applied to it.
+clip outdated. Nothing already planned uses your tags until its pair is
+planned again — so after tagging a movie, use **“Re-plan all with these
+tags…”** (in the tagger, and as “Re-plan all prompts…” in the Storyboard
+step), or `storyboard --replan-clip ID` for one pair. A plain `storyboard`
+run will NOT do it: it reconciles rather than regenerates, so pairs that are
+already planned are carried over verbatim. Clips whose plan actually changes
+— in wording *or* in length — are then marked outdated for you to regenerate
+when you want to spend the credits.
 
 > **An existing project keeps the cast it was planned with.** Epithets are
 > frozen on purpose: their wording is already baked into planned prompts, so
 > rewriting one silently would split a person's identity across the movie.
 > The panel flags any that name clothing so you can fix them by hand; re-plan
 > a clip (`storyboard --replan-clip ID`) for the new wording to be used.
+
+### Knowing what is out of date
+
+Every step feeds the next, so the useful question is usually "what here no
+longer matches what I changed?". `status` and the panel answer it in one
+place — nothing is ever fixed silently, and nothing costing money is redone
+without you asking:
+
+| What went stale | How you see it | How to fix it |
+|---|---|---|
+| A **prompt** written before you tagged a photo or renamed someone in the cast | “prompt predates your tags” on the clip; a count in step 2 | Re-plan those pairs (the panel offers exactly the ones behind) |
+| A **rendered clip** whose prompt, duration or frames changed since | “outdated” badge; `status` marks it | `render --clip ID`, or “Generate everything that needs it” |
+| A **styled frame** whose source photo changed | listed as a changed frame | `storyboard` (asks before re-styling) |
+| A **cast name** that describes clothing | flagged in the Cast editor | Rewrite it, then re-plan |
+| A **prompt that was never really planned** (a quota failure left the generic fallback) | “generic prompt” badge | Run `storyboard` again |
+| A **paid render** that was never collected | listed as a pending render | Collect it (free) before editing that clip |
+| The **final movie**, built before a clip was re-rendered | `status` says so | `combine --force` (free, local) |
+
+The rule behind all of them: tags, cast names and lessons are *plan-time*
+inputs — they change what the planner is told next time, never a prompt that
+already exists — and prompts are *render-time* inputs, so changing one marks
+the clip rather than redoing it. Everything downstream is a marked state you
+act on, not a surprise bill.
 
 ### Teaching the planner (feedback → lessons)
 
@@ -789,7 +830,7 @@ which are project-less).
 | `serve` | — (no project argument) `--host`, `--port`, `--no-watch` |
 | `ingest` | `<order>` (id / folder / unique fragment), `--force`, `--dry-run` |
 | `init` | — |
-| `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--replan-clip ID` (repeatable; fresh motion prompt for that pair), `--restyle-frame NAME` (repeatable; re-style that frame, e.g. `2.png`, marking adjacent clips outdated), `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
+| `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--replan-all` (rewrite every prompt from the current cast + tags), `--no-tag` (skip the identity proposal), `--replan-clip ID` (repeatable; fresh motion prompt for that pair), `--restyle-frame NAME` (repeatable; re-style that frame, e.g. `2.png`, marking adjacent clips outdated), `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
 | `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 5\|10`, `--add-audio`, `--no-audio` |
 | `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-file PATH`, `--music-url URL` |
 | `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--music-url URL`, `--add-audio`, `--no-audio`, `--final`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter` |
