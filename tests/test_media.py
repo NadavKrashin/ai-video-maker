@@ -13,7 +13,9 @@ from ai_video_maker.media.ffmpeg import (
     _mux_music_cmd,
     _photo_fit_filter,
     _photo_still_cmd,
+    _sample_frame_cmd,
     find_generated_clips,
+    sample_timestamps,
 )
 from ai_video_maker.media.images import (
     encode_image_data_url,
@@ -270,3 +272,31 @@ class TestFindGeneratedClips:
         assert [p.name for p in find_generated_clips(tmp_path)] == [
             "img4_to_img4a.mp4", "img4a_to_img5.mp4",
         ]
+
+
+class TestClipFrameSampling:
+    """Turning a rendered clip into stills a vision model can look at."""
+
+    def test_samples_sit_in_the_middle_of_each_slice(self):
+        # Never t=0 or t=duration: those are the two key frames the clip was
+        # pinned to (the reviewer is shown them separately), and a sample at
+        # the very end often lands past the last frame. What is being looked
+        # for happens BETWEEN them.
+        assert sample_timestamps(10.0, 4) == [1.25, 3.75, 6.25, 8.75]
+
+    def test_one_sample_lands_mid_clip(self):
+        assert sample_timestamps(5.0, 1) == [2.5]
+
+    def test_unreadable_or_empty_requests_sample_nothing(self):
+        assert sample_timestamps(0, 8) == []
+        assert sample_timestamps(10.0, 0) == []
+
+    def test_frame_command_seeks_before_input_and_caps_the_long_edge(self):
+        cmd = _sample_frame_cmd(Path("clips/a_to_b.mp4"), 2.5, Path("f.jpg"), 512)
+        # -ss BEFORE -i is the fast (keyframe) seek; accurate enough across a
+        # 5-10s clip and far cheaper than decoding from the start each time.
+        assert cmd.index("-ss") < cmd.index("-i")
+        assert "2.500" in cmd
+        assert "-frames:v" in cmd and cmd[cmd.index("-frames:v") + 1] == "1"
+        assert "scale='min(512,iw)':-2" in " ".join(cmd)
+        assert cmd[-1] == "f.jpg"

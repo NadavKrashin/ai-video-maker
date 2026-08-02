@@ -92,8 +92,19 @@ class FeedbackEntry(BaseModel):
     # is worthless once nobody can tell which prompt was meant.
     motion_prompt: str = ""
     duration: int = 0
-    # Lessons distilled from this note (empty when learning was skipped or
-    # the distillation call failed).
+    # What the reviewer saw when it looked at the rendered clip (empty when
+    # the review was skipped, impossible, or failed). Kept with the note
+    # because it is the other half of the evidence a rule was written from —
+    # and because it is the only lasting record of what the clip contained
+    # once that clip is regenerated over.
+    ai_observation: str = ""
+    ai_problems: list[str] = Field(default_factory=list)
+    # The fix it proposed for THIS clip. Recorded whether or not the user
+    # accepted it: an unaccepted suggestion is evidence about the reviewer.
+    suggested_motion_prompt: str = ""
+    suggested_duration: int = 0
+    # Lessons distilled from this feedback (empty when learning was skipped
+    # or the distillation call failed).
     lesson_ids: list[str] = Field(default_factory=list)
 
 

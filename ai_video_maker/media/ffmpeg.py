@@ -189,6 +189,74 @@ def ffprobe_duration(path: Path) -> Optional[float]:
         return None
 
 
+def sample_timestamps(duration: float, count: int) -> list[float]:
+    """Evenly spaced sample points inside a clip of `duration` seconds.
+
+    Points sit at the MIDDLE of each equal slice rather than at its edges: a
+    sample at t=0 is the start key frame the clip was pinned to (which the
+    reviewer is shown anyway) and a sample at t=duration often lands past the
+    last frame. What matters is what happens BETWEEN the two key frames.
+    """
+    if duration <= 0 or count <= 0:
+        return []
+    return [duration * (i + 0.5) / count for i in range(count)]
+
+
+def _sample_frame_cmd(
+    clip: Path, timestamp: float, dst: Path, max_edge: int
+) -> list[str]:
+    """Build the ffmpeg command grabbing one frame at `timestamp` (pure).
+
+    `-ss` before `-i` seeks by keyframe first (fast, and accurate enough for
+    a 5-10s clip), and the scale filter caps the long edge so the frames are
+    small enough to send a whole clip's worth to a vision model.
+    """
+    return [
+        "ffmpeg", "-y", "-ss", f"{timestamp:.3f}", "-i", str(clip),
+        "-frames:v", "1",
+        "-vf", f"scale='min({max_edge},iw)':-2",
+        "-q:v", "3", str(dst),
+    ]
+
+
+def sample_clip_frames(
+    clip: Path, dst_dir: Path, count: int = 8, max_edge: int = 512
+) -> list[Path]:
+    """Extract `count` still frames spread across `clip`, in time order.
+
+    This is how a rendered clip becomes something a vision model can look at:
+    the text models take images, not video, and a handful of stills across the
+    clip is enough to see the failure modes that matter here — a subject
+    sliding without walking, one person morphing into another, a disguised
+    cut. Purely local ffmpeg work, so it costs nothing.
+
+    Returns the frames that were actually written (a seek past the end simply
+    produces nothing); an empty list means the clip could not be read.
+    """
+    _require_ffmpeg()
+    duration = ffprobe_duration(clip)
+    if not duration:
+        logger.warning("Could not read the duration of %s; no frames sampled.",
+                       clip.name)
+        return []
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    frames: list[Path] = []
+    for i, stamp in enumerate(sample_timestamps(duration, count), start=1):
+        dst = dst_dir / f"{clip.stem}_f{i:02d}.jpg"
+        result = subprocess.run(
+            _sample_frame_cmd(clip, stamp, dst, max_edge),
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0 or not dst.exists():
+            logger.warning(
+                "Could not sample %s at %.2fs: %s",
+                clip.name, stamp, result.stderr.strip()[-300:],
+            )
+            continue
+        frames.append(dst)
+    return frames
+
+
 def has_audio_stream(path: Path) -> bool:
     """True if `path` contains at least one audio stream."""
     if shutil.which("ffprobe") is None:

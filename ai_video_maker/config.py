@@ -225,6 +225,11 @@ class Config(BaseModel):
     # the same mistake isn't planned twice. Off = notes are still recorded,
     # but nothing reaches the model.
     learning_enabled: bool = True
+    # How many stills are sampled across a rendered clip when the reviewer
+    # watches it (feedback --watch). More frames see more (a morph halfway
+    # through a 10s clip is easy to miss with four) at a little more cost per
+    # review; they are sent at low detail, so this is cheap either way.
+    clip_review_frames: int = 8
     # Ceiling on how many lessons ride along with one call. Lessons compete
     # with the instructions they refine for the model's attention, and a
     # planning call already carries ~20 frames; newest lessons win.

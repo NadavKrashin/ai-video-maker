@@ -61,6 +61,10 @@ class RunOptions:
     feedback_note: Optional[str] = None
     feedback_verdict: str = "bad"
     feedback_learn: bool = True
+    # Let a vision call WATCH the rendered clip (stills sampled across it)
+    # before the rule is written, and propose a corrected prompt/length for
+    # this clip. Needs `feedback_clip`; off records only what the human said.
+    feedback_review: bool = True
     # Per-run audio override; neither set -> config.audio_mode decides.
     add_audio: bool = False
     no_audio: bool = False
@@ -112,6 +116,7 @@ class RunOptions:
             # complaint, because that is what people write notes about.
             feedback_verdict="good" if get("good") else "bad",
             feedback_learn=not get("no_learn", False),
+            feedback_review=not get("no_watch", False),
             add_audio=bool(get("add_audio")),
             no_audio=bool(get("no_audio")),
             no_combine=bool(get("no_combine")),

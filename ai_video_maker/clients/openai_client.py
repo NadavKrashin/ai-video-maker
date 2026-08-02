@@ -214,6 +214,68 @@ _REWORD_MOTION_SYSTEM = (
     "ONLY the rewritten motion prompt, with no preamble or quotes."
 )
 
+# --- Watching a rendered clip ----------------------------------------------- #
+# The other half of the feedback loop. The planner writes a prompt blind and
+# the user reports the result in words; this call actually LOOKS at what came
+# back — stills sampled across the clip, next to the two key frames it was
+# pinned to and the prompt that produced it — and says what happened. Its job
+# is to be specific where a human is brief ("it looks weird"), and to propose
+# a concrete replacement prompt the user can accept.
+#
+# The failure modes listed here are the ones this project has actually seen on
+# real renders (they are the reason most rules in _MODE_A_SYSTEM exist), so
+# naming them gives the reviewer a vocabulary instead of vague adjectives.
+_CLIP_REVIEW_SYSTEM = (
+    "You are reviewing one clip produced by an image-to-video model for a "
+    "short film. You are shown: the START key frame, the END key frame, and "
+    "stills sampled in time order from the rendered clip between them, plus "
+    "the motion prompt that produced it and the clip's length. The model was "
+    "required to begin exactly on the start frame and end exactly on the end "
+    "frame. "
+    "Say what ACTUALLY happens in the clip, in plain words, and judge it "
+    "against the prompt. Look specifically for the failure modes this kind of "
+    "model is prone to: a person changing position without ever walking "
+    "there (sliding, drifting, floating, teleporting); one person morphing "
+    "into a different-looking person, or a face/body changing identity "
+    "mid-clip; people sprinting or skating because the prompt described a "
+    "route too long for the clip's length; the shot collapsing into a "
+    "disguised cut or whip-pan instead of a continuous action; a person being "
+    "moved by hands that are not in frame; someone appearing or disappearing; "
+    "hair, glasses or clothing changing; text appearing that was not in the "
+    "frames; the clip not landing on the end frame; too many actions crammed "
+    "in for the length; or nothing meaningful happening at all. "
+    "Report only what you can SEE in the stills. If the clip looks right, say "
+    "so — do not invent problems. Sampled stills cannot show smoothness or "
+    "flicker, so never guess about those. "
+    "Then write a REPLACEMENT motion prompt that would avoid the problems you "
+    "found, obeying every rule you have been given for writing motion "
+    "prompts, and say which clip length it should be rendered at. If the clip "
+    "is fine, repeat the existing prompt unchanged and keep the same length. "
+    "Return ONLY JSON of the shape "
+    '{"observed": str, "problems": [str, ...], "matches_prompt": bool, '
+    '"suggested_motion_prompt": str, "suggested_duration": int, '
+    '"why": str}. "observed" is one or two sentences on what happens; '
+    '"problems" names each fault in a few words (empty when there are none); '
+    '"why" is one sentence on what the new prompt changes and why.'
+)
+
+_CLIP_REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "observed": {"type": "string"},
+        "problems": {"type": "array", "items": {"type": "string"}},
+        "matches_prompt": {"type": "boolean"},
+        "suggested_motion_prompt": {"type": "string"},
+        "suggested_duration": {"type": "integer", "enum": sorted(VALID_DURATIONS)},
+        "why": {"type": "string"},
+    },
+    "required": [
+        "observed", "problems", "matches_prompt", "suggested_motion_prompt",
+        "suggested_duration", "why",
+    ],
+    "additionalProperties": False,
+}
+
 # --- Learning from a rendered clip ----------------------------------------- #
 # The feedback loop's one model call: a human watched a clip and said what was
 # wrong with it; this turns that into a rule the planner can obey on a pair it
@@ -1102,6 +1164,153 @@ class OpenAIClient:
         """
         return self._reword_prompt_for_safety(prompt, system=_REWORD_MOTION_SYSTEM)
 
+    # --- Learning: watch the clip that came back --------------------------- #
+    def review_clip(
+        self,
+        clip_frames: list[Path],
+        motion_prompt: str,
+        duration: int,
+        *,
+        start_frame: Optional[Path] = None,
+        end_frame: Optional[Path] = None,
+        user_note: str = "",
+        lessons: Optional[list[str]] = None,
+        global_context: str = "",
+    ) -> dict[str, Any]:
+        """Look at a rendered clip and say what actually happened.
+
+        ``clip_frames`` are stills sampled across the clip in time order (see
+        ``media/ffmpeg.sample_clip_frames``) — the text model cannot take
+        video, and a handful of stills is enough to see sliding, morphing,
+        sprinting and disguised cuts.
+
+        Returns ``{observed, problems, matches_prompt, suggested_motion_prompt,
+        suggested_duration, why}``. The suggested prompt is held to the same
+        rules and word budget the planner works under (the full planning
+        rulebook and the learned lessons are handed to the reviewer, and an
+        over-budget suggestion is condensed exactly as a planned one would
+        be), so accepting it can never smuggle in a prompt the planner itself
+        would not have been allowed to write.
+
+        ``user_note`` is what the human said, when they said anything: it
+        points the reviewer at what bothered them instead of letting it grade
+        the clip on its own priorities. Raises on API failure — the caller
+        decides, and here that means keeping the note and reporting that the
+        review did not happen.
+        """
+        if not clip_frames:
+            raise ValueError("No frames were sampled from the clip.")
+        client = self._ensure_client()
+        limit = _motion_word_limit(duration)
+
+        # The reviewer must judge — and rewrite — under exactly the rules the
+        # planner writes under, including everything learned so far.
+        system = (
+            _MODE_A_SYSTEM
+            + lesson_prompt_block(lessons or [], SCOPE_MOTION)
+            + "\n\n--- YOUR TASK NOW ---\n"
+            + _CLIP_REVIEW_SYSTEM
+        )
+
+        instruction = (
+            f"Clip length: {duration} seconds. Word limit for the replacement "
+            f"prompt: {limit} words.\n\n"
+            f"The motion prompt that produced this clip:\n{motion_prompt}\n"
+        )
+        if global_context.strip():
+            # The renderer prepends this to every clip, so a replacement that
+            # repeated it would double it in the next render — and the panel
+            # writes the suggestion straight into the per-clip field.
+            instruction += (
+                "\nThe opening of that prompt is whole-movie context the "
+                "renderer prepends to EVERY clip automatically:\n"
+                f"{global_context.strip()}\n"
+                "Your replacement prompt must cover only THIS clip's action "
+                "and must not restate that context.\n"
+            )
+        if user_note.strip():
+            instruction += (
+                "\nWhat the human who watched it said (their complaint is the "
+                "priority — confirm it against the stills, and say so if you "
+                "cannot see what they describe):\n"
+                f"{user_note.strip()}\n"
+            )
+        content: list[dict[str, Any]] = [{"type": "text", "text": instruction}]
+
+        def _image(path: Path, label: str) -> None:
+            content.append({"type": "text", "text": label})
+            content.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": encode_image_data_url(path, max_edge=_VISION_MAX_EDGE),
+                    "detail": "low",
+                },
+            })
+
+        if start_frame is not None and start_frame.exists():
+            _image(start_frame, "START key frame (the clip had to begin here):")
+        if end_frame is not None and end_frame.exists():
+            _image(end_frame, "END key frame (the clip had to land here):")
+        for i, frame in enumerate(clip_frames, start=1):
+            _image(frame, f"Rendered clip, still {i} of {len(clip_frames)}:")
+
+        def _call() -> str:
+            resp = client.chat.completions.create(
+                model=self.config.openai_text_model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": content},
+                ],
+                response_format=_json_schema_format(
+                    "clip_review", _CLIP_REVIEW_SCHEMA
+                ),
+            )
+            self._note_text_usage(resp, "review_clip")
+            return resp.choices[0].message.content or "{}"
+
+        raw = self._retry(_call, "OpenAI review_clip")
+        return self._coerce_review(json.loads(raw), motion_prompt, duration)
+
+    def _coerce_review(
+        self, data: dict[str, Any], motion_prompt: str, duration: int
+    ) -> dict[str, Any]:
+        """Normalise a review into a usable, in-budget suggestion.
+
+        Same division of labour as the planner: the model observes, code
+        decides. A suggestion that is empty, over the word budget for its
+        length, or at an impossible duration would otherwise reach the user
+        as an "improvement" the pipeline itself would have rejected.
+        """
+        suggested = " ".join(
+            str(data.get("suggested_motion_prompt", "") or "").split()
+        )
+        new_duration = self._coerce_duration(
+            data.get("suggested_duration"), duration
+        )
+        if suggested:
+            limit = _motion_word_limit(new_duration)
+            if len(suggested.split()) > limit:
+                suggested = self._condense_motion_prompt(suggested, new_duration)
+        problems = [
+            " ".join(str(p).split()) for p in (data.get("problems") or [])
+            if str(p).strip()
+        ]
+        return {
+            "observed": " ".join(str(data.get("observed", "") or "").split()),
+            "problems": problems[:6],
+            "matches_prompt": bool(data.get("matches_prompt", False)),
+            # Falling back to the original prompt keeps "apply the
+            # suggestion" a no-op rather than a way to blank a transition.
+            "suggested_motion_prompt": suggested or motion_prompt,
+            "suggested_duration": new_duration,
+            "why": " ".join(str(data.get("why", "") or "").split()),
+            # True only when accepting it would actually change the render.
+            "changes_clip": bool(
+                (suggested and suggested != motion_prompt)
+                or new_duration != duration
+            ),
+        }
+
     # --- Learning: one clip's feedback -> reusable rules -------------------- #
     def distill_lesson(
         self,
@@ -1111,8 +1320,10 @@ class OpenAIClient:
         motion_prompt: str = "",
         duration: int = 0,
         existing: Optional[list[str]] = None,
+        observation: str = "",
+        problems: Optional[list[str]] = None,
     ) -> list[dict[str, str]]:
-        """Turn one human note about a rendered clip into general rules.
+        """Turn what was seen in a rendered clip into general rules.
 
         Returns ``[{"scope": ..., "text": ...}, ...]`` — possibly empty, which
         is a legitimate answer (see ``_DISTILL_LESSON_SYSTEM``): a note that
@@ -1124,15 +1335,46 @@ class OpenAIClient:
         already has. Raises on API failure — the caller decides what to do,
         and here that means saving the raw note anyway and telling the user
         the distillation did not happen.
+
+        ``observation``/``problems`` are what the reviewer saw in the clip
+        itself (see :meth:`review_clip`). Two witnesses beat one: the human
+        knows which faults matter and is often brief ("looks weird"), while
+        the reviewer has actually looked at the frames and can name the fault
+        precisely — and a rule written from both is far likelier to be about
+        a mechanism ("a position change with no walk between") than about a
+        mood. Either may be absent, and a note alone still works exactly as
+        it did before.
         """
         text = (note or "").strip()
-        if not text:
+        seen = (observation or "").strip()
+        if not text and not seen:
             return []
         client = self._ensure_client()
         user = (
             f"The human's verdict: {'this clip is GOOD' if verdict == 'good' else 'this clip is BAD'}.\n"
-            f"What they wrote:\n{text}\n"
         )
+        user += (
+            f"What they wrote:\n{text}\n" if text
+            else "They gave no written note — the review below is the only "
+                 "account of what happened.\n"
+        )
+        if seen:
+            user += (
+                "\nWhat a reviewer saw when it looked at the rendered clip "
+                "frame by frame:\n"
+                f"{seen}\n"
+            )
+            faults = [p for p in (problems or []) if str(p).strip()]
+            if faults:
+                user += (
+                    "Faults it identified: "
+                    + "; ".join(str(p).strip() for p in faults) + "\n"
+                )
+            user += (
+                "Where the two accounts agree, the fault is real and worth a "
+                "rule; where only the reviewer saw something, judge whether it "
+                "generalises before writing it down.\n"
+            )
         if motion_prompt.strip():
             user += (
                 f"\nThe motion prompt that produced the clip"

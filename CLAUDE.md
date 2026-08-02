@@ -269,7 +269,28 @@ Core design rules:
   a rendered clip) saves the note WITH the exact motion prompt that produced
   the clip, then distils it into one short GENERAL rule appended to every
   later planning call (`_MODE_A_SYSTEM` + `lesson_prompt_block`); scope
-  `style` rules join the style prompt instead. Rules are STUDIO-WIDE
+  `style` rules join the style prompt instead.
+- ...AND THE CLIP ITSELF IS A WITNESS (2026-08-02). A human note is brief
+  ("looks weird"); the fault is precise. So feedback also runs a REVIEW
+  (`OpenAIClient.review_clip`, on by default, `--no-watch` / the panel's
+  checkbox): `sample_clip_frames` cuts the mp4 into `clip_review_frames`
+  stills with ffmpeg (free, local, temp dir — never kept), and the vision
+  call sees those plus both key frames, the prompt and the user's note. It
+  returns what happened + named faults, and BOTH accounts go into
+  `distill_lesson`, so rules describe a mechanism rather than a mood. It
+  also proposes a corrected motion prompt + duration, which is RETURNED,
+  never applied: the panel drops it in as an unsaved storyboard edit and
+  the existing save→outdated→confirmed-render path takes over (clips are
+  still never auto-re-rendered). Guards that must stay: the reviewer gets
+  `_MODE_A_SYSTEM` + the active lessons so its rewrite obeys the same
+  rulebook; `_coerce_review` holds the suggestion to the word cap
+  (condensing like a planned prompt), rejects impossible durations, and
+  falls back to the ORIGINAL prompt when the model returns nothing (so
+  "apply" can never blank a transition); the reviewer is told which part of
+  the prompt is the auto-prepended `global_motion_prompt` so its rewrite
+  doesn't double it; and a failed/impossible review (unrendered clip, no
+  ffmpeg, quota) is a reported `review_error`, never a lost note. Pinned by
+  TestClipReview / TestClipReviewCoercion / TestClipFrameSampling. Rules are STUDIO-WIDE
   (`projects/_learning/lessons.json`; `_learning` is a reserved project
   name, filtered by `is_project_dir`) — a lesson learned on one order must
   not be relearned on the next. Invariants: the note is never lost (a failed

@@ -87,19 +87,35 @@ function JobRow({ job, onShowLog, onCancel, cancelBusy }) {
 // It doubles as its own confirmation (rather than stacking a second modal on
 // top): it says exactly what will happen and carries the same cost badge
 // every other action's confirmation does.
-function FeedbackModal({ opened, clipId, motionPrompt, onClose, onSubmit, busy }) {
+function FeedbackModal({
+  opened, clipId, motionPrompt, duration, result, onClose, onSubmit, onApply, busy
+}) {
   const [verdict, setVerdict] = useState('bad');
   const [note, setNote] = useState('');
   const [learn, setLearn] = useState(true);
+  const [watch, setWatch] = useState(true);
   useEffect(() => {
     // A fresh form per clip — a note left over from the previous clip would
     // be attributed to this one.
-    if (opened) { setVerdict('bad'); setNote(''); setLearn(true); }
+    if (opened) { setVerdict('bad'); setNote(''); setLearn(true); setWatch(true); }
   }, [opened, clipId]);
-  const cost = learn ? COST.openai : COST.free;
+  const cost = (learn || watch) ? COST.openai : COST.free;
+  // With a clip named, the reviewer can report on its own — so a note is
+  // only strictly required when nothing is going to watch it.
+  const canSend = Boolean(note.trim()) || (watch && clipId);
+
+  const title = clipId ? `Feedback on ${clipId}` : 'Feedback on this movie';
+  if (result) {
+    return (
+      <Modal opened={opened} onClose={onClose} centered size="lg"
+        title={`${title} — what came back`}>
+        <FeedbackResult result={result} duration={duration}
+          onApply={onApply} onClose={onClose} />
+      </Modal>
+    );
+  }
   return (
-    <Modal opened={opened} onClose={onClose} centered size="lg"
-      title={clipId ? `Feedback on ${clipId}` : 'Feedback on this movie'}>
+    <Modal opened={opened} onClose={onClose} centered size="lg" title={title}>
       <Text size="sm" c="dimmed" mb="sm">
         Say what this clip got wrong (or right) in your own words. It is saved
         with the exact motion prompt that produced it, and turned into a short
@@ -119,25 +135,117 @@ function FeedbackModal({ opened, clipId, motionPrompt, onClose, onSubmit, busy }
         ]} />
       <Textarea mt="sm" autosize minRows={3} maxRows={10} value={note}
         onChange={(e) => setNote(e.currentTarget.value)}
-        label="What happened?"
+        label={watch && clipId ? 'What happened? (optional)' : 'What happened?'}
         description={verdict === 'bad'
           ? 'Be concrete: what did the video model do that it should not have?'
           : 'What is worth keeping — what did the prompt get right?'}
         placeholder={verdict === 'bad'
           ? 'e.g. the boy slid across the lawn without ever taking a step, and the dad turned into a different man halfway'
           : 'e.g. keeping it to one action for the whole 5 seconds made the movement look natural'} />
-      <Checkbox mt="md" checked={learn} onChange={(e) => setLearn(e.currentTarget.checked)}
+      {clipId && (
+        <Checkbox mt="md" checked={watch}
+          onChange={(e) => setWatch(e.currentTarget.checked)}
+          label="Let the AI watch this clip too"
+          description={'It looks at stills taken across the rendered clip, next '
+            + 'to its two key frames, says what actually happened, and proposes '
+            + 'a corrected prompt and length you can accept. Leave the note '
+            + 'empty to just ask it what it thinks.'} />
+      )}
+      <Checkbox mt="sm" checked={learn} onChange={(e) => setLearn(e.currentTarget.checked)}
         label="Turn this into a rule the planner follows from now on"
-        description="One small OpenAI text call. Off: the note is only recorded." />
+        description="Written from your note and what the AI saw. Off: nothing is learned." />
       <Badge variant="light" color={cost.color} mt="md">{cost.text}</Badge>
+      <Text size="xs" c="dimmed" mt={6}>
+        Nothing is re-rendered by this. Any suggested prompt is shown for you
+        to accept or ignore.
+      </Text>
       <Group justify="flex-end" mt="lg">
         <Button variant="default" onClick={onClose}>Cancel</Button>
-        <Button loading={busy} disabled={!note.trim()}
-          onClick={() => onSubmit({ note: note.trim(), verdict, learn })}>
-          {learn ? 'Send & learn from it' : 'Save the note'}
+        <Button loading={busy} disabled={!canSend}
+          onClick={() => onSubmit({ note: note.trim(), verdict, learn, review: watch })}>
+          {watch && clipId ? 'Send & watch the clip'
+            : learn ? 'Send & learn from it' : 'Save the note'}
         </Button>
       </Group>
     </Modal>
+  );
+}
+
+// Phase two: what the reviewer saw, and the fix it proposes for THIS clip.
+// Applying only edits the storyboard in the browser — the normal Save →
+// "generate everything that needs it" path then marks the clip outdated and
+// asks before spending anything on a new render.
+function FeedbackResult({ result, duration, onApply, onClose }) {
+  const review = result.review || {};
+  const lessons = result.lessons || [];
+  const changed = review.changes_clip;
+  return (
+    <>
+      {result.review_error && (
+        <Alert color="yellow" variant="light" mb="sm" title="The clip wasn't watched">
+          {result.review_error} Your note is saved either way.
+        </Alert>
+      )}
+      {review.observed && (
+        <Paper withBorder p="sm" mb="sm">
+          <Group gap="xs" mb={4}>
+            <Text size="sm" fw={600}>What the AI saw</Text>
+            <Badge size="sm" variant="light"
+              color={review.matches_prompt ? 'green' : 'orange'}>
+              {review.matches_prompt ? 'matches the prompt' : 'does not match the prompt'}
+            </Badge>
+          </Group>
+          <Text size="sm">{review.observed}</Text>
+          {(review.problems || []).length > 0 && (
+            <Stack gap={2} mt="xs">
+              {review.problems.map((p, i) => (
+                <Text key={i} size="sm" c="orange.4">• {p}</Text>
+              ))}
+            </Stack>
+          )}
+        </Paper>
+      )}
+      {review.suggested_motion_prompt && (
+        <Paper withBorder p="sm" mb="sm">
+          <Text size="sm" fw={600} mb={4}>
+            {changed ? 'Suggested instead' : 'It would keep the prompt as it is'}
+          </Text>
+          <Text size="sm">{review.suggested_motion_prompt}</Text>
+          <Group gap="xs" mt={6}>
+            <Badge size="sm" variant="light"
+              color={review.suggested_duration === duration ? 'gray' : 'orange'}>
+              {review.suggested_duration}s
+              {review.suggested_duration === duration
+                ? ' (unchanged)' : ` (was ${duration}s)`}
+            </Badge>
+            {review.why && <Text size="xs" c="dimmed">{review.why}</Text>}
+          </Group>
+        </Paper>
+      )}
+      {result.learn_error ? (
+        <Alert color="yellow" variant="light" mb="sm">
+          No rule was written ({result.learn_error}) — the note is saved.
+        </Alert>
+      ) : lessons.length > 0 ? (
+        <Paper withBorder p="sm" mb="sm">
+          <Text size="sm" fw={600} mb={4}>Learned for every future clip</Text>
+          <Stack gap={4}>
+            {lessons.map((l) => (
+              <Text key={l.id} size="sm">• {l.text}</Text>
+            ))}
+          </Stack>
+        </Paper>
+      ) : null}
+      <Group justify="flex-end" mt="lg">
+        <Button variant="default" onClick={onClose}>Close</Button>
+        {changed && (
+          <Button onClick={() => onApply(review)}
+            title="Puts this prompt and length into the transition. You still save and regenerate yourself — nothing is spent here.">
+            Use this prompt for the clip
+          </Button>
+        )}
+      </Group>
+    </>
   );
 }
 
@@ -846,9 +954,11 @@ export default function ProjectDetail({ name, onBack }) {
   const [musicBusy, setMusicBusy] = useState(false);
   const [letterBusy, setLetterBusy] = useState(false);
   const [confirm, setConfirm] = useState(null);
-  // Which transition the feedback form is open for (null = closed).
+  // Which transition the feedback form is open for (null = closed), and what
+  // came back for it (the AI's review + any rule learned).
   const [feedbackFor, setFeedbackFor] = useState(null);
   const [feedbackBusy, setFeedbackBusy] = useState(false);
+  const [feedbackResult, setFeedbackResult] = useState(null);
   // Cache-buster for styled frames and clips: they are replaced in place, so
   // the browser would otherwise keep showing the pre-render version. Bumped
   // on every poll while a job runs, and once more when it settles.
@@ -1204,32 +1314,63 @@ export default function ProjectDetail({ name, onBack }) {
   // Feedback runs inline (it is one short call, and the serial job runner may
   // be halfway through a render). The form stays open on failure so a note
   // nobody wants to retype isn't lost to a network blip.
-  const sendFeedback = async ({ note, verdict, learn }) => {
+  const sendFeedback = async ({ note, verdict, learn, review }) => {
     setFeedbackBusy(true);
     try {
       const res = await api.sendFeedback(name, {
-        clip: feedbackFor?.id || '', note, verdict, learn,
+        clip: feedbackFor?.id || '', note, verdict, learn, review,
       });
-      setFeedbackFor(null);
-      if (res.learn_error) {
-        notify(
-          `Note saved, but the rule could not be written (${res.learn_error}). `
-          + 'You can add it by hand in the Learning tab.', 'yellow');
-      } else if (res.lessons?.length) {
-        notify(
-          `Thanks — the planner learned: “${res.lessons[0].text}”`, 'green');
-      } else if (learn) {
-        notify(
-          'Note saved. There was nothing general enough in it to turn into a '
-          + 'rule — say what the video model DID wrong for that.', 'gray');
+      if (res.review?.observed || res.review_error) {
+        // The AI has something to show: keep the modal open on its verdict
+        // and the prompt it proposes, instead of a toast that scrolls away.
+        setFeedbackResult(res);
       } else {
-        // Learning was switched off on purpose: don't imply the note was
-        // too vague to teach anything.
-        notify('Note saved — no rule was written from it.', 'gray');
+        setFeedbackFor(null);
+        if (res.learn_error) {
+          notify(
+            `Note saved, but the rule could not be written (${res.learn_error}). `
+            + 'You can add it by hand in the Learning tab.', 'yellow');
+        } else if (res.lessons?.length) {
+          notify(
+            `Thanks — the planner learned: “${res.lessons[0].text}”`, 'green');
+        } else if (learn) {
+          notify(
+            'Note saved. There was nothing general enough in it to turn into a '
+            + 'rule — say what the video model DID wrong for that.', 'gray');
+        } else {
+          // Learning was switched off on purpose: don't imply the note was
+          // too vague to teach anything.
+          notify('Note saved — no rule was written from it.', 'gray');
+        }
       }
       await load();
     } catch (e) { notify(`Feedback failed: ${e.message}`, 'red'); }
     finally { setFeedbackBusy(false); }
+  };
+
+  const closeFeedback = () => { setFeedbackFor(null); setFeedbackResult(null); };
+  // Always open on a blank form: without clearing the previous result, the
+  // next clip's modal would open showing the last clip's review.
+  const openFeedback = (tr) => { setFeedbackResult(null); setFeedbackFor(tr); };
+
+  // Accepting the AI's fix is an ordinary storyboard edit — the same one you
+  // would type yourself. It becomes an unsaved change; saving marks the clip
+  // outdated and offers the (confirmed, paid) re-render. Nothing is spent
+  // here, and nothing is applied without this click.
+  const applySuggestion = (review) => {
+    const target = feedbackFor;
+    closeFeedback();
+    if (!target) return;
+    const current = (storyboard?.transitions || []).find((t) => t.id === target.id);
+    if (!current) return;
+    editTransition({
+      ...current,
+      motion_prompt: review.suggested_motion_prompt,
+      duration: review.suggested_duration || current.duration,
+    });
+    notify(
+      'Applied to the clip. Save your edits, then regenerate it to see the '
+      + 'new version.', 'green');
   };
 
   // Fetching can take a few seconds (a page URL is extracted + transcoded
@@ -1368,8 +1509,10 @@ export default function ProjectDetail({ name, onBack }) {
       <ConfirmModal confirm={confirm} onCancel={() => setConfirm(null)} onConfirm={confirmed} />
 
       <FeedbackModal opened={Boolean(feedbackFor)} clipId={feedbackFor?.id}
-        motionPrompt={feedbackFor?.motion_prompt} busy={feedbackBusy}
-        onClose={() => setFeedbackFor(null)} onSubmit={sendFeedback} />
+        motionPrompt={feedbackFor?.motion_prompt}
+        duration={feedbackFor?.duration} busy={feedbackBusy}
+        result={feedbackResult} onApply={applySuggestion}
+        onClose={closeFeedback} onSubmit={sendFeedback} />
 
       <Modal opened={Boolean(logJob)} onClose={() => setLogJob(null)} centered size="xl"
         title={logJob ? `${logJob.command} — ${logJob.state}` : ''}>
@@ -1672,7 +1815,7 @@ export default function ProjectDetail({ name, onBack }) {
               verdict={(snap.feedback?.by_transition || {})[tr.id]}
               onEdit={editTransition}
               onRegenerate={regenerate} onReplan={replanPrompt} onRedoAudio={redoAudio}
-              onFeedback={setFeedbackFor}
+              onFeedback={openFeedback}
               busy={busyAction === `render ${tr.id}`}
               replanBusy={busyAction === `re-plan ${tr.id}`}
               audioBusy={busyAction === `audio ${tr.id}`}
