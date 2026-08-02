@@ -390,7 +390,7 @@ function SpendCard({ project, cost }) {
   );
 }
 
-function TransitionCard({ project, tr, framesById, clip, edited, placeholder, verdict, onEdit, onRegenerate, onReplan, onRedoAudio, onFeedback, busy, replanBusy, audioBusy, mediaV }) {
+function TransitionCard({ project, tr, framesById, clip, edited, placeholder, verdict, planBehind, onEdit, onRegenerate, onReplan, onRedoAudio, onFeedback, busy, replanBusy, audioBusy, mediaV }) {
   const startImg = frameName(framesById, tr.start_frame);
   const endImg = frameName(framesById, tr.end_frame);
   const clipFile = tr.output_path.split('/').pop();
@@ -413,6 +413,12 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, ve
           <Badge variant="light" color="red"
             title="Planning failed for this pair; it still has the generic fallback prompt. Re-running Storyboard re-plans it.">
             generic prompt
+          </Badge>
+        )}
+        {planBehind && (
+          <Badge variant="light" color="yellow"
+            title="This prompt was written before the current photo tags or cast names. Re-plan it to use them — the clip itself is untouched until you regenerate it.">
+            prompt predates your tags
           </Badge>
         )}
         {verdict && (
@@ -697,7 +703,9 @@ function StoryboardPanel({ ask, locked, info, onReplanAll }) {
 // Step 2: the review stop. Planning has just named the cast and taken a
 // first guess at who is in each photo; this is where a human fixes both and
 // then pushes those corrections into the prompts. Nothing here renders.
-function PeoplePanel({ locked, info, onPropose, onReplanAll, onOpenTagger }) {
+function PeoplePanel({
+  locked, info, onPropose, onReplanAll, onReplanOutdated, onOpenTagger
+}) {
   const untagged = info.totalFrames - info.taggedFrames;
   return (
     <div>
@@ -708,6 +716,19 @@ function PeoplePanel({ locked, info, onPropose, onReplanAll, onOpenTagger }) {
         is in each photo, then re-plan so the prompts use it. Two people
         morphing into each other almost always starts here.
       </PanelIntro>
+      {info.outdatedPlans > 0 && (
+        <Alert color="yellow" variant="light" mb="md"
+          title={`${info.outdatedPlans} prompt(s) don't know about your latest tags`}>
+          They were written before you tagged those photos (or renamed someone
+          in the cast), so they still describe people the old way. Re-planning
+          just these rewrites them and leaves every other prompt alone.
+          <Group mt="sm">
+            <Button size="xs" disabled={locked} onClick={onReplanOutdated}>
+              Re-plan these {info.outdatedPlans}…
+            </Button>
+          </Group>
+        </Alert>
+      )}
       {info.fragileEpithets > 0 && (
         <Alert color="orange" variant="light" mb="md"
           title={`${info.fragileEpithets} cast name(s) describe clothing`}>
@@ -1183,6 +1204,10 @@ export default function ProjectDetail({ name, onBack }) {
   // Transitions the backend planner never succeeded on (still carrying the
   // config fallback prompt) — flagged so nobody renders a whole order generic.
   const placeholderIds = new Set(snap.storyboard?.placeholder_transitions || []);
+  // Prompts written before the tags/cast they should have used. Tagging and
+  // renaming change nothing on their own, so this is the only way to see
+  // which prompts are behind without remembering what you touched.
+  const outdatedPlans = new Set(snap.storyboard?.outdated_plans || []);
   const chip = stepChip(snap.next_step);
   const activeJob = (snap.jobs || []).find((j) => ['running', 'queued', 'cancelling'].includes(j.state));
   const locked = Boolean(activeJob);
@@ -1215,6 +1240,7 @@ export default function ProjectDetail({ name, onBack }) {
     // The identity review step (step 2).
     totalFrames,
     taggedFrames,
+    outdatedPlans: (snap.storyboard?.outdated_plans || []).length,
     hasCast: (storyboard?.characters || []).length > 0,
     fragileEpithets: (snap.storyboard?.fragile_epithets || []).length
   };
@@ -1439,6 +1465,24 @@ export default function ProjectDetail({ name, onBack }) {
   // both are plan-time inputs, so nothing already planned uses them until
   // its pair is planned again. One job re-plans every pair — a single vision
   // call over the whole movie, like the original storyboard run.
+  const replanOutdated = () => {
+    if (needsSave()) return;
+    const ids = snap.storyboard?.outdated_plans || [];
+    if (!ids.length) return;
+    ask({
+      title: `Re-plan the ${ids.length} prompt(s) that are behind?`,
+      lines: [
+        `These were written before your current tags or cast names: ${ids.join(', ')}.`,
+        'Every other prompt is left exactly as it is — including any you wrote yourself.',
+        'One vision call. Clips whose plan changes are marked "outdated"; nothing is re-rendered or deleted here.'
+      ],
+      cost: 'openai',
+      label: `Re-plan ${ids.length}`,
+      action: () => run('storyboard', { replan_clips: ids },
+        `re-plan ${ids.length} prompt(s)`)
+    });
+  };
+
   const replanAll = () => {
     if (needsSave()) return;
     const ids = (storyboard?.transitions || []).map((t) => t.id);
@@ -1713,6 +1757,7 @@ export default function ProjectDetail({ name, onBack }) {
       onReplanAll={replanAll} />,
     people: <PeoplePanel locked={locked} info={info}
       onPropose={askForTagSuggestions} onReplanAll={replanAll}
+      onReplanOutdated={replanOutdated}
       onOpenTagger={() => { setShowTagger(true); setOpenPanel(''); }} />,
     render: <RenderPanel ask={ask} locked={locked} info={info}
       onGenerateAll={() => { if (!needsSave()) generateAll(snap); }} />,
@@ -2110,6 +2155,7 @@ export default function ProjectDetail({ name, onBack }) {
               clip={clipsById[tr.output_path.split('/').pop()?.replace(/\.mp4$/, '')]}
               edited={dirty.has(tr.id)} placeholder={placeholderIds.has(tr.id)}
               verdict={(snap.feedback?.by_transition || {})[tr.id]}
+              planBehind={outdatedPlans.has(tr.id)}
               onEdit={editTransition}
               onRegenerate={regenerate} onReplan={replanPrompt} onRedoAudio={redoAudio}
               onFeedback={openFeedback}

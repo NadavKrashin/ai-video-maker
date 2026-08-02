@@ -1,6 +1,7 @@
 """Storyboard data models (Mode B). Human-editable JSON maps onto these."""
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Optional
@@ -80,6 +81,15 @@ class Transition(BaseModel):
     # falls back to config.default_sfx_prompt.
     sound_prompt: str = ""
     output_path: str
+    # Fingerprint of the identity facts this prompt was PLANNED from: who was
+    # tagged in its two frames, in left-to-right order, and what each of them
+    # was called at the time. Comparing it against the storyboard as it
+    # stands now is what makes "this prompt predates your tags" visible
+    # instead of something you have to remember (see identity_fingerprint /
+    # outdated_identity_plans). Empty on anything planned before this
+    # existed, which reads as "planned from no tags at all" — true, and
+    # exactly what makes an untagged project stay quiet.
+    planned_identity: str = ""
 
 
 class Storyboard(BaseModel):
@@ -124,6 +134,61 @@ class Storyboard(BaseModel):
             json.dumps(self.model_dump(), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+
+
+def identity_fingerprint(
+    storyboard: "Storyboard", transition: "Transition"
+) -> str:
+    """What the identity facts for this pair look like RIGHT NOW.
+
+    Covers exactly the inputs a planner uses to decide who is in the clip and
+    what to call them: the people tagged in each of the two frames, in
+    left-to-right order, and the epithet each of them currently carries. A
+    prompt planned when this value was different is a prompt that does not
+    know about your latest tag or renamed cast member.
+
+    An untagged frame contributes ``?`` rather than an empty list, so "nobody
+    has said who is here" and "this photo has nobody in it" stay different
+    facts — and so a plan made before any tagging has a stable, matchable
+    value instead of a special case.
+    """
+    epithets = {c.id: c.epithet for c in storyboard.characters}
+    frames = {f.output_path: f for f in storyboard.frames}
+    parts: list[str] = []
+    for path in (transition.start_frame, transition.end_frame):
+        frame = frames.get(path)
+        if frame is None or not frame.people:
+            parts.append("?")
+            continue
+        ordered = sorted(frame.people, key=lambda p: p.x)
+        parts.append(
+            ",".join(f"{p.id}={epithets.get(p.id, '')}" for p in ordered)
+        )
+    return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:12]
+
+
+# What `identity_fingerprint` returns for a pair whose frames are both
+# untagged. Anything planned before plans recorded their identity inputs is
+# treated as having been planned from this — which is true, and is what keeps
+# a project that has never been tagged from reporting every prompt as stale.
+def _untagged_fingerprint() -> str:
+    return hashlib.sha1("?|?".encode("utf-8")).hexdigest()[:12]
+
+
+def outdated_identity_plans(storyboard: "Storyboard") -> list[str]:
+    """Ids of transitions whose prompt predates the current tags/cast.
+
+    This is the answer to "which prompts don't know what I just told the
+    app?". Tagging a photo or renaming a cast member changes nothing on its
+    own — both are plan-time inputs — so without this the only way to apply
+    them was to re-plan everything and hope, or to remember which pairs the
+    person appeared in.
+    """
+    blank = _untagged_fingerprint()
+    return [
+        t.id for t in storyboard.transitions
+        if identity_fingerprint(storyboard, t) != (t.planned_identity or blank)
+    ]
 
 
 def tagged_people(storyboard: "Storyboard") -> dict[str, list[str]]:

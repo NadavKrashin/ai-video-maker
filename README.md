@@ -388,6 +388,29 @@ when you want to spend the credits.
 > The panel flags any that name clothing so you can fix them by hand; re-plan
 > a clip (`storyboard --replan-clip ID`) for the new wording to be used.
 
+### Knowing what is out of date
+
+Every step feeds the next, so the useful question is usually "what here no
+longer matches what I changed?". `status` and the panel answer it in one
+place — nothing is ever fixed silently, and nothing costing money is redone
+without you asking:
+
+| What went stale | How you see it | How to fix it |
+|---|---|---|
+| A **prompt** written before you tagged a photo or renamed someone in the cast | “prompt predates your tags” on the clip; a count in step 2 | Re-plan those pairs (the panel offers exactly the ones behind) |
+| A **rendered clip** whose prompt, duration or frames changed since | “outdated” badge; `status` marks it | `render --clip ID`, or “Generate everything that needs it” |
+| A **styled frame** whose source photo changed | listed as a changed frame | `storyboard` (asks before re-styling) |
+| A **cast name** that describes clothing | flagged in the Cast editor | Rewrite it, then re-plan |
+| A **prompt that was never really planned** (a quota failure left the generic fallback) | “generic prompt” badge | Run `storyboard` again |
+| A **paid render** that was never collected | listed as a pending render | Collect it (free) before editing that clip |
+| The **final movie**, built before a clip was re-rendered | `status` says so | `combine --force` (free, local) |
+
+The rule behind all of them: tags, cast names and lessons are *plan-time*
+inputs — they change what the planner is told next time, never a prompt that
+already exists — and prompts are *render-time* inputs, so changing one marks
+the clip rather than redoing it. Everything downstream is a marked state you
+act on, not a surprise bill.
+
 ### Teaching the planner (feedback → lessons)
 
 The planner writes each motion prompt **blind**: it sees two still frames and

@@ -88,6 +88,8 @@ from .models import (
     FramePerson,
     Storyboard,
     Transition,
+    identity_fingerprint,
+    outdated_identity_plans,
     tagged_people,
 )
 from .options import RunOptions
@@ -949,6 +951,16 @@ class Pipeline:
             frames=frames,
             transitions=transitions,
         )
+        # Stamp each freshly planned prompt with the identity facts it was
+        # planned from, so a later tag or renamed cast member shows up as
+        # "this prompt doesn't know about that yet" instead of being
+        # something you have to remember. Carried-over transitions keep
+        # whatever stamp they already had — they were not re-planned.
+        for transition in storyboard.transitions:
+            if transition.id in replanned:
+                transition.planned_identity = identity_fingerprint(
+                    storyboard, transition
+                )
         return storyboard, replanned, stale_tids
 
     def _plan_pairs(
@@ -2412,6 +2424,12 @@ class Pipeline:
                     c.id for c in storyboard.characters
                     if is_clothing_anchored(c.epithet)
                 ],
+                # Prompts written before the identity facts they should have
+                # used: a photo tagged (or re-tagged) since, or a cast member
+                # renamed. Both are plan-time inputs that change nothing on
+                # their own, so without this the only way to apply them was
+                # to re-plan everything and hope.
+                "outdated_plans": outdated_identity_plans(storyboard),
             },
             "storyboard_error": storyboard_error,
             "changed_frames": changed_frames,
@@ -2419,6 +2437,12 @@ class Pipeline:
             "stray_clips": stray,
             "pending_renders": self.pending_renders(),
             "final_video": ws.final_video.exists(),
+            # The movie was built before one of its clips was (re-)rendered,
+            # so it is showing an older version of that clip. mtimes are
+            # trustworthy here in a way they are not for styled frames: both
+            # sides are written locally by this pipeline, and the worst case
+            # is a suggestion to re-run a free, local step.
+            "final_video_outdated": self._final_video_outdated(),
             # Delivery: which movie versions were published back to the
             # order's Cloudinary folder, and whether the current final video
             # is newer than the last one delivered.
@@ -2940,6 +2964,26 @@ class Pipeline:
             "images": images,
         }
 
+    def _final_video_outdated(self) -> bool:
+        """Is output/final_video.mp4 older than a clip it was built from?
+
+        The last "not up to date" gap in the chain: regenerating one clip
+        leaves the finished movie silently showing the previous version of
+        it, and the fix (another combine) is free and local — so this is a
+        hint worth printing, not a gate.
+        """
+        final = self.workspace.final_video
+        if not final.exists() or not self.workspace.clips_dir.exists():
+            return False
+        try:
+            built_at = final.stat().st_mtime
+            return any(
+                clip.stat().st_mtime > built_at
+                for clip in find_generated_clips(self.workspace.clips_dir)
+            )
+        except OSError:  # a clip vanished mid-check; not worth failing status
+            return False
+
     def _recorded_failures(self) -> list[dict[str, Any]]:
         """The last run's failures, from failed_jobs/failed_jobs.json.
 
@@ -3060,6 +3104,18 @@ class Pipeline:
                 + "  (newer than the storyboard - run storyboard to re-plan)"
             )
 
+        # Prompts that don't yet know what you told the app about identity.
+        outdated_plans = (snap["storyboard"] or {}).get("outdated_plans") or []
+        if outdated_plans:
+            print(
+                f"  !! {len(outdated_plans)} prompt(s) were planned before the "
+                "current photo tags / cast names: "
+                f"{', '.join(outdated_plans[:6])}"
+                f"{' …' if len(outdated_plans) > 6 else ''}\n"
+                "     Apply them with:\n     "
+                + self._next_command("storyboard", "--replan-all")
+            )
+
         for clip in snap["clips"]:
             if clip["rendered"]:
                 sfx = "sfx ✓" if clip["sfx"] else "silent"
@@ -3101,6 +3157,12 @@ class Pipeline:
 
         final = ws.final_video
         print(f"  Final video      : {'ready — ' + str(final) if final.exists() else 'not built'}")
+        if snap["final_video_outdated"]:
+            print(
+                "  !! a clip has been re-rendered since the movie was built, "
+                "so it still shows the old one.\n     Rebuild it (free, "
+                "local):\n     " + self._next_command("combine", "--force")
+            )
 
         # Money. Always described as an estimate: it is priced from
         # config.pricing, never read from a provider's invoice.

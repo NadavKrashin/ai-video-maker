@@ -14,6 +14,7 @@ from ai_video_maker.models import (
     FramePerson,
     Storyboard,
     Transition,
+    outdated_identity_plans,
 )
 
 
@@ -1463,3 +1464,80 @@ class TestPlanThenTagThenReplan:
         sb, replanned, _ = p._reconcile_storyboard(saved, pairs)
         assert replanned == []
         assert [t.motion_prompt for t in sb.transitions] == ["motion a", "motion b"]
+
+
+class TestPlansRecordWhatTheyWerePlannedFrom:
+    """The stamp that makes "this prompt predates your tags" visible."""
+
+    def test_a_replanned_pair_records_the_identity_it_used(
+        self, make_pipeline, workspace
+    ):
+        p = make_pipeline(analyze_frames=False, motion_prompt="fresh",
+                          replan_all=True, tag_frames=False)
+        pairs = _make_frame_pairs(workspace, ["a", "b"])
+        saved = _save_slug_storyboard(workspace, ["a", "b"])
+        saved.characters = [Character(id="dad", epithet="the bald man")]
+        saved.frames[0].people = [FramePerson(id="dad", x=0.3)]
+        sb, _, _ = p._reconcile_storyboard(saved, pairs)
+        assert sb.transitions[0].planned_identity
+        # Planned from exactly what the storyboard now says, so nothing is
+        # reported as behind.
+        assert outdated_identity_plans(sb) == []
+
+    def test_tagging_after_planning_shows_the_prompt_as_behind(
+        self, make_pipeline, workspace
+    ):
+        # The whole point: the user tags a photo and can SEE which prompts
+        # don't know about it yet, instead of having to remember.
+        p = make_pipeline(analyze_frames=False, motion_prompt="fresh",
+                          replan_all=True, tag_frames=False)
+        pairs = _make_frame_pairs(workspace, ["a", "b"])
+        saved = _save_slug_storyboard(workspace, ["a", "b"])
+        saved.characters = [Character(id="dad", epithet="the bald man")]
+        sb, _, _ = p._reconcile_storyboard(saved, pairs)
+        assert outdated_identity_plans(sb) == []
+        sb.frames[0].people = [FramePerson(id="dad", x=0.3)]
+        assert outdated_identity_plans(sb) == ["a_to_b"]
+
+    def test_a_carried_over_pair_keeps_its_old_stamp(
+        self, make_pipeline, workspace
+    ):
+        # It was not re-planned, so its record of what it knew must not be
+        # quietly refreshed — that would hide the very thing this reports.
+        p = make_pipeline(analyze_frames=False, tag_frames=False)
+        pairs = _make_frame_pairs(workspace, ["a", "b"])
+        saved = _save_slug_storyboard(workspace, ["a", "b"])
+        saved.transitions[0].planned_identity = "deadbeefcafe"
+        sb, replanned, _ = p._reconcile_storyboard(saved, pairs)
+        assert replanned == []
+        assert sb.transitions[0].planned_identity == "deadbeefcafe"
+
+    def test_the_snapshot_reports_them(self, make_pipeline, workspace):
+        p = make_pipeline(analyze_frames=False)
+        _make_frame_pairs(workspace, ["a", "b"])
+        sb = _save_slug_storyboard(workspace, ["a", "b"])
+        sb.characters = [Character(id="dad", epithet="the bald man")]
+        sb.frames[0].people = [FramePerson(id="dad", x=0.3)]
+        sb.save(workspace.default_storyboard_json)
+        assert p.snapshot()["storyboard"]["outdated_plans"] == ["a_to_b"]
+
+
+class TestFinalVideoFreshness:
+    def test_a_clip_rendered_after_the_movie_flags_it(self, pipeline, workspace):
+        import os, time
+        _write_frames(workspace, [1, 2])
+        clip = _touch(workspace.clips_dir / "001_to_002.mp4")
+        final = _touch(workspace.final_video)
+        os.utime(final, (time.time() - 60, time.time() - 60))  # built earlier
+        assert pipeline._final_video_outdated() is True
+
+    def test_a_movie_newer_than_its_clips_is_fine(self, pipeline, workspace):
+        import os, time
+        _touch(workspace.clips_dir / "001_to_002.mp4")
+        final = _touch(workspace.final_video)
+        os.utime(final, (time.time() + 60, time.time() + 60))
+        assert pipeline._final_video_outdated() is False
+
+    def test_no_movie_is_not_an_outdated_movie(self, pipeline, workspace):
+        _touch(workspace.clips_dir / "001_to_002.mp4")
+        assert pipeline._final_video_outdated() is False
