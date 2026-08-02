@@ -36,7 +36,11 @@ from .clients.cloudinary_client import (
     resolve_order_folder,
 )
 from .clients.download import download_file
-from .clients.openai_client import OpenAIClient, is_clothing_anchored
+from .clients.openai_client import (
+    OpenAIClient,
+    ends_offscreen,
+    is_clothing_anchored,
+)
 from .clients.video import VideoClient
 from .config import Config
 from .costs import KIND_CLIP, KIND_SFX, CostLedger, estimate_usd
@@ -2430,6 +2434,16 @@ class Pipeline:
                 # their own, so without this the only way to apply them was
                 # to re-plan everything and hope.
                 "outdated_plans": outdated_identity_plans(storyboard),
+                # Prompts whose last beat leaves someone out of the frame.
+                # The clip is pinned to the end frame, which shows those
+                # people, so it cannot end there — the video model resolves
+                # the contradiction with a cut or a teleport. Caught wherever
+                # the wording came from: the planner, a restage, or a hand
+                # edit.
+                "ends_offscreen": [
+                    t.id for t in storyboard.transitions
+                    if ends_offscreen(t.motion_prompt)
+                ],
             },
             "storyboard_error": storyboard_error,
             "changed_frames": changed_frames,

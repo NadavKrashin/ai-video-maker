@@ -62,13 +62,27 @@ _PERSON_STOPWORDS = frozenset({
 # somebody leaves and comes back, or one person visibly passes the other.
 # Used to tell a real swap staging from hold-steady wording, which morphs
 # swapped people into each other.
-_CROSSING_MARKERS = (
-    "past the camera", "out of frame", "off frame", "out of the frame",
-    "back in", "re-enter", "reenter", "re-entering", "enters from",
-    "enter from", "steps in from", "step in from", "walks in from",
-    "walk in from", "crosses", "cross in front", "crossing", "in front of",
-    "behind the", "behind her", "behind him", "swap", "swaps", "switch sides",
+# One person physically passing another: a complete staging on its own.
+_PASSING_MARKERS = (
+    "crosses", "cross in front", "crossing", "in front of", "behind the",
+    "behind her", "behind him", "swap", "swaps", "switch sides",
     "trade places", "trades places", "changes places", "around each other",
+)
+# Leaving the frame. HALF a staging: the clip is pinned to the end frame, so
+# people who walk out have to come back before it ends.
+_EXIT_MARKERS = (
+    "past the camera", "out of frame", "off frame", "out of the frame",
+    "offscreen", "off screen", "off-screen", "out of shot", "exits", "exit ",
+    "leaves the frame", "walks out", "steps out",
+)
+# ...and the other half.
+_RETURN_MARKERS = (
+    "back in", "back into", "re-enter", "reenter", "re-entering",
+    "re-enters", "enters from", "enter from", "steps in from",
+    "step in from", "walks in from", "walk in from", "returns",
+    "comes back", "come back", "gather again", "gathers again",
+    "regroup", "regroups", "re-form", "reform", "re-forms", "reforms",
+    "settle again", "stand again", "standing again",
 )
 
 # Restage a motion prompt for a pair whose people trade left-right positions.
@@ -87,7 +101,23 @@ _RESTAGE_SWAP_SYSTEM = (
     "physically travels to their new side, staged one of two ways: (a) they "
     "walk forward past the camera and out of frame, then step back in one at "
     "a time — say which side each one comes back in from — or (b) one of "
-    "them visibly crosses in front of or behind the other. Keep the rest of "
+    "them visibly crosses in front of or behind the other. "
+    "AN EXIT IS ONLY HALF THE STAGING. The clip is pinned to the end frame, "
+    "which SHOWS these people — so a prompt that walks someone out and stops "
+    "there describes a clip that cannot exist, and the video model resolves "
+    "it with a cut or a teleport. If anyone leaves the frame, the same "
+    "prompt must bring them back, and the LAST thing it describes is the "
+    "people standing where the end frame shows them. Never end on anyone "
+    "being offscreen, leaving, or walking away. "
+    "ACCOUNT FOR EVERYONE. You are given the full left-to-right list for "
+    "both frames. Every person whose side changes gets named and moved; "
+    "people who keep their place can be covered together in a few words "
+    "('the other three stay put'). A rewrite that describes one person and "
+    "silently forgets the rest of the group is wrong — the model then "
+    "rearranges the forgotten ones however it likes, which is the morphing "
+    "this is meant to prevent. When the group is large, move them as a group "
+    "and name only who ends up somewhere different. "
+    "Keep the rest of "
     "the original prompt's intent. Rules that still apply: describe ONLY the "
     "people, never the setting, the background or the location (the two "
     "frames already fix all of that); give every person a concrete physical "
@@ -1329,15 +1359,43 @@ def is_arrangement_swap(start_order: Any, end_order: Any) -> bool:
     return end_positions != sorted(end_positions)
 
 
-def stages_a_crossing(motion_prompt: str) -> bool:
-    """Does the prompt physically move people between sides?
+def _last_index(text: str, markers: tuple[str, ...]) -> int:
+    """Where the last of these markers appears, or -1."""
+    return max((text.rfind(m) for m in markers), default=-1)
 
-    An exit past the camera and a walk back in, or one person passing the
-    other. Without one of these a swapped pair is pinned in place and the
-    video model resolves the contradiction by morphing them.
+
+def stages_a_crossing(motion_prompt: str) -> bool:
+    """Does the prompt physically move people between sides — and finish?
+
+    Two complete stagings: one person visibly passing another, or an exit
+    past the camera FOLLOWED BY a walk back in. An exit on its own is not
+    one, which is the whole point: the clip is pinned to the end frame, so a
+    prompt that only empties the frame leaves the video model to invent the
+    arrival — and a real restage came back as "walks forward past the camera
+    and exits left, ending offscreen on the left" for a pair whose end frame
+    shows that boy standing in the group.
     """
     text = (motion_prompt or "").lower()
-    return any(marker in text for marker in _CROSSING_MARKERS)
+    if any(marker in text for marker in _PASSING_MARKERS):
+        return True
+    return (
+        any(marker in text for marker in _EXIT_MARKERS)
+        and any(marker in text for marker in _RETURN_MARKERS)
+    )
+
+
+def ends_offscreen(motion_prompt: str) -> bool:
+    """Does the prompt's LAST beat leave someone out of the frame?
+
+    The clip has to land on the end frame, which shows the people in it —
+    so "…and exits left, ending offscreen" describes a clip that cannot
+    exist. The video model resolves it by cutting or teleporting.
+    """
+    text = (motion_prompt or "").lower()
+    exit_at = _last_index(text, _EXIT_MARKERS)
+    if exit_at < 0:
+        return False
+    return _last_index(text, _RETURN_MARKERS) < exit_at
 
 
 _STORYBOARD_JSON_SHAPE = (
@@ -2185,12 +2243,21 @@ class OpenAIClient:
             self._note_text_usage(resp, "restage swapped pair")
             restaged = (resp.choices[0].message.content or "").strip()
             # Only accept a rewrite that actually fixed the thing it was
-            # called for; anything else leaves the original in place.
+            # called for AND still lands on the end frame. An exit with no
+            # return is half a staging: it passed the old check and produced
+            # "walks forward past the camera and exits left, ending offscreen"
+            # for a pair whose end frame shows that boy standing in the group.
             if restaged and stages_a_crossing(restaged):
-                return restaged
-            logger.warning(
-                "Restage came back without any crossing; keeping the original"
-            )
+                if not ends_offscreen(restaged):
+                    return restaged
+                logger.warning(
+                    "Restage ended with someone offscreen, but the clip has to "
+                    "land on the end frame; keeping the original"
+                )
+            else:
+                logger.warning(
+                    "Restage came back without any crossing; keeping the original"
+                )
         except Exception as exc:  # noqa: BLE001 - keep planning alive
             logger.warning(
                 "Restaging the swapped pair failed (%s); keeping the original",
