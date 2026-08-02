@@ -1541,3 +1541,31 @@ class TestFinalVideoFreshness:
     def test_no_movie_is_not_an_outdated_movie(self, pipeline, workspace):
         _touch(workspace.clips_dir / "001_to_002.mp4")
         assert pipeline._final_video_outdated() is False
+
+
+class TestOffscreenEndingsAreVisible:
+    def test_a_prompt_that_ends_outside_the_frame_is_listed(
+        self, make_pipeline, workspace
+    ):
+        p = make_pipeline(analyze_frames=False)
+        _make_frame_pairs(workspace, ["a", "b"])
+        sb = _save_slug_storyboard(workspace, ["a", "b"])
+        sb.transitions[0].motion_prompt = (
+            "The smaller boy with wavy hair near the right walks forward past "
+            "the camera and exits left, ending offscreen on the left."
+        )
+        sb.save(workspace.default_storyboard_json)
+        assert p.snapshot()["storyboard"]["ends_offscreen"] == ["a_to_b"]
+
+    def test_a_prompt_that_brings_them_back_is_not_listed(
+        self, make_pipeline, workspace
+    ):
+        p = make_pipeline(analyze_frames=False)
+        _make_frame_pairs(workspace, ["a", "b"])
+        sb = _save_slug_storyboard(workspace, ["a", "b"])
+        sb.transitions[0].motion_prompt = (
+            "the bald man walks past the camera, then steps back in from the "
+            "right and stands beside the woman with curly hair"
+        )
+        sb.save(workspace.default_storyboard_json)
+        assert p.snapshot()["storyboard"]["ends_offscreen"] == []

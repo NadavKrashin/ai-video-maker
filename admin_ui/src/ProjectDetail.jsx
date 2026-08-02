@@ -390,7 +390,7 @@ function SpendCard({ project, cost }) {
   );
 }
 
-function TransitionCard({ project, tr, framesById, clip, edited, placeholder, verdict, planBehind, onEdit, onRegenerate, onReplan, onRedoAudio, onFeedback, busy, replanBusy, audioBusy, mediaV }) {
+function TransitionCard({ project, tr, framesById, clip, edited, placeholder, verdict, planBehind, endsOffscreen, onEdit, onRegenerate, onReplan, onRedoAudio, onFeedback, busy, replanBusy, audioBusy, mediaV }) {
   const startImg = frameName(framesById, tr.start_frame);
   const endImg = frameName(framesById, tr.end_frame);
   const clipFile = tr.output_path.split('/').pop();
@@ -413,6 +413,12 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, ve
           <Badge variant="light" color="red"
             title="Planning failed for this pair; it still has the generic fallback prompt. Re-running Storyboard re-plans it.">
             generic prompt
+          </Badge>
+        )}
+        {endsOffscreen && (
+          <Badge variant="light" color="red"
+            title="This prompt finishes with someone out of the frame, but the clip has to land on the end frame — which shows them. The video model resolves that with a cut or a teleport. Re-plan it, or edit the ending so they come back.">
+            ends offscreen
           </Badge>
         )}
         {planBehind && (
@@ -1208,6 +1214,9 @@ export default function ProjectDetail({ name, onBack }) {
   // renaming change nothing on their own, so this is the only way to see
   // which prompts are behind without remembering what you touched.
   const outdatedPlans = new Set(snap.storyboard?.outdated_plans || []);
+  // Prompts that finish with someone out of frame — impossible for a clip
+  // pinned to an end frame those people are standing in.
+  const offscreenEndings = new Set(snap.storyboard?.ends_offscreen || []);
   const chip = stepChip(snap.next_step);
   const activeJob = (snap.jobs || []).find((j) => ['running', 'queued', 'cancelling'].includes(j.state));
   const locked = Boolean(activeJob);
@@ -2156,6 +2165,7 @@ export default function ProjectDetail({ name, onBack }) {
               edited={dirty.has(tr.id)} placeholder={placeholderIds.has(tr.id)}
               verdict={(snap.feedback?.by_transition || {})[tr.id]}
               planBehind={outdatedPlans.has(tr.id)}
+              endsOffscreen={offscreenEndings.has(tr.id)}
               onEdit={editTransition}
               onRegenerate={regenerate} onReplan={replanPrompt} onRedoAudio={redoAudio}
               onFeedback={openFeedback}

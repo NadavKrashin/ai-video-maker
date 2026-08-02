@@ -11,6 +11,7 @@ from ai_video_maker.clients.openai_client import (
     _motion_word_limit,
     _realign_by_pair_index,
     is_arrangement_swap,
+    ends_offscreen,
     is_clothing_anchored,
     repair_cast_epithets,
     stages_a_crossing,
@@ -994,3 +995,98 @@ class TestIdentifyPeopleCoercion:
 
     def test_a_missing_response_yields_one_empty_list_per_frame(self):
         assert self._coerce({}) == [[], []]
+
+
+class TestAnExitIsOnlyHalfTheStaging:
+    """A swapped pair must be moved AND land on the end frame.
+
+    The real failure: a five-person family swap was restaged as "The smaller
+    boy with wavy hair near the right walks forward past the camera and exits
+    left, ending offscreen on the left." It passed the old crossing check
+    (it says "past the camera"), but the end frame shows that boy standing in
+    the group — so the clip cannot end where the prompt says, and four of the
+    five people were never mentioned at all.
+    """
+
+    THE_REAL_ONE = (
+        "The smaller boy with wavy hair near the right walks forward past the "
+        "camera and exits left, ending offscreen on the left."
+    )
+
+    def test_the_prompt_that_caused_this_is_rejected(self):
+        assert ends_offscreen(self.THE_REAL_ONE)
+        assert not stages_a_crossing(self.THE_REAL_ONE)
+
+    def test_an_exit_with_a_return_is_a_complete_staging(self):
+        prompt = (
+            "the bald man walks past the camera, then steps back in from the "
+            "right beside the woman with curly hair"
+        )
+        assert stages_a_crossing(prompt)
+        assert not ends_offscreen(prompt)
+
+    def test_one_person_passing_another_needs_no_exit(self):
+        prompt = "the smaller boy crosses in front of the girl and stops on her left"
+        assert stages_a_crossing(prompt)
+        assert not ends_offscreen(prompt)
+
+    def test_a_return_before_an_exit_still_ends_offscreen(self):
+        # Order matters: coming back and then leaving again ends outside.
+        prompt = (
+            "the taller boy steps back in from the left, then walks out of frame"
+        )
+        assert ends_offscreen(prompt)
+
+    def test_a_prompt_that_never_leaves_the_frame_is_not_offscreen(self):
+        assert not ends_offscreen("the bald man turns to face the camera")
+
+    def test_the_group_regathering_counts_as_a_return(self):
+        prompt = (
+            "the five of them step forward past the camera, then gather again "
+            "with the taller boy beside the man with short dark hair"
+        )
+        assert stages_a_crossing(prompt)
+        assert not ends_offscreen(prompt)
+
+
+class TestSwappedPairsAreRestagedCompletely:
+    def _restage(self, config, reply, monkeypatch):
+        client = OpenAIClient(config)
+
+        class _Msg:
+            content = reply
+
+        class _Choice:
+            message = _Msg()
+
+        class _Resp:
+            choices = [_Choice()]
+            usage = None
+
+        class _Completions:
+            @staticmethod
+            def create(**kwargs):
+                return _Resp()
+
+        class _Client:
+            class chat:
+                completions = _Completions()
+
+        monkeypatch.setattr(client, "_ensure_client", lambda: _Client())
+        return client._restage_swapped_pair(
+            "they stand together", 10,
+            ["the bald man", "the woman"], ["the woman", "the bald man"],
+        )
+
+    def test_a_rewrite_that_ends_offscreen_is_refused(self, config, monkeypatch):
+        original = "they stand together"
+        assert self._restage(
+            config, TestAnExitIsOnlyHalfTheStaging.THE_REAL_ONE, monkeypatch
+        ) == original
+
+    def test_a_complete_rewrite_is_accepted(self, config, monkeypatch):
+        good = (
+            "the bald man walks past the camera and steps back in from the "
+            "left; the woman crosses behind him to the right"
+        )
+        assert self._restage(config, good, monkeypatch) == good

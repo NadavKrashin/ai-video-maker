@@ -242,6 +242,25 @@ Core design rules:
   changes), or one person visibly crossing in front of/behind the other.
   A swap rates difficulty ≥4; swap + setting change = 5. Enforced in
   `_MODE_A_SYSTEM` and the difficulty rubric.
+- AN EXIT IS ONLY HALF THE STAGING, AND CODE NOW CHECKS THAT TOO (user
+  report, 2026-08-02). `stages_a_crossing` accepted ANY marker in one flat
+  list, so "past the camera" alone passed — and a real five-person family
+  swap (London group photo -> Portobello group photo, all five tagged) was
+  restaged as "The smaller boy with wavy hair near the right walks forward
+  past the camera and exits left, ending offscreen on the left": a clip that
+  cannot exist, since the end frame shows that boy standing in the group,
+  and four of the five people were never mentioned. Markers are now split
+  into PASSING (a complete staging on its own), EXIT and RETURN;
+  `stages_a_crossing` needs a passing marker OR exit+return, and the new
+  `ends_offscreen` (last exit after the last return) rejects the rewrite
+  outright. `_RESTAGE_SWAP_SYSTEM` also now demands that every person whose
+  side changes is named — a rewrite describing one person lets the model
+  rearrange the forgotten ones, which is the morphing this exists to
+  prevent. Offscreen endings are surfaced per clip
+  (`snapshot()["storyboard"]["ends_offscreen"]` + a red badge) wherever the
+  wording came from: planner, restage, or hand edit. Pinned by
+  TestAnExitIsOnlyHalfTheStaging / TestSwappedPairsAreRestagedCompletely /
+  TestOffscreenEndingsAreVisible.
 - ...AND THE SWAP RULE IS ENFORCED IN CODE, because prompt text did not
   hold (2026-07-28). The planner missed the same swap twice on real orders
   even with the rule spelled out — a couple trading sides between a boat
