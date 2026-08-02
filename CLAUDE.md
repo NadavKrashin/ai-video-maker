@@ -159,6 +159,29 @@ Core design rules:
   `_CONDENSE_MOTION_SYSTEM` (condense swaps relationship words for
   epithets), and `_REWORD_MOTION_SYSTEM` (identity anchors are not "risky
   detail" to drop); pinned by TestIdentityPromptRules.
+- WHO IS IN EACH FRAME IS A HUMAN'S CALL, NOT THE PLANNER'S (user request,
+  2026-08-02). The cast fixes what a person is CALLED; which of them stands
+  in a given photo is a separate judgement and the one the planner is worst
+  at — it decides from pixels whether the child in frame 7 is the child from
+  frame 6, and a wrong guess is what makes Kling morph two people together
+  (two siblings at the same age is the classic trap). `Frame.people`
+  (`FramePerson`: cast id + normalised x/y) records the answer, tagged by
+  clicking faces in the panel's "Who's in each photo" section. `x` gives the
+  left-to-right order the video model works in, so tags OVERRIDE the
+  planner's own `start_order`/`end_order` in `_coerce_transition_plans` —
+  swap detection is only as good as the positions it is given.
+  `_tagged_people_block` states the roster per frame AND the per-pair
+  consequence as fact (same people → continuous; disjoint sets → exit +
+  entrance, never a morph; partial → who stays/leaves/arrives). `tag`
+  (`cmd_tag`, panel "Let the AI propose…") is a DRAFT first pass: it fills
+  only untagged frames (`--retag` overrides), an empty answer leaves a frame
+  untagged rather than recording "nobody", and `_coerce_frame_people` drops
+  invented ids/duplicates. Tags are plan-time input like the cast: they
+  NEVER mark a clip stale (re-plan to apply), and `_reconcile_storyboard`
+  carries them over by output_path or a storyboard re-run would silently
+  destroy the hand work. Pinned by TestConfirmedIdentities /
+  TestTagsDriveSwapDetection / TestIdentifyPeopleCoercion /
+  TestFrameTagsSurviveStoryboardRuns / TestTaggedPeople.
 - AN EPITHET MUST OUTLIVE THE PHOTO IT CAME FROM (user call, 2026-08-02).
   The cast is pinned once and reused for the WHOLE movie, but the movie is
   built from photos taken months or years apart — so a clothing-anchored
@@ -381,7 +404,8 @@ Core design rules:
 ```
 
 Lifecycle: (`orders` → `ingest` for paid web orders, or `init` + manual
-images) → `storyboard` (stops for review; writes json/md/preview.html)
+images) → `storyboard` (stops for review; writes json/md/preview.html;
+`tag` then states who is in each frame, which later plans are told as fact)
 → `render` (plan + confirm; `--clip ID` redoes one clip) → `audio` → `combine`
 → `publish` (web orders only: delivers the movie into the order's Cloudinary
 folder as the next `final_vN`); `run` chains them (up to `combine`) with

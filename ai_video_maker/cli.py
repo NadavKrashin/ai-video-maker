@@ -13,6 +13,7 @@ endpoint):
     combine     concatenate the clips into output/final_video.mp4
     publish     upload the finished movie into its Cloudinary order folder
     status      show where the project stands and what to run next
+    tag         say who is in each frame (identity ground truth for planning)
     feedback    tell the planner what a rendered clip got wrong, and learn from it
     lessons     show/edit what it has learned so far (project-less)
     costs       what each project has cost, and the total (project-less)
@@ -300,6 +301,23 @@ def build_parser() -> argparse.ArgumentParser:
     command("status",
             "Show the project's progress (frames, storyboard, clips, final "
             "video) and the suggested next command.")
+
+    sp = command("tag",
+                 "Propose who is in each styled frame — which cast member "
+                 "stands where — for you to correct in the admin panel. "
+                 "Identity is what the planner gets wrong on its own (it "
+                 "decides from the pixels whether the child in one photo is "
+                 "the child from the last one), so tagging turns that guess "
+                 "into a fact every later plan is told. One OpenAI vision "
+                 "call; frames you have already tagged are left alone unless "
+                 "--retag. Nothing is re-planned or re-rendered.")
+    sp.add_argument("--retag", action="store_true",
+                    help="Redo frames that are already tagged too, replacing "
+                         "those tags (your corrections are lost).")
+    sp.add_argument("--dry-run", action="store_true",
+                    help="Say what would be looked at without spending a call.")
+    sp.add_argument("-y", "--yes", action="store_true",
+                    help="Skip the confirmation prompt.")
 
     sp = command("feedback",
                  "Tell the planner what a rendered clip got wrong (or right). "

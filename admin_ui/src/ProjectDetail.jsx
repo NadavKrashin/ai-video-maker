@@ -249,6 +249,83 @@ function FeedbackResult({ result, duration, onApply, onClose }) {
   );
 }
 
+// "Who is in this photo": the one place a human states identity as fact.
+//
+// The planner otherwise decides from the pixels whether the child in this
+// frame is the child from the last one, and a wrong guess is what makes the
+// video model morph two people into each other. Clicking a face pins a cast
+// member to a spot; the x position gives the left-to-right order the video
+// model actually works in, which is also what arrangement-swap detection
+// needs. Free and local — it is saved with the storyboard.
+function FrameTagger({ project, frame, cast, mediaV, onChange }) {
+  const [active, setActive] = useState(cast[0]?.id || '');
+  const people = frame.people || [];
+  const byId = Object.fromEntries(cast.map((c) => [c.id, c]));
+  const imgName = frame.output_path.split('/').pop();
+
+  const place = (event) => {
+    if (!active) return;
+    const box = event.currentTarget.getBoundingClientRect();
+    const x = Math.min(1, Math.max(0, (event.clientX - box.left) / box.width));
+    const y = Math.min(1, Math.max(0, (event.clientY - box.top) / box.height));
+    // One marker per person: clicking again moves them rather than cloning.
+    onChange([...people.filter((p) => p.id !== active), { id: active, x, y }]);
+  };
+
+  return (
+    <Card withBorder padding="sm">
+      <Group gap="xs" mb={6} wrap="nowrap">
+        <Text size="sm" fw={600}>{imgName}</Text>
+        <Text size="xs" c="dimmed" style={{ flex: 1 }}>
+          {people.length
+            ? [...people].sort((a, b) => a.x - b.x)
+                .map((p) => byId[p.id]?.epithet || p.id).join(' · ')
+            : 'nobody tagged yet'}
+        </Text>
+        {people.length > 0 && (
+          <Button size="compact-xs" variant="subtle" color="red"
+            onClick={() => onChange([])}>clear</Button>
+        )}
+      </Group>
+      <Group gap={4} mb={6}>
+        {cast.map((c) => (
+          <Button key={c.id} size="compact-xs"
+            variant={active === c.id ? 'filled' : 'default'}
+            onClick={() => setActive(c.id)}
+            title={`Click the photo to place ${c.epithet}`}>
+            {c.epithet}
+            {people.some((p) => p.id === c.id) ? ' ✓' : ''}
+          </Button>
+        ))}
+      </Group>
+      <div style={{ position: 'relative', cursor: active ? 'crosshair' : 'default' }}
+        onClick={place}>
+        <Image src={fileUrl(project, 'styled', imgName, mediaV)} radius="sm"
+          alt={imgName} />
+        {people.map((p) => (
+          <div key={p.id}
+            title={`${byId[p.id]?.epithet || p.id} — click to remove`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onChange(people.filter((x) => x.id !== p.id));
+            }}
+            style={{
+              position: 'absolute',
+              left: `${p.x * 100}%`, top: `${p.y * 100}%`,
+              transform: 'translate(-50%, -50%)',
+              background: 'var(--mantine-color-orange-6)',
+              color: '#fff', borderRadius: 4, padding: '1px 6px',
+              fontSize: 11, whiteSpace: 'nowrap', cursor: 'pointer',
+              border: '2px solid rgba(0,0,0,0.45)'
+            }}>
+            {byId[p.id]?.epithet || p.id}
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
 // What this project has cost. Estimated, always: the figures are priced from
 // config.pricing, never read off a provider invoice — so the card says so
 // rather than presenting them as billed amounts.
@@ -916,6 +993,7 @@ function RunAllPanel({ ask, locked, info }) {
 // global motion prompt and the cast list (transition ids never collide).
 const GLOBAL_EDIT = '__global_motion__';
 const CAST_EDIT = '__characters__';
+const TAGS_EDIT = '__frame_people__';
 
 const STEPS = [
   { id: 'storyboard', n: 1, name: 'Storyboard', caption: 'Style photos & plan each clip' },
@@ -949,6 +1027,7 @@ export default function ProjectDetail({ name, onBack }) {
   const [busyAction, setBusyAction] = useState('');
   const [logJob, setLogJob] = useState(null);
   const [showPhotos, setShowPhotos] = useState(false);
+  const [showTagger, setShowTagger] = useState(false);
   const [openPanel, setOpenPanel] = useState('');
   const [uploading, setUploading] = useState(false);
   const [musicBusy, setMusicBusy] = useState(false);
@@ -984,6 +1063,16 @@ export default function ProjectDetail({ name, onBack }) {
           }
           if (dirtyRef.current.has(CAST_EDIT)) {
             fresh.characters = prev.characters;
+          }
+          if (dirtyRef.current.has(TAGS_EDIT)) {
+            // Who-is-who tags are hand work; a background refresh must never
+            // wipe markers someone is in the middle of placing.
+            const taggedByPath = Object.fromEntries(
+              (prev.frames || []).map((f) => [f.output_path, f.people])
+            );
+            fresh.frames = (fresh.frames || []).map(
+              (f) => ({ ...f, people: taggedByPath[f.output_path] ?? f.people })
+            );
           }
           return fresh;
         });
@@ -1023,6 +1112,10 @@ export default function ProjectDetail({ name, onBack }) {
   if (!snap) return <Text c="dimmed">Loading {name}…</Text>;
 
   const framesById = Object.fromEntries((storyboard?.frames || []).map((f) => [f.id, f]));
+  const totalFrames = (storyboard?.frames || []).length;
+  const taggedFrames = (storyboard?.frames || []).filter(
+    (f) => (f.people || []).length
+  ).length;
   const clipsById = Object.fromEntries((snap.clips || []).map((c) => [c.id, c]));
   // Transitions the backend planner never succeeded on (still carrying the
   // config fallback prompt) — flagged so nobody renders a whole order generic.
@@ -1167,6 +1260,37 @@ export default function ProjectDetail({ name, onBack }) {
   const editGlobalMotion = (value) => {
     setStoryboard((sb) => ({ ...sb, global_motion_prompt: value }));
     setDirty((d) => new Set(d).add(GLOBAL_EDIT));
+  };
+
+  // Identity tags, like cast epithets, are a PLANNING input: they change what
+  // the planner is told next time, not the prompt a clip was already rendered
+  // from — so tagging never marks a clip outdated. Re-plan a clip to apply it.
+  const editFramePeople = (outputPath, people) => {
+    setStoryboard((sb) => ({
+      ...sb,
+      frames: (sb.frames || []).map(
+        (f) => (f.output_path === outputPath ? { ...f, people } : f)
+      ),
+    }));
+    setDirty((d) => new Set(d).add(TAGS_EDIT));
+  };
+
+  const askForTagSuggestions = () => {
+    const untagged = (storyboard?.frames || []).filter(
+      (f) => !(f.people || []).length
+    ).length;
+    ask({
+      title: 'Let the AI propose who is in each photo?',
+      lines: [
+        `Looks at ${untagged} untagged frame(s) and proposes which cast member is in each, and where.`,
+        'Frames you have already tagged are left exactly as they are — your corrections are never overwritten.',
+        'One OpenAI vision call. Nothing is re-planned or re-rendered: tags apply to plans made from here on.',
+        'It is a draft — check it afterwards, especially wherever two people look alike.'
+      ],
+      cost: 'openai',
+      label: 'Propose tags',
+      command: 'tag', options: {}
+    });
   };
 
   // Cast epithets feed FUTURE planning calls (they are baked into motion
@@ -1835,6 +1959,45 @@ export default function ProjectDetail({ name, onBack }) {
               </Card>
             );
           })()}
+          {(storyboard.characters || []).length > 0 && (
+            <Card withBorder padding="md">
+              <Group gap="sm" mb={4}>
+                <Text size="sm" fw={500}>Who's in each photo</Text>
+                <Badge variant="light"
+                  color={taggedFrames === totalFrames ? 'green' : 'gray'}>
+                  {taggedFrames}/{totalFrames} tagged
+                </Badge>
+                <div style={{ flex: 1 }} />
+                <Button size="compact-xs" variant="default" disabled={locked}
+                  onClick={askForTagSuggestions}
+                  title="One vision call proposes who is in each untagged photo; you correct it. Already-tagged photos are untouched.">
+                  Let the AI propose…
+                </Button>
+                <Button size="compact-xs" variant="subtle"
+                  onClick={() => setShowTagger((v) => !v)}>
+                  {showTagger ? 'Hide' : 'Show'}
+                </Button>
+              </Group>
+              <Text size="xs" c="dimmed">
+                Pick a person, then click their face in the photo. This tells
+                the planner who is who as FACT — that the child here is the
+                same child as in the last photo, or a different one who merely
+                looks alike — which is the judgement it gets wrong on its own
+                and the reason two people sometimes morph into each other.
+                Free; applies to clips planned from now on, so re-plan a clip
+                to use it.
+              </Text>
+              {showTagger && (
+                <Stack gap="sm" mt="sm">
+                  {(storyboard.frames || []).map((f) => (
+                    <FrameTagger key={f.output_path} project={name} frame={f}
+                      cast={storyboard.characters || []} mediaV={mediaV}
+                      onChange={(people) => editFramePeople(f.output_path, people)} />
+                  ))}
+                </Stack>
+              )}
+            </Card>
+          )}
           {storyboard.transitions.map((tr) => (
             <TransitionCard key={tr.id} project={name} tr={tr} framesById={framesById}
               clip={clipsById[tr.output_path.split('/').pop()?.replace(/\.mp4$/, '')]}

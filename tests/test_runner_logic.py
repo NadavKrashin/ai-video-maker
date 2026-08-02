@@ -8,7 +8,13 @@ from pathlib import Path
 import pytest
 
 from ai_video_maker.errors import PipelineCancelled, PipelineError
-from ai_video_maker.models import Character, Frame, Storyboard, Transition
+from ai_video_maker.models import (
+    Character,
+    Frame,
+    FramePerson,
+    Storyboard,
+    Transition,
+)
 
 
 def _touch(path: Path, data: bytes = b"x") -> Path:
@@ -480,7 +486,8 @@ class TestCastAcrossPlanningCalls:
         batches = list(new_people or [])
 
         def fake_analyze(frames, style, default_duration=None,
-                         global_context="", cast=None, lessons=None):
+                         global_context="", cast=None, lessons=None,
+                         frame_people=None):
             seen.append([c.epithet for c in (cast or [])])
             found = batches.pop(0) if batches else []
             merged = list(cast or []) + [
@@ -1244,3 +1251,60 @@ class TestRecordedFailures:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{not json", encoding="utf-8")
         assert pipeline.snapshot()["failed_jobs"] == []
+
+
+class TestFrameTagsSurviveStoryboardRuns:
+    """Tagging is hand work; a storyboard re-run must never throw it away."""
+
+    def _tagged_saved(self, workspace, names, tagged_frame="a"):
+        sb = _save_slug_storyboard(workspace, names)
+        sb.characters = [Character(id="dad", epithet="the bald man")]
+        for frame in sb.frames:
+            if frame.output_path.endswith(f"{tagged_frame}.png"):
+                frame.people = [FramePerson(id="dad", x=0.3, y=0.4)]
+        sb.save(workspace.default_storyboard_json)
+        return sb
+
+    def test_tags_are_carried_over_by_frame(self, make_pipeline, workspace):
+        p = make_pipeline(analyze_frames=False)
+        saved = self._tagged_saved(workspace, ["a", "b"])
+        pairs = _make_frame_pairs(workspace, ["a", "b"])
+        rebuilt, _, _ = p._reconcile_storyboard(saved, pairs)
+        by_path = {f.output_path: f for f in rebuilt.frames}
+        kept = by_path["styled_images/a.png"].people
+        assert [(person.id, person.x) for person in kept] == [("dad", 0.3)]
+        assert by_path["styled_images/b.png"].people == []
+
+    def test_tags_follow_the_frame_when_others_are_inserted(
+        self, make_pipeline, workspace
+    ):
+        # Inserting a photo re-plans the pairs around it; the tags belong to
+        # the frame, not to its position, so they must not shift.
+        p = make_pipeline(analyze_frames=False)
+        saved = self._tagged_saved(workspace, ["a", "b"], tagged_frame="b")
+        pairs = _make_frame_pairs(workspace, ["a", "a2", "b"])
+        rebuilt, _, _ = p._reconcile_storyboard(saved, pairs)
+        by_path = {f.output_path: f for f in rebuilt.frames}
+        assert [x.id for x in by_path["styled_images/b.png"].people] == ["dad"]
+        assert by_path["styled_images/a2.png"].people == []
+
+    def test_the_planner_is_handed_the_tags_as_epithets(
+        self, make_pipeline, workspace
+    ):
+        # A targeted re-plan is exactly the case that used to forget what the
+        # rest of the movie knew, so it is the one worth pinning.
+        p = make_pipeline(analyze_frames=True, replan_clips=["a_to_b"])
+        seen: dict = {}
+
+        def fake_analyze(frames, style, default_duration=None,
+                         global_context="", cast=None, lessons=None,
+                         frame_people=None):
+            seen["frame_people"] = frame_people
+            return [("m", 5, "s")] * (len(frames) - 1), list(cast or [])
+
+        p.openai.analyze_frame_transitions = fake_analyze
+        saved = self._tagged_saved(workspace, ["a", "b"])
+        pairs = _make_frame_pairs(workspace, ["a", "b"])
+        p._reconcile_storyboard(saved, pairs)
+        # Resolved through the cast, and None (not []) where nobody tagged.
+        assert seen["frame_people"] == [["the bald man"], None]

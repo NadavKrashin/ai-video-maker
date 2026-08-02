@@ -214,6 +214,104 @@ _REWORD_MOTION_SYSTEM = (
     "ONLY the rewritten motion prompt, with no preamble or quotes."
 )
 
+# --- Identifying the cast in each frame -------------------------------------- #
+# A first pass at "who is in this photo", for a human to correct. Kept
+# deliberately modest in tone: this is the one judgement the pipeline already
+# knows the model is unreliable at, which is why the answer is a draft the
+# panel shows for approval rather than something planning consumes directly.
+_IDENTIFY_PEOPLE_SYSTEM = (
+    "You match faces across a set of photographs of the same family or group, "
+    "taken over months or years. You are given a cast — each person with a "
+    "short appearance description — and a series of frames. For each frame, "
+    "report which of those people are visible and where each one's face is. "
+    "Identify people by FACE AND BUILD, never by clothing: the same person "
+    "wears something different in every photograph, and two different people "
+    "often wear similar things. Children change the most — the same child at "
+    "two and at seven looks like two different people, while two siblings at "
+    "the same age can look almost identical; use the frame order (the film "
+    "runs in order, so ages progress) and any adults beside them as context. "
+    "Be honest about uncertainty: a person you are unsure of should be LEFT "
+    "OUT rather than guessed, because a human is about to check this and a "
+    "missing tag is quicker to add than a wrong one is to notice. Never "
+    "invent a person who is not in the given cast."
+)
+
+_IDENTIFY_PEOPLE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "frames": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "frame_index": {"type": "integer"},
+                    "people": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "x": {"type": "number"},
+                                "y": {"type": "number"},
+                            },
+                            "required": ["id", "x", "y"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["frame_index", "people"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["frames"],
+    "additionalProperties": False,
+}
+
+
+def _coerce_frame_people(
+    data: dict[str, Any], count: int, known_ids: set[str]
+) -> list[list[dict[str, Any]]]:
+    """Normalise an identify_people response into one clean list per frame.
+
+    Everything questionable is dropped rather than repaired: unknown ids
+    (a person the model invented cannot resolve to an epithet), duplicates
+    within a frame (the same person cannot stand in two places), and
+    out-of-range frame indices. Coordinates are clamped into the frame.
+    """
+    out: list[list[dict[str, Any]]] = [[] for _ in range(count)]
+    for entry in (data.get("frames") or []):
+        if not isinstance(entry, dict):
+            continue
+        try:
+            index = int(entry.get("frame_index", 0)) - 1
+        except (TypeError, ValueError):
+            continue
+        if not 0 <= index < count:
+            continue
+        seen: set[str] = set()
+        for person in (entry.get("people") or []):
+            if not isinstance(person, dict):
+                continue
+            pid = str(person.get("id") or "").strip()
+            if pid not in known_ids or pid in seen:
+                continue
+            seen.add(pid)
+
+            def _fraction(value: Any, fallback: float = 0.5) -> float:
+                try:
+                    return min(1.0, max(0.0, float(value)))
+                except (TypeError, ValueError):
+                    return fallback
+
+            out[index].append({
+                "id": pid,
+                "x": _fraction(person.get("x")),
+                "y": _fraction(person.get("y")),
+            })
+    return out
+
+
 # --- Watching a rendered clip ----------------------------------------------- #
 # The other half of the feedback loop. The planner writes a prompt blind and
 # the user reports the result in words; this call actually LOOKS at what came
@@ -906,6 +1004,74 @@ def _merge_cast(
     return cast
 
 
+def _tagged_people_block(tags: list[Optional[list[str]]]) -> str:
+    """Tell the planner who is in each frame, and what that means per pair.
+
+    Two halves, because the tags answer two different questions the planner
+    is bad at. The roster fixes WHO (and in what left-to-right order) is in
+    each frame. The per-pair verdict then states the consequence that
+    actually decides the staging: the same people continuing (animate them
+    continuously) or a different cast (stage an exit and an entrance, never
+    a continuous morph). Both are stated as fact — a human looked at the
+    photographs — so the model is told not to re-decide either one.
+    """
+    lines = [
+        "CONFIRMED IDENTITIES — a human has tagged who is in these frames. "
+        "This is FACT and it OVERRULES what you think you see: use exactly "
+        "these people and these epithets for the frames listed, never "
+        "re-identify anyone, never add a person who is not listed for that "
+        "frame, and copy the listed order into start_order/end_order."
+    ]
+    for i, people in enumerate(tags, start=1):
+        if people is None:
+            continue
+        who = ", ".join(people) if people else "(nobody)"
+        lines.append(f"- Frame {i:03d}, left to right: {who}")
+
+    verdicts: list[str] = []
+    for i, (start, end) in enumerate(zip(tags, tags[1:]), start=1):
+        if start is None or end is None:
+            continue
+        shared = [p for p in start if p in end]
+        gone = [p for p in start if p not in end]
+        arrived = [p for p in end if p not in start]
+        if shared and not gone and not arrived:
+            verdict = (
+                f"the SAME {'people' if len(shared) > 1 else 'person'} "
+                f"({', '.join(shared)}) in both frames — animate them "
+                "continuously; they are one and the same, whatever they are "
+                "wearing or however much older they look"
+            )
+        elif not shared:
+            verdict = (
+                f"COMPLETELY DIFFERENT people ({', '.join(start) or 'nobody'} "
+                f"-> {', '.join(end) or 'nobody'}) — they only look alike; "
+                "NEVER let one turn into the other. Stage an exit and an "
+                "entrance (or a reveal)"
+            )
+        else:
+            parts = []
+            if shared:
+                parts.append(f"{', '.join(shared)} stay(s)")
+            if gone:
+                parts.append(f"{', '.join(gone)} leave(s)")
+            if arrived:
+                parts.append(f"{', '.join(arrived)} arrive(s)")
+            verdict = (
+                "; ".join(parts)
+                + " — whoever stays is continuous, whoever leaves or arrives "
+                "must visibly walk out of or into the frame"
+            )
+        verdicts.append(f"- Pair {i} (frame {i:03d} -> {i + 1:03d}): {verdict}.")
+    if verdicts:
+        lines.append(
+            "What that means for each pair (already worked out for you — "
+            "do not second-guess it):"
+        )
+        lines.extend(verdicts)
+    return "\n".join(lines)
+
+
 # --- Cast epithets that survive the whole movie ----------------------------- #
 # An epithet is written once and then used in every prompt that mentions that
 # person, across a film assembled from photos taken years apart. So it has to
@@ -1335,6 +1501,76 @@ class OpenAIClient:
         """
         return self._reword_prompt_for_safety(prompt, system=_REWORD_MOTION_SYSTEM)
 
+    # --- Who is in each frame (a first pass for a human to correct) --------- #
+    def identify_people(
+        self, frames: list[Path], cast: list[Character]
+    ) -> list[list[dict[str, Any]]]:
+        """Propose which cast members stand in each frame, and where.
+
+        Returns one list per frame of ``{"id", "x", "y"}`` (fractions of the
+        frame). This is a DRAFT for a human to correct in the panel, never
+        an answer to act on directly — it is exactly the judgement the
+        planner already gets wrong, so shipping it straight into planning
+        would just automate the mistake. Its value is saving thirty photos'
+        worth of clicking, not being right.
+
+        Only ids from ``cast`` are ever returned; anyone the model invents is
+        dropped, since a tag that names nobody in the cast cannot resolve to
+        an epithet.
+        """
+        if not frames or not cast:
+            return [[] for _ in frames]
+        client = self._ensure_client()
+        known = {c.id for c in cast}
+        roster = "\n".join(f"- {c.id}: {c.epithet}" for c in cast)
+        instruction = (
+            f"Here are {len(frames)} frames of one short film, in order. For "
+            "each frame, say which of these known people are visible in it "
+            "and where each one stands.\n\n"
+            f"The cast:\n{roster}\n\n"
+            "Return ONLY JSON: {\"frames\": [{\"frame_index\": int, "
+            "\"people\": [{\"id\": str, \"x\": number, \"y\": number}]}]}. "
+            "frame_index is 1-based and every frame gets an entry (an empty "
+            "people list when none of them are visible). x and y are the "
+            "CENTRE OF THAT PERSON'S FACE as a fraction of the frame: x=0 is "
+            "the left edge, x=1 the right edge, y=0 the top, y=1 the bottom. "
+            "Use ONLY the ids listed above — never invent a new person, and "
+            "never list the same id twice in one frame. These photographs "
+            "were taken over a span of years: the same person changes "
+            "clothes, hairstyle and age between frames, so identify them by "
+            "face and build, and when you genuinely cannot tell two people "
+            "apart, leave the less certain one out rather than guessing."
+        )
+        content: list[dict[str, Any]] = [{"type": "text", "text": instruction}]
+        for i, fp in enumerate(frames, start=1):
+            content.append({"type": "text", "text": f"Frame {i:03d}:"})
+            content.append({
+                "type": "image_url",
+                "image_url": {
+                    # Faces at "low" detail are what the planner already
+                    # works from; matching it keeps this affordable.
+                    "url": encode_image_data_url(fp, max_edge=_VISION_MAX_EDGE),
+                    "detail": "low",
+                },
+            })
+
+        def _call() -> str:
+            resp = client.chat.completions.create(
+                model=self.config.openai_text_model,
+                messages=[
+                    {"role": "system", "content": _IDENTIFY_PEOPLE_SYSTEM},
+                    {"role": "user", "content": content},
+                ],
+                response_format=_json_schema_format(
+                    "frame_people", _IDENTIFY_PEOPLE_SCHEMA
+                ),
+            )
+            self._note_text_usage(resp, "identify_people")
+            return resp.choices[0].message.content or "{}"
+
+        raw = self._retry(_call, "OpenAI identify_people")
+        return _coerce_frame_people(json.loads(raw), len(frames), known)
+
     # --- Learning: watch the clip that came back --------------------------- #
     def review_clip(
         self,
@@ -1693,6 +1929,7 @@ class OpenAIClient:
         global_context: str = "",
         cast: Optional[list[Character]] = None,
         lessons: Optional[list[str]] = None,
+        frame_people: Optional[list[Optional[list[str]]]] = None,
     ) -> tuple[list[tuple[str, int, str]], list[Character]]:
         """Vision-analyze consecutive frames and plan each clip between them.
 
@@ -1716,6 +1953,16 @@ class OpenAIClient:
         corrections written from clips that came back wrong, appended to the
         system prompt so the same mistake isn't planned twice. Empty = the
         prompt is byte-for-byte what it was before learning existed.
+
+        ``frame_people`` is one entry per frame: the epithets standing in
+        that frame, left to right, as tagged by a human — or None for a
+        frame nobody has tagged. It is treated as FACT, not a hint: identity
+        is what the planner is worst at (it decides from pixels whether the
+        child in one frame is the child from the last one, and a wrong guess
+        makes the video model morph them into each other), so where a human
+        has said who is who, the model is told not to re-decide, and code
+        uses the tags for the same/different and arrangement-swap rulings
+        instead of the model's own reading.
 
         When ``default_duration`` is set (5 or 10) every clip is forced to that
         length instead of one chosen per pair.
@@ -1772,6 +2019,12 @@ class OpenAIClient:
                 "\n\nNo cast list exists yet — build `characters` per the "
                 "CAST LIST rules."
             )
+        # Human-confirmed identities, where they exist, outrank the model's
+        # own reading of the frames.
+        tags = list(frame_people or [])
+        tags += [None] * (n - len(tags))
+        if any(t is not None for t in tags):
+            instruction += "\n\n" + _tagged_people_block(tags)
         if global_context.strip():
             # The user's whole-movie guidance (storyboard.global_motion_prompt).
             # It is prepended verbatim to every motion prompt at render time,
@@ -1830,11 +2083,14 @@ class OpenAIClient:
                 "Re-anchored %d cast epithet(s) that named clothing instead "
                 "of the person: %s", len(swapped), "; ".join(swapped),
             )
-        plans = self._coerce_transition_plans(data, n - 1, default_duration)
+        plans = self._coerce_transition_plans(
+            data, n - 1, default_duration, frame_people=tags,
+        )
         return plans, _merge_cast(cast, data.get("characters"))
 
     def _coerce_transition_plans(
-        self, data: dict[str, Any], count: int, default_duration: Optional[int]
+        self, data: dict[str, Any], count: int, default_duration: Optional[int],
+        frame_people: Optional[list[Optional[list[str]]]] = None,
     ) -> list[tuple[str, int, str]]:
         """Normalise the model JSON into exactly `count` transition plans.
 
@@ -1847,17 +2103,25 @@ class OpenAIClient:
         Motion prompts over the word budget for their derived duration are
         condensed here for the same reason durations are derived here:
         prompt-side guidance alone hasn't held on real plans.
+
+        ``frame_people`` (human tags, one entry per frame) replaces the
+        model's own left-to-right reading wherever a pair's two frames are
+        both tagged: swap detection is only as good as the positions it is
+        given, and a person who says who stands where is better evidence
+        than a model that was asked to look.
         """
         items = _realign_by_pair_index(data.get("transitions") or [], count)
-        # Pairs whose people trade sides, decided from the planner's own
-        # left-to-right lists rather than from how it worded the motion.
-        swaps = {
-            i for i in range(count)
-            if isinstance(items[i] if i < len(items) else None, dict)
-            and is_arrangement_swap(
-                items[i].get("start_order"), items[i].get("end_order")
-            )
-        }
+
+        def orders(i: int) -> tuple[Any, Any]:
+            """(start_order, end_order) for pair i — tags first, model second."""
+            tags = frame_people or []
+            if i + 1 < len(tags) and tags[i] is not None and tags[i + 1] is not None:
+                return tags[i], tags[i + 1]
+            item = items[i] if i < len(items) and isinstance(items[i], dict) else {}
+            return item.get("start_order"), item.get("end_order")
+
+        # Pairs whose people trade sides.
+        swaps = {i for i in range(count) if is_arrangement_swap(*orders(i))}
         long_indices = (
             set() if default_duration
             else self._select_long_clips(items, count, swaps)
@@ -1872,10 +2136,7 @@ class OpenAIClient:
             # Restage BEFORE the word cap: the rewrite adds the crossing the
             # prompt was missing, and may come back over budget.
             if i in swaps and not stages_a_crossing(motion):
-                motion = self._restage_swapped_pair(
-                    motion, duration,
-                    item.get("start_order"), item.get("end_order"),
-                )
+                motion = self._restage_swapped_pair(motion, duration, *orders(i))
             if len(motion.split()) > _motion_word_limit(duration):
                 motion = self._condense_motion_prompt(motion, duration)
             sound = str(item.get("sound_prompt") or "").strip()

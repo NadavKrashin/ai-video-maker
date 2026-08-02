@@ -5,6 +5,8 @@ from __future__ import annotations
 from ai_video_maker.clients.openai_client import (
     _MODE_A_SYSTEM,
     OpenAIClient,
+    _coerce_frame_people,
+    _tagged_people_block,
     _merge_cast,
     _motion_word_limit,
     _realign_by_pair_index,
@@ -838,3 +840,157 @@ class TestCastPromptForbidsClothing:
     def test_relative_size_is_offered_when_durable_traits_match(self):
         system = _MODE_A_SYSTEM.lower()
         assert "the taller boy" in system and "the smaller boy" in system
+
+
+class TestConfirmedIdentities:
+    """Human tags are FACT: they outrank the model's reading of the frames.
+
+    Identity is what the planner gets wrong on its own — it decides from the
+    pixels whether the child in frame 7 is the child from frame 6, and a
+    wrong guess is what makes the video model morph one person into another.
+    """
+
+    def test_the_roster_of_each_tagged_frame_is_stated(self):
+        block = _tagged_people_block([
+            ["the bald man", "the smaller boy"],
+            ["the bald man"],
+        ])
+        assert "Frame 001, left to right: the bald man, the smaller boy" in block
+        assert "Frame 002, left to right: the bald man" in block
+        assert "OVERRULES" in block
+
+    def test_untagged_frames_are_simply_absent(self):
+        block = _tagged_people_block([["the bald man"], None])
+        assert "Frame 001" in block
+        assert "Frame 002" not in block
+
+    def test_the_same_people_are_declared_continuous(self):
+        block = _tagged_people_block([["the bald man"], ["the bald man"]])
+        assert "SAME person (the bald man)" in block
+        assert "animate them continuously" in block
+
+    def test_a_completely_different_cast_forces_an_exit_and_entrance(self):
+        # The creepy-morph case: two people who look alike but are not the
+        # same human. The planner must never be left to guess this.
+        block = _tagged_people_block([["the smaller boy"], ["the taller boy"]])
+        assert "COMPLETELY DIFFERENT people" in block
+        assert "NEVER let one turn into the other" in block
+        assert "exit and an entrance" in block
+
+    def test_a_partial_overlap_names_who_stays_leaves_and_arrives(self):
+        block = _tagged_people_block([
+            ["the bald man", "the smaller boy"],
+            ["the bald man", "the teenage girl"],
+        ])
+        assert "the bald man stay(s)" in block
+        assert "the smaller boy leave(s)" in block
+        assert "the teenage girl arrive(s)" in block
+
+    def test_an_empty_frame_is_not_the_same_as_an_untagged_one(self):
+        block = _tagged_people_block([[], ["the bald man"]])
+        assert "Frame 001, left to right: (nobody)" in block
+
+
+class TestTagsDriveSwapDetection:
+    """Swap detection is only as good as the positions it is given."""
+
+    def _plans(self, config, data, count=1, frame_people=None):
+        return OpenAIClient(config)._coerce_transition_plans(
+            data, count, None, frame_people=frame_people,
+        )
+
+    def _data(self, start, end, motion="they stand together"):
+        return {"transitions": [{
+            "pair_index": 1, "difficulty": 1, "motion_prompt": motion,
+            "sound_prompt": "", "start_order": start, "end_order": end,
+        }]}
+
+    def test_tags_reveal_a_swap_the_model_missed(self, config, monkeypatch):
+        # The model reported no swap; the human's tags say they traded sides.
+        # A swap forces the long clip, which is what makes an exit and
+        # re-entry physically possible.
+        monkeypatch.setattr(
+            OpenAIClient, "_restage_swapped_pair",
+            lambda self, prompt, duration, s, e: "one crosses in front of the other",
+        )
+        plans = self._plans(
+            config,
+            self._data(["the bald man", "the woman"],
+                       ["the bald man", "the woman"]),
+            frame_people=[["the bald man", "the woman"],
+                          ["the woman", "the bald man"]],
+        )
+        motion, duration, _ = plans[0]
+        assert duration == 10
+        assert motion == "one crosses in front of the other"
+
+    def test_tags_overrule_a_swap_the_model_imagined(self, config):
+        # The model's own lists claim a swap; the tags say nobody moved.
+        plans = self._plans(
+            config,
+            self._data(["the bald man", "the woman"],
+                       ["the woman", "the bald man"]),
+            frame_people=[["the bald man", "the woman"],
+                          ["the bald man", "the woman"]],
+        )
+        assert plans[0][1] == 5  # not forced long
+        assert plans[0][0] == "they stand together"  # not restaged
+
+    def test_a_half_tagged_pair_falls_back_to_the_model(self, config, monkeypatch):
+        monkeypatch.setattr(
+            OpenAIClient, "_restage_swapped_pair",
+            lambda self, prompt, duration, s, e: "one crosses in front of the other",
+        )
+        plans = self._plans(
+            config,
+            self._data(["the bald man", "the woman"],
+                       ["the woman", "the bald man"]),
+            frame_people=[["the bald man", "the woman"], None],
+        )
+        assert plans[0][1] == 10  # the model's reading still counts
+
+
+class TestIdentifyPeopleCoercion:
+    """The pre-fill is a draft; everything questionable is dropped, not fixed."""
+
+    def _coerce(self, data, count=2, known=("dad", "son1")):
+        return _coerce_frame_people(data, count, set(known))
+
+    def test_people_are_placed_on_their_frame(self):
+        out = self._coerce({"frames": [
+            {"frame_index": 1, "people": [{"id": "dad", "x": 0.3, "y": 0.4}]},
+            {"frame_index": 2, "people": []},
+        ]})
+        assert out[0] == [{"id": "dad", "x": 0.3, "y": 0.4}]
+        assert out[1] == []
+
+    def test_invented_people_are_dropped(self):
+        # A tag naming nobody in the cast cannot resolve to an epithet.
+        out = self._coerce({"frames": [
+            {"frame_index": 1, "people": [{"id": "grandma", "x": 0.5, "y": 0.5}]},
+        ]})
+        assert out[0] == []
+
+    def test_the_same_person_cannot_stand_in_two_places(self):
+        out = self._coerce({"frames": [{"frame_index": 1, "people": [
+            {"id": "dad", "x": 0.2, "y": 0.5},
+            {"id": "dad", "x": 0.8, "y": 0.5},
+        ]}]})
+        assert len(out[0]) == 1
+
+    def test_coordinates_are_clamped_into_the_frame(self):
+        out = self._coerce({"frames": [{"frame_index": 1, "people": [
+            {"id": "dad", "x": 1.7, "y": -3},
+        ]}]})
+        assert out[0] == [{"id": "dad", "x": 1.0, "y": 0.0}]
+
+    def test_out_of_range_and_junk_entries_are_ignored(self):
+        out = self._coerce({"frames": [
+            {"frame_index": 9, "people": [{"id": "dad", "x": 0.5, "y": 0.5}]},
+            {"frame_index": "x", "people": []},
+            "nope",
+        ]})
+        assert out == [[], []]
+
+    def test_a_missing_response_yields_one_empty_list_per_frame(self):
+        assert self._coerce({}) == [[], []]

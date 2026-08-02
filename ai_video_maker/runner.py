@@ -82,7 +82,14 @@ from .media.images import (
     slugify_stem,
     verify_dimensions,
 )
-from .models import Character, Frame, Storyboard, Transition
+from .models import (
+    Character,
+    Frame,
+    FramePerson,
+    Storyboard,
+    Transition,
+    tagged_people,
+)
 from .options import RunOptions
 from .publish import (
     publish_state,
@@ -265,6 +272,7 @@ class Pipeline:
             "combine": self.cmd_combine,
             "publish": self.cmd_publish,
             "status": self.cmd_status,
+            "tag": self.cmd_tag,
             "feedback": self.cmd_feedback,
             "run": self.cmd_run,
         }
@@ -777,6 +785,13 @@ class Pipeline:
         """
         root = self.workspace.root
         hashes = {dst: _file_sha1(dst) for _, dst in frame_pairs}
+        # Who a human tagged in each frame, carried over by output path. The
+        # frames are rebuilt from disk on every storyboard run, so without
+        # this the tagging work would be silently thrown away each time.
+        tagged = {
+            f.output_path: f.people
+            for f in (saved.frames if saved else []) if f.people
+        }
         frames = [
             Frame(
                 id=self._frame_id(dst),
@@ -785,6 +800,7 @@ class Pipeline:
                 output_path=dst.relative_to(root).as_posix(),
                 source_path=src.relative_to(root).as_posix(),
                 styled_hash=hashes[dst],
+                people=tagged.get(dst.relative_to(root).as_posix(), []),
             )
             for src, dst in frame_pairs
         ]
@@ -850,10 +866,23 @@ class Pipeline:
             if changed:
                 stale_tids.append(f"{a.id}_to_{b.id}")
 
+        # Human tags, resolved to epithets and aligned with the frame list.
+        # Built from the cast that is about to be used for planning, so an
+        # id nobody has an epithet for simply doesn't appear.
+        cast_now = saved.characters if saved else []
+        people_by_path = tagged_people(
+            Storyboard(
+                project_title="", style=style, characters=cast_now,
+                frames=frames, transitions=[],
+            )
+        )
+        frame_people = [people_by_path.get(f.output_path) for f in frames]
+
         plans, cast = self._plan_pairs(
             styled_paths, dirty, style,
             global_context=saved.global_motion_prompt if saved else "",
-            cast=saved.characters if saved else [],
+            cast=cast_now,
+            frame_people=frame_people,
         )
 
         transitions: list[Transition] = []
@@ -910,6 +939,7 @@ class Pipeline:
         style: str,
         global_context: str = "",
         cast: Optional[list[Character]] = None,
+        frame_people: Optional[list[Optional[list[str]]]] = None,
     ) -> tuple[dict[int, tuple[str, int, str]], list[Character]]:
         """Vision-plan the dirty pairs only: {pair index: (motion, dur, sound)}.
 
@@ -944,6 +974,13 @@ class Pipeline:
                 "Applying %d learned lesson(s) from earlier renders to this plan.",
                 len(lessons),
             )
+        tags = list(frame_people or [None] * len(styled))
+        tagged_count = sum(1 for t in tags if t is not None)
+        if tagged_count:
+            logger.info(
+                "Using confirmed identities for %d of %d frame(s).",
+                tagged_count, len(styled),
+            )
         plans: dict[int, tuple[str, int, str]] = {}
         for run in _consecutive_runs(dirty):
             segment = styled[run[0]: run[-1] + 2]
@@ -958,6 +995,8 @@ class Pipeline:
                     global_context=global_context,
                     cast=cast,
                     lessons=lessons,
+                    # Tags for exactly the frames in this segment.
+                    frame_people=tags[run[0]: run[-1] + 2],
                 )
                 for offset, i in enumerate(run):
                     plans[i] = seg_plans[offset]
@@ -2388,6 +2427,108 @@ class Pipeline:
             "failed_jobs": self._recorded_failures(),
             "next_step": next_step,
         }
+
+    # --------------------- who is in each frame (tagging) ------------------ #
+    def cmd_tag(self) -> None:
+        """Propose who is in each frame, for a human to correct.
+
+        Identity is the judgement the planner is worst at, so the fix is to
+        let a person state it — but stating it for thirty photos by hand is
+        the kind of chore that never gets done. This does the first pass:
+        one vision call over the styled frames returns which cast member
+        stands where in each, and the panel's tagger is where you fix what it
+        got wrong.
+
+        It is a DRAFT, and it behaves like one:
+
+        * frames that already carry tags are left alone (your corrections are
+          the whole point; ``--retag`` overrides that deliberately);
+        * a frame the model reports nobody in stays untagged rather than
+          being recorded as "nobody is here", so a missed frame reads as a
+          question, not as an answer;
+        * it never touches transitions, so nothing is re-planned or marked
+          stale by tagging — the tags feed the NEXT plan (re-plan a clip to
+          apply them).
+        """
+        storyboard = self._require_storyboard("tag")
+        if not storyboard.characters:
+            raise PipelineError(
+                "This project has no cast yet, so there is nobody to tag. Run "
+                f"`{self._next_command('storyboard')}` first — the planner "
+                "builds the cast — then tag the frames."
+            )
+        root = self.workspace.root
+        frames = [f for f in storyboard.frames if (root / f.output_path).exists()]
+        missing = len(storyboard.frames) - len(frames)
+        if not frames:
+            raise PipelineError(
+                "None of the storyboard's styled frames exist on disk yet."
+            )
+        targets = frames if self.options.retag else [f for f in frames if not f.people]
+        if not targets:
+            print(
+                f"\nAll {len(frames)} frame(s) are already tagged. Use "
+                f"`{self._next_command('tag', '--retag')}` to redo them from "
+                "scratch (your corrections would be replaced)."
+            )
+            return
+        if self.dry_run:
+            logger.info(
+                "[dry-run] would identify %d cast member(s) across %d frame(s)",
+                len(storyboard.characters), len(targets),
+            )
+            return
+        if not self._ask(
+            [
+                f"Look at {len(targets)} frame(s) and propose which of the "
+                f"{len(storyboard.characters)} cast members is in each, and "
+                "where.",
+                "One OpenAI vision call. Nothing is re-planned or re-rendered "
+                "— the tags feed future planning, and you can correct them "
+                "afterwards.",
+                *( [f"{len(frames) - len(targets)} already-tagged frame(s) are "
+                    "left untouched."] if len(targets) < len(frames) else []),
+            ],
+            f"Identify people in {len(targets)} frame(s)? [y/N] ",
+            "Nothing tagged.",
+        ):
+            return
+
+        paths = [root / f.output_path for f in targets]
+        proposed = self.openai.identify_people(paths, storyboard.characters)
+        by_path = {f.output_path: people for f, people in zip(targets, proposed)}
+        tagged = 0
+        for frame in storyboard.frames:
+            people = by_path.get(frame.output_path)
+            if not people:
+                # An empty answer is "I couldn't see anyone", which is a
+                # question for the human — not a recorded fact.
+                continue
+            frame.people = [FramePerson(**p) for p in people]
+            tagged += 1
+        self._save_storyboard(storyboard)
+        epithets = {c.id: c.epithet for c in storyboard.characters}
+        print(f"\nTagged {tagged} of {len(targets)} frame(s):")
+        for frame in storyboard.frames:
+            if not frame.people:
+                continue
+            who = ", ".join(
+                epithets.get(p.id, p.id)
+                for p in sorted(frame.people, key=lambda p: p.x)
+            )
+            print(f"  {Path(frame.output_path).name:<24} {who}")
+        if tagged < len(targets):
+            print(
+                f"  ({len(targets) - tagged} frame(s) came back empty and were "
+                "left untagged.)"
+            )
+        if missing:
+            print(f"  ({missing} frame(s) have no styled image yet.)")
+        print(
+            "\nThis is a DRAFT — check it in the panel's \"Who's in each "
+            "photo\" tagger, especially where two people look alike.\n"
+            "Tags apply to plans made from now on: re-plan a clip to use them."
+        )
 
     # ------------------------------ feedback ------------------------------ #
     def _feedback_summary(self) -> dict[str, Any]:

@@ -326,6 +326,44 @@ Two people who share every durable trait are separated by relative size
 passing detail can still ride along inside one clip's prompt — "the smaller
 boy with curly hair, here in a striped shirt" — without changing the epithet.
 
+### Saying who is who (per-frame tagging)
+
+The cast fixes what each person is CALLED. Which of them is standing in a
+given photo is a separate judgement, and it is the one the planner gets wrong
+on its own: it decides from the pixels whether the child in frame 7 is the
+child from frame 6, and when it guesses wrong the video model morphs one
+person into the other. Two siblings at the same age are the classic trap.
+
+So you can state it as fact. In the panel's **Who's in each photo** section,
+pick a person and click their face; a marker pins them to that spot. What the
+planner is then told, per pair, is not a hint but a ruling:
+
+- the SAME people in both frames → animate them continuously, whatever they
+  are wearing and however much older they look;
+- COMPLETELY DIFFERENT people → they only look alike, so stage an exit and an
+  entrance and never let one turn into the other;
+- a partial overlap → who stays, who leaves, who arrives.
+
+The marker positions also give the left-to-right order the video model
+actually works in, so **arrangement-swap detection uses your tags** instead of
+the planner's own reading of the frames (see `--replan-clip`).
+
+Tagging 30 photos by hand is a chore nobody does, so there is a first pass:
+
+```bash
+python pipeline.py tag myfilm          # proposes who is in each untagged frame
+python pipeline.py tag myfilm --retag  # redo frames you already tagged, too
+```
+
+or **“Let the AI propose…”** in the panel. It is a *draft* — one vision call
+over the styled frames, correct it afterwards, especially where two people
+look alike. It never touches frames you have already tagged, and a frame it
+reports nobody in stays untagged (a question, not an answer).
+
+Tagging is free, local, and feeds the NEXT plan: it never marks a rendered
+clip outdated, so re-plan a clip (`storyboard --replan-clip ID`) when you want
+your tags applied to it.
+
 > **An existing project keeps the cast it was planned with.** Epithets are
 > frozen on purpose: their wording is already baked into planned prompts, so
 > rewriting one silently would split a person's identity across the movie.
@@ -757,6 +795,7 @@ which are project-less).
 | `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--music-url URL`, `--add-audio`, `--no-audio`, `--final`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter` |
 | `publish` | `--dry-run` (print the name only), `-y/--yes` |
 | `status` | — |
+| `tag` | `--retag`, `--dry-run`, `-y/--yes` |
 | `feedback` | `"<note>"` (optional with `--clip`), `--clip ID`, `--good`, `--no-watch`, `--no-learn`, `--dry-run` |
 | `lessons` | — (no project argument) `--add TEXT`, `--scope motion\|style`, `--disable ID`, `--enable ID`, `--forget ID` |
 | `costs` | — (no project argument; per-project + total spend) |
