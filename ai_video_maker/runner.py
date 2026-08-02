@@ -892,11 +892,17 @@ class Pipeline:
             if i in plans:
                 motion, duration, sound = plans[i]
                 prior = saved_tr.get((a.output_path, b.output_path))
-                if (
-                    prior is not None
-                    and motion != prior.motion_prompt
-                    and (prior.motion_prompt == self.config.motion_prompt
-                         or tid in requested)
+                # Either half of the plan invalidates the rendered clip: the
+                # DURATION alone changing (a re-plan that keeps the wording
+                # but stretches the pair from 5s to 10s, which is exactly
+                # what confirmed identities can do via swap detection) leaves
+                # a 5-second clip on disk for a 10-second plan.
+                plan_changed = prior is not None and (
+                    motion != prior.motion_prompt or duration != prior.duration
+                )
+                if plan_changed and (
+                    prior.motion_prompt == self.config.motion_prompt
+                    or tid in requested
                 ):
                     # A genuinely new prompt landed where a clip may already
                     # exist — a real plan replacing a placeholder, or an

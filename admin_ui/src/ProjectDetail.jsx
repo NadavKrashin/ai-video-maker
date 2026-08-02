@@ -609,7 +609,7 @@ function LetterEditor({ text, onSave, busy }) {
   );
 }
 
-function StoryboardPanel({ ask, locked, info }) {
+function StoryboardPanel({ ask, locked, info, onReplanAll }) {
   const [idea, setIdea] = useState('');
   const [frameCount, setFrameCount] = useState('');
   const [stylePrompt, setStylePrompt] = useState('');
@@ -682,6 +682,11 @@ function StoryboardPanel({ ask, locked, info }) {
           checked={force} onChange={(e) => setForce(e.target.checked)}
           title="Re-style photos that are already styled (spends OpenAI credits on every photo again)" />
         <div style={{ flex: 1 }} />
+        <Button variant="default" disabled={locked || !info.total}
+          onClick={onReplanAll}
+          title="Re-write every motion prompt from the current cast and photo tags. Hand-written prompts are replaced.">
+          Re-plan all prompts…
+        </Button>
         <Button disabled={locked} onClick={start}>Run storyboard…</Button>
       </Group>
     </div>
@@ -1363,6 +1368,32 @@ export default function ProjectDetail({ name, onBack }) {
     });
   };
 
+  // The batch you want after tagging (or after rewriting cast epithets):
+  // both are plan-time inputs, so nothing already planned uses them until
+  // its pair is planned again. One job re-plans every pair — a single vision
+  // call over the whole movie, like the original storyboard run.
+  const replanAll = () => {
+    if (needsSave()) return;
+    const ids = (storyboard?.transitions || []).map((t) => t.id);
+    if (!ids.length) return;
+    const rendered = (snap.clips || []).filter((c) => c.rendered).length;
+    ask({
+      title: `Re-plan all ${ids.length} motion prompt(s)?`,
+      lines: [
+        `Asks the planner to look at every pair again and write fresh motion prompts, using the current cast and whoever you have tagged in each photo.`,
+        'Any motion prompt you hand-wrote is REPLACED — re-plan is not a merge.',
+        rendered > 0
+          ? `${rendered} already-rendered clip(s) whose plan changes get marked "outdated"; none are re-rendered here, and nothing is deleted.`
+          : 'No clips are rendered yet, so nothing is invalidated.',
+        'One vision call over the whole movie — the same cost as the original storyboard run.'
+      ],
+      cost: 'openai',
+      danger: true,
+      label: `Re-plan ${ids.length}`,
+      action: () => run('storyboard', { replan_clips: ids }, 'replan all')
+    });
+  };
+
   const redoAudio = (clipId) => {
     if (needsSave()) return;
     ask({
@@ -1611,7 +1642,8 @@ export default function ProjectDetail({ name, onBack }) {
           : null;
 
   const panels = {
-    storyboard: <StoryboardPanel ask={ask} locked={locked} info={info} />,
+    storyboard: <StoryboardPanel ask={ask} locked={locked} info={info}
+      onReplanAll={replanAll} />,
     render: <RenderPanel ask={ask} locked={locked} info={info}
       onGenerateAll={() => { if (!needsSave()) generateAll(snap); }} />,
     audio: <AudioPanel ask={ask} locked={locked} info={info}
@@ -1972,6 +2004,11 @@ export default function ProjectDetail({ name, onBack }) {
                   onClick={askForTagSuggestions}
                   title="One vision call proposes who is in each untagged photo; you correct it. Already-tagged photos are untouched.">
                   Let the AI propose…
+                </Button>
+                <Button size="compact-xs" variant="default" disabled={locked}
+                  onClick={replanAll}
+                  title="Tags only reach the planner when a pair is planned again. This re-plans every pair with them (one vision call); clips whose plan changes are marked outdated, never re-rendered automatically.">
+                  Re-plan all with these tags…
                 </Button>
                 <Button size="compact-xs" variant="subtle"
                   onClick={() => setShowTagger((v) => !v)}>

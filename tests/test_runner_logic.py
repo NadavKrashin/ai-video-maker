@@ -333,6 +333,35 @@ class TestReconcileStoryboard:
         # user-level fields carried over
         assert sb.global_motion_prompt == "two separate kids, never merged"
 
+    def test_a_replan_that_only_changes_the_duration_marks_the_clip_stale(
+        self, make_pipeline, workspace
+    ):
+        # A 5s clip on disk against a 10s plan is as outdated as a rewritten
+        # prompt — and it is exactly what confirmed identities produce, since
+        # a detected arrangement swap forces the pair long.
+        p = make_pipeline(analyze_frames=False, duration=10)
+        pairs = _make_frame_pairs(workspace, ["a", "b"])
+        saved = _save_slug_storyboard(workspace, ["a", "b"])
+        # Same wording, different length: only the duration moved.
+        p.options.replan_clips = ["a_to_b"]
+        p.options.motion_prompt = saved.transitions[0].motion_prompt
+        sb, replanned, stale = p._reconcile_storyboard(saved, pairs)
+        assert sb.transitions[0].motion_prompt == saved.transitions[0].motion_prompt
+        assert sb.transitions[0].duration == 10
+        assert stale == ["a_to_b"]
+
+    def test_a_replan_that_changes_nothing_leaves_the_clip_alone(
+        self, make_pipeline, workspace
+    ):
+        p = make_pipeline(analyze_frames=False)
+        pairs = _make_frame_pairs(workspace, ["a", "b"])
+        saved = _save_slug_storyboard(workspace, ["a", "b"])
+        p.options.replan_clips = ["a_to_b"]
+        p.options.motion_prompt = saved.transitions[0].motion_prompt
+        p.options.duration = saved.transitions[0].duration
+        sb, replanned, stale = p._reconcile_storyboard(saved, pairs)
+        assert stale == []
+
     def test_inserted_frame_replans_only_its_two_pairs(self, make_pipeline, workspace):
         p = self._pipeline(make_pipeline)
         _save_slug_storyboard(workspace, ["a", "b", "c"])

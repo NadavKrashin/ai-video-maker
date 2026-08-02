@@ -361,8 +361,14 @@ look alike. It never touches frames you have already tagged, and a frame it
 reports nobody in stays untagged (a question, not an answer).
 
 Tagging is free, local, and feeds the NEXT plan: it never marks a rendered
-clip outdated, so re-plan a clip (`storyboard --replan-clip ID`) when you want
-your tags applied to it.
+clip outdated. Nothing already planned uses your tags until its pair is
+planned again — so after tagging a movie, use **“Re-plan all with these
+tags…”** (in the tagger, and as “Re-plan all prompts…” in the Storyboard
+step), or `storyboard --replan-clip ID` for one pair. A plain `storyboard`
+run will NOT do it: it reconciles rather than regenerates, so pairs that are
+already planned are carried over verbatim. Clips whose plan actually changes
+— in wording *or* in length — are then marked outdated for you to regenerate
+when you want to spend the credits.
 
 > **An existing project keeps the cast it was planned with.** Epithets are
 > frozen on purpose: their wording is already baked into planned prompts, so
