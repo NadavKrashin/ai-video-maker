@@ -96,6 +96,9 @@ from .workspace import (
 # constructor internals.
 _ALLOWED_COMMANDS = {
     "ingest", "storyboard", "render", "audio", "combine", "publish", "run",
+    # `tag` proposes who is in each frame; it writes only frames[].people,
+    # never a transition, so it can't invalidate a rendered clip.
+    "tag",
 }
 _ALLOWED_OPTIONS = {f.name for f in dataclasses.fields(RunOptions)}
 

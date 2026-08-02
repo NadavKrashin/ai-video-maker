@@ -53,6 +53,10 @@ class RunOptions:
     # refuses to run under any other name, so an approval can never turn into
     # an upload nobody agreed to. None = take the next free version.
     publish_as: Optional[str] = None
+    # tag: redo the identity tags on frames that already have them. Off (the
+    # default) only fills untagged frames, so a proposal never overwrites a
+    # human's correction.
+    retag: bool = False
     # feedback: one human judgement of a rendered clip (see feedback.py).
     # `feedback_clip` is the transition id it is about ("003_to_004"); empty
     # means feedback about the movie in general. `feedback_learn` off records
@@ -110,6 +114,7 @@ class RunOptions:
             restyle_frames=get("restyle_frame"),
             order=get("order"),
             publish_as=get("publish_as"),
+            retag=bool(get("retag")),
             feedback_clip=get("clip_id"),
             feedback_note=get("note"),
             # --good flips the verdict; the default is that feedback is a

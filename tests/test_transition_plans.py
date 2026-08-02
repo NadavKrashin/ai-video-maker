@@ -3,11 +3,16 @@ pair_index re-alignment, and motion-prompt word budgets."""
 from __future__ import annotations
 
 from ai_video_maker.clients.openai_client import (
+    _MODE_A_SYSTEM,
     OpenAIClient,
+    _coerce_frame_people,
+    _tagged_people_block,
     _merge_cast,
     _motion_word_limit,
     _realign_by_pair_index,
     is_arrangement_swap,
+    is_clothing_anchored,
+    repair_cast_epithets,
     stages_a_crossing,
 )
 from ai_video_maker.models import Character
@@ -718,3 +723,274 @@ class TestClipReviewCoercion:
         out = self._review(config, {})
         assert out["observed"] == ""
         assert out["suggested_motion_prompt"] == "the bald man walks in"
+
+
+class TestCastEpithetsSurviveTheMovie:
+    """A cast epithet is used across a film built from photos years apart.
+
+    "the boy in the striped shirt" describes one photograph perfectly and
+    matches nobody in the next one, where he is in a swimsuit — so the video
+    model hunts for a striped shirt, fails, and acts on whoever is nearest.
+    Prompt guidance alone did not hold this (a real plan came back with
+    "boy in yellow shirt", "boy in striped shirt", "girl in purple dress"),
+    so code decides, exactly as it does for arrangement swaps.
+    """
+
+    def test_clothing_only_epithets_are_caught(self):
+        for epithet in (
+            "boy in striped shirt",
+            "the girl in the purple dress",
+            "man in blue shirt",
+            "the woman in the red coat",
+            "the kid in the yellow t-shirt",
+            "the boy in the baseball cap",
+        ):
+            assert is_clothing_anchored(epithet), epithet
+
+    def test_durable_epithets_are_left_alone(self):
+        for epithet in (
+            "the bald man",
+            "the bald man in pink sunglasses",   # bald carries it
+            "the small boy with curly hair",
+            "the taller boy",
+            "the woman with long dark hair",
+            "the teenage girl",
+            "the bearded man in a green jacket",  # beard carries it
+        ):
+            assert not is_clothing_anchored(epithet), epithet
+
+    def test_an_epithet_with_no_clothing_at_all_is_never_touched(self):
+        assert not is_clothing_anchored("the older woman")
+        assert not is_clothing_anchored("")
+
+    def _data(self, epithet, durable, motion=None):
+        return {
+            "characters": [{"id": "son2", "epithet": epithet,
+                            "durable_epithet": durable}],
+            "transitions": [{
+                "pair_index": 1, "difficulty": 2,
+                "motion_prompt": motion or f"{epithet} runs to the water",
+                "sound_prompt": "waves",
+                "start_order": [epithet], "end_order": [epithet],
+            }],
+        }
+
+    def test_a_clothing_epithet_is_replaced_by_the_durable_one(self):
+        data = self._data("boy in striped shirt", "the smaller boy with curly hair")
+        swaps = repair_cast_epithets(data)
+        assert len(swaps) == 1
+        assert data["characters"][0]["epithet"] == "the smaller boy with curly hair"
+
+    def test_the_prompts_of_the_same_plan_are_rewritten_too(self):
+        # Otherwise the cast and the prompts would name the same person
+        # differently from the very first plan.
+        data = self._data("boy in striped shirt", "the smaller boy with curly hair")
+        repair_cast_epithets(data)
+        tr = data["transitions"][0]
+        assert tr["motion_prompt"] == "the smaller boy with curly hair runs to the water"
+        assert tr["start_order"] == ["the smaller boy with curly hair"]
+        assert tr["end_order"] == ["the smaller boy with curly hair"]
+
+    def test_a_durable_epithet_is_kept_as_written(self):
+        data = self._data("the bald man in pink sunglasses", "the bald man")
+        assert repair_cast_epithets(data) == []
+        assert data["characters"][0]["epithet"] == "the bald man in pink sunglasses"
+
+    def test_a_replacement_that_is_also_clothing_is_refused(self):
+        data = self._data("boy in striped shirt", "the boy in the blue shorts")
+        assert repair_cast_epithets(data) == []
+        assert data["characters"][0]["epithet"] == "boy in striped shirt"
+
+    def test_a_missing_replacement_leaves_the_original(self):
+        data = self._data("boy in striped shirt", "")
+        assert repair_cast_epithets(data) == []
+        assert data["characters"][0]["epithet"] == "boy in striped shirt"
+
+    def test_a_replacement_that_would_duplicate_someone_is_refused(self):
+        # Two people sharing one epithet is worse than a fragile epithet:
+        # neither can then be told from the other in any prompt.
+        data = {
+            "characters": [
+                {"id": "son1", "epithet": "the smaller boy with curly hair",
+                 "durable_epithet": "the smaller boy with curly hair"},
+                {"id": "son2", "epithet": "boy in striped shirt",
+                 "durable_epithet": "the smaller boy with curly hair"},
+            ],
+            "transitions": [],
+        }
+        assert repair_cast_epithets(data) == []
+        assert data["characters"][1]["epithet"] == "boy in striped shirt"
+
+    def test_junk_input_does_not_crash_the_repair(self):
+        assert repair_cast_epithets({}) == []
+        assert repair_cast_epithets({"characters": "nope"}) == []
+        assert repair_cast_epithets({"characters": [None, 3]}) == []
+
+
+class TestCastPromptForbidsClothing:
+    """The prompt side of the same rule, pinned against the live text."""
+
+    def test_the_planner_is_told_never_to_anchor_on_clothing(self):
+        system = _MODE_A_SYSTEM.lower()
+        assert "never anchor it to clothing" in system
+        assert "durable_epithet" in system
+        # The failing wording from the real plan is named as forbidden.
+        assert "the boy in the yellow shirt" in system
+
+    def test_relative_size_is_offered_when_durable_traits_match(self):
+        system = _MODE_A_SYSTEM.lower()
+        assert "the taller boy" in system and "the smaller boy" in system
+
+
+class TestConfirmedIdentities:
+    """Human tags are FACT: they outrank the model's reading of the frames.
+
+    Identity is what the planner gets wrong on its own — it decides from the
+    pixels whether the child in frame 7 is the child from frame 6, and a
+    wrong guess is what makes the video model morph one person into another.
+    """
+
+    def test_the_roster_of_each_tagged_frame_is_stated(self):
+        block = _tagged_people_block([
+            ["the bald man", "the smaller boy"],
+            ["the bald man"],
+        ])
+        assert "Frame 001, left to right: the bald man, the smaller boy" in block
+        assert "Frame 002, left to right: the bald man" in block
+        assert "OVERRULES" in block
+
+    def test_untagged_frames_are_simply_absent(self):
+        block = _tagged_people_block([["the bald man"], None])
+        assert "Frame 001" in block
+        assert "Frame 002" not in block
+
+    def test_the_same_people_are_declared_continuous(self):
+        block = _tagged_people_block([["the bald man"], ["the bald man"]])
+        assert "SAME person (the bald man)" in block
+        assert "animate them continuously" in block
+
+    def test_a_completely_different_cast_forces_an_exit_and_entrance(self):
+        # The creepy-morph case: two people who look alike but are not the
+        # same human. The planner must never be left to guess this.
+        block = _tagged_people_block([["the smaller boy"], ["the taller boy"]])
+        assert "COMPLETELY DIFFERENT people" in block
+        assert "NEVER let one turn into the other" in block
+        assert "exit and an entrance" in block
+
+    def test_a_partial_overlap_names_who_stays_leaves_and_arrives(self):
+        block = _tagged_people_block([
+            ["the bald man", "the smaller boy"],
+            ["the bald man", "the teenage girl"],
+        ])
+        assert "the bald man stay(s)" in block
+        assert "the smaller boy leave(s)" in block
+        assert "the teenage girl arrive(s)" in block
+
+    def test_an_empty_frame_is_not_the_same_as_an_untagged_one(self):
+        block = _tagged_people_block([[], ["the bald man"]])
+        assert "Frame 001, left to right: (nobody)" in block
+
+
+class TestTagsDriveSwapDetection:
+    """Swap detection is only as good as the positions it is given."""
+
+    def _plans(self, config, data, count=1, frame_people=None):
+        return OpenAIClient(config)._coerce_transition_plans(
+            data, count, None, frame_people=frame_people,
+        )
+
+    def _data(self, start, end, motion="they stand together"):
+        return {"transitions": [{
+            "pair_index": 1, "difficulty": 1, "motion_prompt": motion,
+            "sound_prompt": "", "start_order": start, "end_order": end,
+        }]}
+
+    def test_tags_reveal_a_swap_the_model_missed(self, config, monkeypatch):
+        # The model reported no swap; the human's tags say they traded sides.
+        # A swap forces the long clip, which is what makes an exit and
+        # re-entry physically possible.
+        monkeypatch.setattr(
+            OpenAIClient, "_restage_swapped_pair",
+            lambda self, prompt, duration, s, e: "one crosses in front of the other",
+        )
+        plans = self._plans(
+            config,
+            self._data(["the bald man", "the woman"],
+                       ["the bald man", "the woman"]),
+            frame_people=[["the bald man", "the woman"],
+                          ["the woman", "the bald man"]],
+        )
+        motion, duration, _ = plans[0]
+        assert duration == 10
+        assert motion == "one crosses in front of the other"
+
+    def test_tags_overrule_a_swap_the_model_imagined(self, config):
+        # The model's own lists claim a swap; the tags say nobody moved.
+        plans = self._plans(
+            config,
+            self._data(["the bald man", "the woman"],
+                       ["the woman", "the bald man"]),
+            frame_people=[["the bald man", "the woman"],
+                          ["the bald man", "the woman"]],
+        )
+        assert plans[0][1] == 5  # not forced long
+        assert plans[0][0] == "they stand together"  # not restaged
+
+    def test_a_half_tagged_pair_falls_back_to_the_model(self, config, monkeypatch):
+        monkeypatch.setattr(
+            OpenAIClient, "_restage_swapped_pair",
+            lambda self, prompt, duration, s, e: "one crosses in front of the other",
+        )
+        plans = self._plans(
+            config,
+            self._data(["the bald man", "the woman"],
+                       ["the woman", "the bald man"]),
+            frame_people=[["the bald man", "the woman"], None],
+        )
+        assert plans[0][1] == 10  # the model's reading still counts
+
+
+class TestIdentifyPeopleCoercion:
+    """The pre-fill is a draft; everything questionable is dropped, not fixed."""
+
+    def _coerce(self, data, count=2, known=("dad", "son1")):
+        return _coerce_frame_people(data, count, set(known))
+
+    def test_people_are_placed_on_their_frame(self):
+        out = self._coerce({"frames": [
+            {"frame_index": 1, "people": [{"id": "dad", "x": 0.3, "y": 0.4}]},
+            {"frame_index": 2, "people": []},
+        ]})
+        assert out[0] == [{"id": "dad", "x": 0.3, "y": 0.4}]
+        assert out[1] == []
+
+    def test_invented_people_are_dropped(self):
+        # A tag naming nobody in the cast cannot resolve to an epithet.
+        out = self._coerce({"frames": [
+            {"frame_index": 1, "people": [{"id": "grandma", "x": 0.5, "y": 0.5}]},
+        ]})
+        assert out[0] == []
+
+    def test_the_same_person_cannot_stand_in_two_places(self):
+        out = self._coerce({"frames": [{"frame_index": 1, "people": [
+            {"id": "dad", "x": 0.2, "y": 0.5},
+            {"id": "dad", "x": 0.8, "y": 0.5},
+        ]}]})
+        assert len(out[0]) == 1
+
+    def test_coordinates_are_clamped_into_the_frame(self):
+        out = self._coerce({"frames": [{"frame_index": 1, "people": [
+            {"id": "dad", "x": 1.7, "y": -3},
+        ]}]})
+        assert out[0] == [{"id": "dad", "x": 1.0, "y": 0.0}]
+
+    def test_out_of_range_and_junk_entries_are_ignored(self):
+        out = self._coerce({"frames": [
+            {"frame_index": 9, "people": [{"id": "dad", "x": 0.5, "y": 0.5}]},
+            {"frame_index": "x", "people": []},
+            "nope",
+        ]})
+        assert out == [[], []]
+
+    def test_a_missing_response_yields_one_empty_list_per_frame(self):
+        assert self._coerce({}) == [[], []]

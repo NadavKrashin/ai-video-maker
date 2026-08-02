@@ -8,9 +8,11 @@ from ai_video_maker.errors import InvalidProjectName, StoryboardError
 from ai_video_maker.models import (
     Character,
     Frame,
+    FramePerson,
     Storyboard,
     Transition,
     changed_transition_ids,
+    tagged_people,
 )
 from ai_video_maker.workspace import Workspace
 
@@ -150,3 +152,59 @@ class TestCoerceTransitionPlans:
     )
     def test_coerce_duration(self, config, value, expected):
         assert self._client(config)._coerce_duration(value, 5) == expected
+
+
+class TestTaggedPeople:
+    """Frame tags resolved into what the planner is actually told."""
+
+    def _sb(self, people, cast=None):
+        return Storyboard(
+            project_title="t", style="s",
+            characters=cast if cast is not None else [
+                Character(id="dad", epithet="the bald man"),
+                Character(id="son1", epithet="the smaller boy"),
+            ],
+            frames=[Frame(id="a", description="", image_prompt="",
+                          output_path="styled_images/a.png", people=people)],
+            transitions=[],
+        )
+
+    def test_people_come_back_left_to_right(self):
+        # x order is the order the video model works in, so it decides the
+        # listing regardless of how the markers were added.
+        sb = self._sb([
+            FramePerson(id="son1", x=0.8),
+            FramePerson(id="dad", x=0.2),
+        ])
+        assert tagged_people(sb) == {
+            "styled_images/a.png": ["the bald man", "the smaller boy"]
+        }
+
+    def test_an_untagged_frame_is_absent_not_empty(self):
+        # "nobody has said" and "nobody is in this photo" must stay
+        # distinguishable, or an untagged movie reads as a cast of nobody.
+        assert tagged_people(self._sb([])) == {}
+
+    def test_a_tag_naming_a_deleted_cast_member_is_dropped(self):
+        sb = self._sb([FramePerson(id="ghost", x=0.5)])
+        assert tagged_people(sb) == {}
+
+    def test_frames_keep_their_tags_through_a_round_trip(self, tmp_path):
+        sb = self._sb([FramePerson(id="dad", x=0.25, y=0.4)])
+        path = tmp_path / "storyboard.json"
+        sb.save(path)
+        reloaded = Storyboard.load(path)
+        assert reloaded.frames[0].people[0].id == "dad"
+        assert reloaded.frames[0].people[0].x == 0.25
+
+    def test_tagging_never_invalidates_a_rendered_clip(self):
+        # Tags feed the NEXT plan; they don't change the prompt a clip was
+        # rendered from, so they must not mark anything outdated.
+        before = self._sb([])
+        before.transitions = [Transition(
+            id="a_to_b", start_frame="styled_images/a.png",
+            end_frame="styled_images/b.png", motion_prompt="m",
+            output_path="clips/a_to_b.mp4")]
+        after = before.model_copy(deep=True)
+        after.frames[0].people = [FramePerson(id="dad", x=0.5)]
+        assert changed_transition_ids(before, after) == []

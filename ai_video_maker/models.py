@@ -10,12 +10,36 @@ from pydantic import BaseModel, Field, ValidationError
 from .errors import StoryboardError
 
 
+class FramePerson(BaseModel):
+    """One cast member, pinned to where they stand in one frame.
+
+    This is ground truth supplied by a human (the panel's "who is in this
+    photo" tagger), and it exists because identity is the thing the planner
+    gets wrong on its own: it decides from the pixels whether the child in
+    frame 7 is the child from frame 6, and when it guesses wrong the video
+    model morphs one person into the other.
+
+    ``x``/``y`` are fractions of the frame (0 = left/top, 1 = right/bottom).
+    Only ``x`` really matters — it gives the left-to-right order the video
+    model maps region-to-region, which is what arrangement-swap detection
+    needs — but ``y`` is kept so a marker can be drawn back where it was put.
+    """
+
+    id: str          # a Character.id from the movie's cast
+    x: float = 0.5
+    y: float = 0.5
+
+
 class Frame(BaseModel):
     id: str
     description: str
     image_prompt: str
     negative_prompt: str = ""
     output_path: str
+    # Who is visible in this frame, tagged by hand (or proposed by `tag` and
+    # then corrected). Empty means "nobody has said", and the planner falls
+    # back to working it out from the image as it always did.
+    people: list[FramePerson] = Field(default_factory=list)
     # Image-based projects: the input image this frame was styled from
     # (workspace-relative). Lets the pipeline detect that a styled file no
     # longer matches its source (inputs swapped/reordered) and re-style it.
@@ -100,6 +124,30 @@ class Storyboard(BaseModel):
             json.dumps(self.model_dump(), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+
+
+def tagged_people(storyboard: "Storyboard") -> dict[str, list[str]]:
+    """Frame output_path -> the epithets standing in it, LEFT TO RIGHT.
+
+    Resolves each frame's tagged cast ids through the movie's cast and
+    orders them by their marker's x position, which is the order the video
+    model actually works in. Frames nobody has tagged are absent (not
+    empty): "no answer" and "nobody is in this photo" have to stay
+    distinguishable, or an untagged movie would look like a cast of nobody.
+
+    Unknown ids are dropped — a cast member can be deleted after tagging,
+    and a dangling id must not become an epithet-shaped hole in the prompt.
+    """
+    by_id = {c.id: c.epithet for c in storyboard.characters if c.epithet.strip()}
+    out: dict[str, list[str]] = {}
+    for frame in storyboard.frames:
+        if not frame.people:
+            continue
+        ordered = sorted(frame.people, key=lambda p: p.x)
+        epithets = [by_id[p.id] for p in ordered if p.id in by_id]
+        if epithets:
+            out[frame.output_path] = epithets
+    return out
 
 
 # Transition fields that shape the rendered video. `sound_prompt` is
