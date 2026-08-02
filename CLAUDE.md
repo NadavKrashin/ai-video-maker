@@ -159,6 +159,27 @@ Core design rules:
   `_CONDENSE_MOTION_SYSTEM` (condense swaps relationship words for
   epithets), and `_REWORD_MOTION_SYSTEM` (identity anchors are not "risky
   detail" to drop); pinned by TestIdentityPromptRules.
+- AN EPITHET MUST OUTLIVE THE PHOTO IT CAME FROM (user call, 2026-08-02).
+  The cast is pinned once and reused for the WHOLE movie, but the movie is
+  built from photos taken months or years apart — so a clothing-anchored
+  epithet ("the boy in the striped shirt") describes one frame perfectly
+  and matches nobody in the next, where Kling hunts for a striped shirt,
+  fails, and puts the action on whoever is nearest. `_MODE_A_SYSTEM` had
+  only a soft "prefer stable traits" line and the planner ignored it: a
+  real cast came back as man in blue shirt / girl in purple dress / boy in
+  yellow shirt / boy in striped shirt. Epithets must now name what a person
+  CARRIES between photos (age band, relative size, hair or its absence,
+  facial hair, glasses, build), two look-alikes are separated by RELATIVE
+  size ("the taller boy" / "the smaller boy"), and a passing garment may
+  only be added inline inside one clip's prompt, never be the epithet.
+  ENFORCED IN CODE, like the swap rule: every character also reports a
+  `durable_epithet`, and `repair_cast_epithets` swaps it in (plus every
+  prompt in that same response) when `is_clothing_anchored` fires —
+  refusing a replacement that is itself clothing-anchored or would
+  duplicate another cast member. Existing casts are still NEVER rewritten
+  (`_merge_cast`), so old projects keep their wording; `snapshot()`'s
+  `fragile_epithets` flags them for a hand edit in the panel's Cast editor.
+  Pinned by TestCastEpithetsSurviveTheMovie / TestCastPromptForbidsClothing.
 - ARRANGEMENT SWAP: when the same people appear in both frames but trade
   left-right positions, hold-steady/world-morphs staging is FORBIDDEN — the
   interpolator maps left onto left, so pinned-in-place swapped people morph

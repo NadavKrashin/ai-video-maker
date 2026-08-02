@@ -36,7 +36,7 @@ from .clients.cloudinary_client import (
     resolve_order_folder,
 )
 from .clients.download import download_file
-from .clients.openai_client import OpenAIClient
+from .clients.openai_client import OpenAIClient, is_clothing_anchored
 from .clients.video import VideoClient
 from .config import Config
 from .costs import KIND_CLIP, KIND_SFX, CostLedger, estimate_usd
@@ -2343,6 +2343,16 @@ class Pipeline:
                 "placeholder_transitions": [
                     t.id for t in storyboard.transitions
                     if t.motion_prompt == self.config.motion_prompt
+                ],
+                # Cast members named by what they were wearing in one photo.
+                # New plans can't produce these any more (the planner is
+                # forbidden and code re-anchors what slips through), but a
+                # cast written before that is frozen on purpose — its wording
+                # is baked into prompts already planned — so the panel flags
+                # them for a hand edit instead.
+                "fragile_epithets": [
+                    c.id for c in storyboard.characters
+                    if is_clothing_anchored(c.epithet)
                 ],
             },
             "storyboard_error": storyboard_error,

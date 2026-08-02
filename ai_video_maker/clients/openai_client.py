@@ -600,13 +600,30 @@ _MODE_A_SYSTEM = (
     "someone already in the cast — and return in `characters` ONLY people "
     "missing from the provided cast (an empty array when nobody is new). "
     "When no cast is provided, build it: choose each epithet by the rules "
-    "above (visible appearance only, distinguishing, 2-5 words), and "
-    "prefer traits that stay stable across the whole movie — hair or its "
-    "absence, build, age band, eyewear — over clothing that changes "
-    "between scenes. When a person's look in one pair has moved on from "
-    "their epithet (a new outfit, an older age), keep the epithet and add "
-    "the change inline: 'the bald man in pink sunglasses, now in a winter "
-    "coat'. "
+    "above (visible appearance only, distinguishing, 2-5 words). "
+    "AN EPITHET IS FOR THE WHOLE MOVIE, SO NEVER ANCHOR IT TO CLOTHING. "
+    "These films are assembled from photographs taken months or years "
+    "apart: the boy in the striped shirt in this frame is in a swimsuit in "
+    "the next one, so 'the boy in the striped shirt' stops matching anybody "
+    "— the video model hunts for a striped shirt, fails, and puts the "
+    "action on whoever is nearest. Build every epithet from what the person "
+    "CARRIES between photos: age band and relative size ('the smaller "
+    "boy', 'the teenage girl'), hair — colour, length, texture, or its "
+    "absence ('the bald man', 'the woman with long curly hair'), facial "
+    "hair, glasses, build. NEVER use a garment, its colour, or a hat as the "
+    "identifying feature: no 'the boy in the yellow shirt', 'the girl in "
+    "the purple dress', 'the man in the blue jacket'. When two people share "
+    "every durable trait (two similar boys), separate them by RELATIVE "
+    "size or age — 'the taller boy' / 'the smaller boy' — which still works "
+    "in every photo. Only when even that fails may clothing appear, and "
+    "then only ADDED to a durable core, never instead of it. "
+    "Also give each character a `durable_epithet`: the same person written "
+    "using ONLY these carried-over features, with no garment word at all. "
+    "It is the wording the film falls back on, so make it a drop-in "
+    "replacement — same shape, 2-5 words. "
+    "Within one pair you may still add a passing detail inline when it "
+    "helps that clip: 'the smaller boy with curly hair, here in a striped "
+    "shirt'. The epithet itself stays as it is. "
     "SAY WHERE PEOPLE ARE AND WHICH WAY THEY GO: the model matches regions "
     "of the start frame to regions of the end frame, so screen position is "
     "the strongest anchor available. Whenever anyone enters or leaves, give "
@@ -821,8 +838,14 @@ _TRANSITIONS_SCHEMA: dict[str, Any] = {
                 "properties": {
                     "id": {"type": "string"},
                     "epithet": {"type": "string"},
+                    # The same person named ONLY by what they carry from
+                    # photo to photo. Code swaps it in when `epithet` turns
+                    # out to be anchored to clothing (see
+                    # repair_cast_epithets): the cast is used across a whole
+                    # album, where the shirt in this frame means nothing.
+                    "durable_epithet": {"type": "string"},
                 },
-                "required": ["id", "epithet"],
+                "required": ["id", "epithet", "durable_epithet"],
                 "additionalProperties": False,
             },
         },
@@ -881,6 +904,154 @@ def _merge_cast(
         seen_ids.add(cid)
         seen_epithets.add(epithet.lower())
     return cast
+
+
+# --- Cast epithets that survive the whole movie ----------------------------- #
+# An epithet is written once and then used in every prompt that mentions that
+# person, across a film assembled from photos taken years apart. So it has to
+# name something the PERSON carries, not something they happened to be wearing
+# in the frame the cast was built from: "the boy in the striped shirt" is a
+# perfect description of one photo and useless in the next one, where he is in
+# a swimsuit — the video model then looks for a striped shirt, finds none, and
+# puts the action on whoever is nearest.
+#
+# Prompt guidance alone did not hold this line (the planner still came back
+# with "boy in yellow shirt" / "boy in striped shirt" / "girl in purple
+# dress"), which is the same failure the arrangement-swap rule hit: the model
+# perceives fine but reaches for the easiest discriminator. So code checks.
+_GARMENT_WORDS = frozenset({
+    "shirt", "t-shirt", "tshirt", "tee", "top", "blouse", "dress", "skirt",
+    "trousers", "pants", "jeans", "shorts", "jacket", "coat", "hoodie",
+    "sweater", "sweatshirt", "jumper", "cardigan", "vest", "suit", "tie",
+    "uniform", "swimsuit", "swimming", "bikini", "trunks", "pyjamas",
+    "pajamas", "romper", "onesie", "overalls", "dungarees", "gown", "robe",
+    "costume", "outfit", "clothes", "clothing", "tracksuit", "leggings",
+    "tights", "socks", "shoes", "sneakers", "trainers", "boots", "sandals",
+    "scarf", "apron", "jersey", "kit",
+    # Headwear changes photo to photo just like a shirt does.
+    "hat", "cap", "beanie", "headband", "bandana", "helmet", "hood",
+})
+
+# Traits that stay with a person across years of photographs. Eyewear and
+# facial hair are in here deliberately: they are not permanent, but they are
+# stable over the span of a single family album and the styling prompt
+# already treats eyewear as an identifying feature.
+_DURABLE_TRAIT_WORDS = frozenset({
+    "bald", "balding", "shaved", "buzz-cut", "hair", "haired", "hairs",
+    "curly", "wavy", "straight", "long", "short", "cropped", "ponytail",
+    "pigtails", "braids", "braided", "bun", "dreadlocks", "afro", "fringe",
+    "blonde", "blond", "brunette", "ginger", "redhead", "red-haired",
+    "dark-haired", "brown-haired", "fair-haired", "grey", "gray", "greying",
+    "white-haired", "silver",
+    "beard", "bearded", "moustache", "mustache", "stubble", "goatee",
+    "glasses", "spectacles", "sunglasses", "eyeglasses",
+    "freckled", "freckles", "dimpled", "tattooed", "tattoo", "pierced",
+    "tall", "taller", "tallest", "small", "smaller", "smallest", "little",
+    "tiny", "big", "bigger", "biggest", "slim", "slender", "stocky", "burly",
+    "chubby", "plump", "heavyset", "broad-shouldered",
+    "older", "oldest", "younger", "youngest", "elderly", "grown", "teenage",
+    "teenaged", "middle-aged", "young", "old", "baby", "infant", "newborn",
+    "toddler", "elder",
+    "dark-skinned", "light-skinned", "pale", "tanned", "freckly",
+})
+
+# The bare noun for a person: durable, but on its own it cannot tell two boys
+# apart, so it never counts as the distinguishing trait.
+_PERSON_NOUNS = frozenset({
+    "man", "woman", "boy", "girl", "child", "kid", "baby", "toddler",
+    "infant", "person", "guy", "lady", "teenager", "teen", "adult", "dog",
+    "cat", "puppy",
+})
+
+
+def _epithet_tokens(text: str) -> list[str]:
+    return re.findall(r"[a-z][a-z\-]*", (text or "").lower())
+
+
+def is_clothing_anchored(epithet: str) -> bool:
+    """Does this epithet identify someone only by what they are wearing?
+
+    True for "the boy in the striped shirt" and "girl in purple dress";
+    False for "the bald man in pink sunglasses" (bald is durable), "the
+    taller boy", "the small boy with curly hair" — and False for anything
+    with no garment word at all, so a plain "the bald man" is never touched.
+
+    Strict in the safe direction: an epithet that carries ANY durable trait
+    is left alone even if it also mentions clothing, because the durable part
+    is what keeps working in the next photo.
+    """
+    tokens = _epithet_tokens(epithet)
+    if not tokens:
+        return False
+    if any(t in _DURABLE_TRAIT_WORDS for t in tokens):
+        return False
+    return any(t in _GARMENT_WORDS for t in tokens)
+
+
+def repair_cast_epithets(data: dict[str, Any]) -> list[str]:
+    """Replace clothing-only epithets with the durable ones, in place.
+
+    The model returns both a chosen ``epithet`` and a ``durable_epithet``
+    describing the same person by features that do not change between
+    photos. Code — not the model — decides which one the movie uses: when the
+    chosen epithet is anchored to clothing, the durable one takes its place
+    here AND in every motion prompt of the same response, so the two never
+    disagree.
+
+    Returns a list of human-readable "old -> new" swaps for logging. A
+    replacement is refused when it is missing, itself clothing-anchored, or
+    would collide with another character's epithet — a duplicate epithet is
+    worse than a fragile one, since it makes two people indistinguishable.
+    """
+    characters = data.get("characters")
+    if not isinstance(characters, list):
+        return []
+    taken = {
+        str(c.get("epithet", "")).strip().lower()
+        for c in characters if isinstance(c, dict)
+    }
+    swaps: list[tuple[str, str]] = []
+    for item in characters:
+        if not isinstance(item, dict):
+            continue
+        epithet = str(item.get("epithet") or "").strip()
+        if not epithet or not is_clothing_anchored(epithet):
+            continue
+        durable = " ".join(str(item.get("durable_epithet") or "").split())
+        if (
+            not durable
+            or is_clothing_anchored(durable)
+            or durable.lower() in taken
+        ):
+            continue
+        taken.discard(epithet.lower())
+        taken.add(durable.lower())
+        item["epithet"] = durable
+        swaps.append((epithet, durable))
+
+    # The prompts in this same response already use the old wording verbatim.
+    if swaps:
+        transitions = data.get("transitions")
+        for tr in transitions if isinstance(transitions, list) else []:
+            if not isinstance(tr, dict):
+                continue
+            for field in ("motion_prompt", "start_order", "end_order"):
+                value = tr.get(field)
+                if isinstance(value, str):
+                    tr[field] = _swap_all(value, swaps)
+                elif isinstance(value, list):
+                    tr[field] = [
+                        _swap_all(v, swaps) if isinstance(v, str) else v
+                        for v in value
+                    ]
+    return [f"{old!r} -> {new!r}" for old, new in swaps]
+
+
+def _swap_all(text: str, swaps: list[tuple[str, str]]) -> str:
+    """Replace each old epithet with its durable replacement, case-insensitively."""
+    for old, new in swaps:
+        text = re.sub(re.escape(old), new, text, flags=re.IGNORECASE)
+    return text
 
 
 def _realign_by_pair_index(items: list[Any], count: int) -> list[Any]:
@@ -1650,6 +1821,15 @@ class OpenAIClient:
 
         raw = self._retry(_call, "OpenAI analyze_frame_transitions")
         data = json.loads(raw)
+        # A cast epithet is used in every prompt that mentions that person,
+        # for the whole movie — so one anchored to this frame's clothing is
+        # replaced by the durable wording before anything downstream sees it.
+        swapped = repair_cast_epithets(data)
+        if swapped:
+            logger.info(
+                "Re-anchored %d cast epithet(s) that named clothing instead "
+                "of the person: %s", len(swapped), "; ".join(swapped),
+            )
         plans = self._coerce_transition_plans(data, n - 1, default_duration)
         return plans, _merge_cast(cast, data.get("characters"))
 

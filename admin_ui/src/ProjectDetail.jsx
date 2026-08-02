@@ -1790,24 +1790,51 @@ export default function ProjectDetail({ name, onBack }) {
               value={storyboard.global_motion_prompt || ''}
               onChange={(e) => editGlobalMotion(e.target.value)} />
           </Card>
-          {(storyboard.characters || []).length > 0 && (
-            <Card withBorder padding="md">
-              <Text size="sm" fw={500}>Cast</Text>
-              <Text size="xs" c="dimmed" mb="xs">
-                How motion prompts name each person — the video model sees only
-                pixels, so every mention uses these exact words. Keep them
-                short, appearance-only, and distinct from each other. Edits
-                apply to clips planned from now on: re-plan a clip to pick up a
-                change.
-              </Text>
-              <Stack gap="xs">
-                {(storyboard.characters || []).map((c) => (
-                  <TextInput key={c.id} size="xs" label={c.id} value={c.epithet}
-                    onChange={(e) => editCharacter(c.id, e.target.value)} />
-                ))}
-              </Stack>
-            </Card>
-          )}
+          {(storyboard.characters || []).length > 0 && (() => {
+            // Epithets that name clothing. The whole movie is built from
+            // photos taken far apart, so "the boy in the striped shirt"
+            // matches nobody in the next frame — the video model looks for a
+            // striped shirt, doesn't find one, and acts on whoever is
+            // nearest. New plans can't produce these any more; a cast written
+            // before that is left exactly as it is (its wording is baked into
+            // prompts already planned) and flagged here instead.
+            const fragile = new Set(snap.storyboard?.fragile_epithets || []);
+            return (
+              <Card withBorder padding="md">
+                <Text size="sm" fw={500}>Cast</Text>
+                <Text size="xs" c="dimmed" mb="xs">
+                  How motion prompts name each person — the video model sees
+                  only pixels, so every mention uses these exact words. Name
+                  what a person carries from photo to photo (age or relative
+                  size, hair, beard, glasses), never what they happen to be
+                  wearing. Edits apply to clips planned from now on: re-plan a
+                  clip to pick up a change.
+                </Text>
+                {fragile.size > 0 && (
+                  <Alert color="orange" variant="light" mb="xs"
+                    title={`${fragile.size} name${fragile.size > 1 ? 's' : ''} `
+                      + 'identify someone by their clothes'}>
+                    These were written before the planner was taught not to.
+                    They only work in the photo they came from — in every other
+                    frame that shirt is gone, and the video model puts the
+                    action on the wrong person. Rewrite them as something the
+                    person keeps (“the smaller boy with curly hair”, “the
+                    taller boy”), then re-plan the clips you want to use the
+                    new wording.
+                  </Alert>
+                )}
+                <Stack gap="xs">
+                  {(storyboard.characters || []).map((c) => (
+                    <TextInput key={c.id} size="xs" label={c.id} value={c.epithet}
+                      error={fragile.has(c.id)
+                        ? 'names clothing — use a feature that does not change'
+                        : undefined}
+                      onChange={(e) => editCharacter(c.id, e.target.value)} />
+                  ))}
+                </Stack>
+              </Card>
+            );
+          })()}
           {storyboard.transitions.map((tr) => (
             <TransitionCard key={tr.id} project={name} tr={tr} framesById={framesById}
               clip={clipsById[tr.output_path.split('/').pop()?.replace(/\.mp4$/, '')]}

@@ -3,11 +3,14 @@ pair_index re-alignment, and motion-prompt word budgets."""
 from __future__ import annotations
 
 from ai_video_maker.clients.openai_client import (
+    _MODE_A_SYSTEM,
     OpenAIClient,
     _merge_cast,
     _motion_word_limit,
     _realign_by_pair_index,
     is_arrangement_swap,
+    is_clothing_anchored,
+    repair_cast_epithets,
     stages_a_crossing,
 )
 from ai_video_maker.models import Character
@@ -718,3 +721,120 @@ class TestClipReviewCoercion:
         out = self._review(config, {})
         assert out["observed"] == ""
         assert out["suggested_motion_prompt"] == "the bald man walks in"
+
+
+class TestCastEpithetsSurviveTheMovie:
+    """A cast epithet is used across a film built from photos years apart.
+
+    "the boy in the striped shirt" describes one photograph perfectly and
+    matches nobody in the next one, where he is in a swimsuit — so the video
+    model hunts for a striped shirt, fails, and acts on whoever is nearest.
+    Prompt guidance alone did not hold this (a real plan came back with
+    "boy in yellow shirt", "boy in striped shirt", "girl in purple dress"),
+    so code decides, exactly as it does for arrangement swaps.
+    """
+
+    def test_clothing_only_epithets_are_caught(self):
+        for epithet in (
+            "boy in striped shirt",
+            "the girl in the purple dress",
+            "man in blue shirt",
+            "the woman in the red coat",
+            "the kid in the yellow t-shirt",
+            "the boy in the baseball cap",
+        ):
+            assert is_clothing_anchored(epithet), epithet
+
+    def test_durable_epithets_are_left_alone(self):
+        for epithet in (
+            "the bald man",
+            "the bald man in pink sunglasses",   # bald carries it
+            "the small boy with curly hair",
+            "the taller boy",
+            "the woman with long dark hair",
+            "the teenage girl",
+            "the bearded man in a green jacket",  # beard carries it
+        ):
+            assert not is_clothing_anchored(epithet), epithet
+
+    def test_an_epithet_with_no_clothing_at_all_is_never_touched(self):
+        assert not is_clothing_anchored("the older woman")
+        assert not is_clothing_anchored("")
+
+    def _data(self, epithet, durable, motion=None):
+        return {
+            "characters": [{"id": "son2", "epithet": epithet,
+                            "durable_epithet": durable}],
+            "transitions": [{
+                "pair_index": 1, "difficulty": 2,
+                "motion_prompt": motion or f"{epithet} runs to the water",
+                "sound_prompt": "waves",
+                "start_order": [epithet], "end_order": [epithet],
+            }],
+        }
+
+    def test_a_clothing_epithet_is_replaced_by_the_durable_one(self):
+        data = self._data("boy in striped shirt", "the smaller boy with curly hair")
+        swaps = repair_cast_epithets(data)
+        assert len(swaps) == 1
+        assert data["characters"][0]["epithet"] == "the smaller boy with curly hair"
+
+    def test_the_prompts_of_the_same_plan_are_rewritten_too(self):
+        # Otherwise the cast and the prompts would name the same person
+        # differently from the very first plan.
+        data = self._data("boy in striped shirt", "the smaller boy with curly hair")
+        repair_cast_epithets(data)
+        tr = data["transitions"][0]
+        assert tr["motion_prompt"] == "the smaller boy with curly hair runs to the water"
+        assert tr["start_order"] == ["the smaller boy with curly hair"]
+        assert tr["end_order"] == ["the smaller boy with curly hair"]
+
+    def test_a_durable_epithet_is_kept_as_written(self):
+        data = self._data("the bald man in pink sunglasses", "the bald man")
+        assert repair_cast_epithets(data) == []
+        assert data["characters"][0]["epithet"] == "the bald man in pink sunglasses"
+
+    def test_a_replacement_that_is_also_clothing_is_refused(self):
+        data = self._data("boy in striped shirt", "the boy in the blue shorts")
+        assert repair_cast_epithets(data) == []
+        assert data["characters"][0]["epithet"] == "boy in striped shirt"
+
+    def test_a_missing_replacement_leaves_the_original(self):
+        data = self._data("boy in striped shirt", "")
+        assert repair_cast_epithets(data) == []
+        assert data["characters"][0]["epithet"] == "boy in striped shirt"
+
+    def test_a_replacement_that_would_duplicate_someone_is_refused(self):
+        # Two people sharing one epithet is worse than a fragile epithet:
+        # neither can then be told from the other in any prompt.
+        data = {
+            "characters": [
+                {"id": "son1", "epithet": "the smaller boy with curly hair",
+                 "durable_epithet": "the smaller boy with curly hair"},
+                {"id": "son2", "epithet": "boy in striped shirt",
+                 "durable_epithet": "the smaller boy with curly hair"},
+            ],
+            "transitions": [],
+        }
+        assert repair_cast_epithets(data) == []
+        assert data["characters"][1]["epithet"] == "boy in striped shirt"
+
+    def test_junk_input_does_not_crash_the_repair(self):
+        assert repair_cast_epithets({}) == []
+        assert repair_cast_epithets({"characters": "nope"}) == []
+        assert repair_cast_epithets({"characters": [None, 3]}) == []
+
+
+class TestCastPromptForbidsClothing:
+    """The prompt side of the same rule, pinned against the live text."""
+
+    def test_the_planner_is_told_never_to_anchor_on_clothing(self):
+        system = _MODE_A_SYSTEM.lower()
+        assert "never anchor it to clothing" in system
+        assert "durable_epithet" in system
+        # The failing wording from the real plan is named as forbidden.
+        assert "the boy in the yellow shirt" in system
+
+    def test_relative_size_is_offered_when_durable_traits_match(self):
+        system = _MODE_A_SYSTEM.lower()
+        assert "the taller boy" in system and "the smaller boy" in system

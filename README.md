@@ -293,6 +293,45 @@ Notes:
 > delete its `styled_images/` and `storyboard/` and re-run `storyboard`
 > (re-styles everything once).
 
+### How people are named (the cast)
+
+Motion prompts never use names or relationships — the video model sees only
+pixels, so "the son splashes the water" with two men in frame is a coin flip.
+Every person instead gets a short **epithet** by visible appearance, pinned
+once in `storyboard.characters` and reused word for word in every prompt that
+mentions them (the panel's **Cast** editor shows them).
+
+Because a movie is assembled from photos taken months or years apart, an
+epithet must name what the person **carries between photos** — age band or
+relative size, hair (colour, length, texture, or its absence), facial hair,
+glasses, build:
+
+| Good | Bad |
+|------|-----|
+| the smaller boy with curly hair | the boy in the striped shirt |
+| the taller boy | the boy in the yellow shirt |
+| the bald man in pink sunglasses | the man in the blue shirt |
+| the teenage girl | the girl in the purple dress |
+
+Clothing is the trap: it identifies someone perfectly in the frame the cast
+was built from and matches nobody in the next one, where the video model hunts
+for a striped shirt, fails, and puts the action on whoever is nearest. The
+planner is told this outright, and — because prompt guidance alone did not
+hold it — **code checks**: each character also reports a `durable_epithet`,
+and a chosen epithet anchored to clothing is swapped for it automatically
+(along with every prompt in the same plan) before anything is saved.
+
+Two people who share every durable trait are separated by relative size
+("the taller boy" / "the smaller boy"), which still works in every photo. A
+passing detail can still ride along inside one clip's prompt — "the smaller
+boy with curly hair, here in a striped shirt" — without changing the epithet.
+
+> **An existing project keeps the cast it was planned with.** Epithets are
+> frozen on purpose: their wording is already baked into planned prompts, so
+> rewriting one silently would split a person's identity across the movie.
+> The panel flags any that name clothing so you can fix them by hand; re-plan
+> a clip (`storyboard --replan-clip ID`) for the new wording to be used.
+
 ### Teaching the planner (feedback → lessons)
 
 The planner writes each motion prompt **blind**: it sees two still frames and
