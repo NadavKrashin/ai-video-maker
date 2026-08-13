@@ -166,6 +166,22 @@ _COMPLETE_ENDING_SYSTEM = (
     "motion prompt, with no preamble or quotes."
 )
 
+# Last resort when a pair simply cannot be staged so that everyone is back
+# in frame at the end: move the CAMERA instead of the people (user call,
+# 2026-08-13 — "I don't want any clip to have an offscreen"). This is a
+# deliberate, narrow exception to the standing no-camera-moves rule, and it
+# is the honest answer for the pairs that reach it: a group of nine cannot
+# walk out and walk back in inside 10 seconds, so the alternative is not a
+# better staging, it is a cut. Deterministic on purpose — no extra call, and
+# it can never come back still ending offscreen. Must contain no _EXIT_MARKERS
+# (pinned by a test): "nobody leaves the frame" would ironically trip the
+# very check this exists to satisfy.
+CAMERA_SHIFT_MOTION_PROMPT = (
+    "The camera moves smoothly and steadily across to the new setting and "
+    "settles there, holding on the people standing together exactly as the "
+    "end frame shows them, everyone in full view."
+)
+
 # Condense an over-budget motion prompt down to what the clip can hold.
 _CONDENSE_MOTION_SYSTEM = (
     "You condense motion prompts for an image-to-video model that "
@@ -2268,10 +2284,26 @@ class OpenAIClient:
                         # without earning it.
                         logger.warning(
                             "Condensing put the ending back offscreen for pair "
-                            "%d and the repair did not land it; the clip stays "
-                            "flagged as ending offscreen.",
+                            "%d and the repair did not land it.",
                             i + 1,
                         )
+            # NOTHING ships with an offscreen ending. Every rewrite above can
+            # decline, and on hard pairs they do — a group of nine cannot walk
+            # out and back in inside one clip. Move the camera instead of the
+            # people: a narrow, deliberate exception to the no-camera-moves
+            # rule, because the real alternative here is a cut, not a better
+            # staging.
+            if ends_offscreen(motion):
+                heads = max(
+                    len(o) if isinstance(o, list) else 0 for o in orders(i)
+                )
+                logger.warning(
+                    "Pair %d cannot be staged back into frame (%s); falling "
+                    "back to a camera move to the new setting.",
+                    i + 1,
+                    f"{heads} people" if heads else "people not reported",
+                )
+                motion = CAMERA_SHIFT_MOTION_PROMPT
             sound = str(item.get("sound_prompt") or "").strip()
             plans.append((motion, duration, sound))
         return plans

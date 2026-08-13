@@ -117,6 +117,22 @@ Core design rules:
   Pinned by TestOffscreenEndingsAreRewritten. General lesson worth
   keeping: in this pipeline a prompt-side rule is a hypothesis; only a code
   check is a guarantee.
+- NOTHING SHIPS WITH AN OFFSCREEN ENDING (user call, 2026-08-13: "I don't
+  want any clip to have an offscreen"). Every rewrite above can decline, and
+  on hard pairs they do, so `_coerce_transition_plans` ends with an
+  unconditional last resort: a pair still ending offscreen gets
+  `CAMERA_SHIFT_MOTION_PROMPT` — the CAMERA moves to the new setting and
+  settles on the group. This is a deliberate, narrow EXCEPTION to the
+  no-camera-moves / subjects-only rules above, and the only place camera
+  language is allowed; don't "fix" it back. The reasoning: nine people
+  cannot walk out and back in inside 10s, so the alternative on those pairs
+  is a cut, not better staging. The user framed it as ">5 people", but 3 of
+  the 6 real survivors on am-130826-pcfd had 5, 4 and 3 people — gating on
+  group size would have left those ending offscreen, so it applies to every
+  unstageable pair. It is deterministic (no call, cannot itself come back
+  offscreen) and must contain no `_EXIT_MARKERS` — "nobody leaves the frame"
+  would trip the very check it exists to satisfy. Pinned by
+  TestNothingShipsWithAnOffscreenEnding.
 - EVERY PERSON WHO MOVES GETS A CONCRETE PHYSICAL VERB (user call,
   2026-07-28, same thread). Kling animates BODIES, so the prompt must name
   a movement you could act out — walk, step, turn, crouch, kneel, climb,

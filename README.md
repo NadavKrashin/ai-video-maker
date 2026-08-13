@@ -691,9 +691,12 @@ clip interpolates from one styled frame to the next):
    The clip is pinned to its end frame, which shows those people, so a prompt
    that empties the frame and stops describes a clip that cannot exist — the
    video model answers it with a cut or a teleport. The rewrite adds the walk
-   back in; if it can't, the original is kept and the transition is flagged
-   **ends offscreen** in `status` and the panel, for you to fix by hand or
-   re-plan. Hand-edited prompts should land on the end frame too.
+   back in. If it still can't — a group of nine cannot walk out and back in
+   inside one clip — the pair falls back to a **camera move** to the new
+   setting, settling on the group. That is the one place camera language is
+   allowed, and it is deliberate: on those pairs the alternative is a cut,
+   not a better staging. No plan leaves this step ending offscreen.
+   Hand-edited prompts should land on the end frame too.
 
 `--no-analyze` skips step 3's vision call and uses the single global motion
 prompt with one duration for every clip. `--duration 5|10` forces one length
