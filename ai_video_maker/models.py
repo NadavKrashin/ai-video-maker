@@ -50,6 +50,17 @@ class Frame(BaseModel):
     # mtimes lie: a cloud-sync client re-materializing untouched files once
     # made every frame look "changed" and wiped a project's rendered clips.
     styled_hash: str = ""
+    # Optional per-frame styling guidance, appended to the shared style prompt
+    # for THIS frame only (hand-edited between steps, carried across
+    # reconciles). For photos the global prompt reads wrong: it is written for
+    # portraits of people ("the subjects are the picture", "keep the people at
+    # least as large as in the source"), which on a scene photo whose only
+    # people are a tiny reflection reads as an instruction to promote them to
+    # the foreground — a real frame came back with two invented faces standing
+    # on a doorstep. Editing this does NOT re-style on its own: styling resume
+    # is existence-based, so spend the credit deliberately with
+    # `storyboard --restyle-frame <name>`.
+    style_note: str = ""
 
 
 class Character(BaseModel):

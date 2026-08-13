@@ -1015,6 +1015,88 @@ class TestRestyleImages:
             p._style_images(images, {})
 
 
+class TestPerFrameStyleNote:
+    """Frame.style_note steers ONE frame's styling without touching the rest.
+
+    The shared style prompt is written for portraits of people; on a scene
+    photo whose only people are a small reflection it reads as "promote them",
+    and a real frame came back with two invented faces. The note is the
+    per-frame escape hatch.
+    """
+
+    def _capture(self, p):
+        """Record (source name, prompt) for every style call; skip the network."""
+        calls = []
+
+        class _FakeOpenAI:
+            def style_image(self, src, prompt, dst):
+                calls.append((src.name, prompt))
+                dst.write_bytes(b"styled")
+
+        p.__dict__["openai"] = _FakeOpenAI()
+        return calls
+
+    def _pipeline_with_frames(self, make_pipeline, workspace, names):
+        pairs = _make_frame_pairs(workspace, names)
+        for _, dst in pairs:
+            dst.unlink()  # nothing styled yet -> every frame is styled now
+        p = make_pipeline()
+        return p, [src for src, _ in pairs], self._capture(p)
+
+    def test_note_is_appended_for_that_frame_only(self, make_pipeline, workspace):
+        p, images, calls = self._pipeline_with_frames(
+            make_pipeline, workspace, ["a", "b"]
+        )
+        p._style_images(
+            images, {}, {"styled_images/a.png": "keep the reflection a reflection"}
+        )
+        got = dict(calls)
+        assert "keep the reflection a reflection" in got["a.jpg"]
+        assert got["a.jpg"].startswith("test style")  # shared prompt still applies
+        assert got["b.jpg"] == "test style"  # untouched frame unaffected
+
+    def test_blank_note_leaves_the_prompt_alone(self, make_pipeline, workspace):
+        p, images, calls = self._pipeline_with_frames(make_pipeline, workspace, ["a"])
+        p._style_images(images, {}, {"styled_images/a.png": "   "})
+        assert dict(calls)["a.jpg"] == "test style"
+
+    def test_note_is_not_a_restyle_trigger(self, make_pipeline, workspace):
+        """A new note must never spend credits on its own — styling resume is
+        existence-based, so it lands on the next explicit --restyle-frame."""
+        pairs = _make_frame_pairs(workspace, ["a", "b"])  # both already styled
+        p = make_pipeline(dry_run=True)
+        p._style_images(
+            [s for s, _ in pairs], {}, {"styled_images/a.png": "a fresh note"}
+        )
+        assert p.summary.styled_created == 0
+        assert p.summary.styled_skipped == 2
+
+    def test_restyle_frame_applies_the_note(self, make_pipeline, workspace):
+        pairs = _make_frame_pairs(workspace, ["a", "b"])
+        p = make_pipeline(restyle_frames=["a.png"])
+        calls = self._capture(p)
+        p._style_images(
+            [s for s, _ in pairs], {}, {"styled_images/a.png": "a reflection, not people"}
+        )
+        assert [n for n, _ in calls] == ["a.jpg"]  # only the named frame
+        assert "a reflection, not people" in calls[0][1]
+
+    def test_note_survives_reconcile(self, make_pipeline, workspace):
+        """Frames are rebuilt from disk each run; a hand-written note must not
+        be dropped by the next `storyboard`."""
+        p = make_pipeline(analyze_frames=False)
+        pairs = _make_frame_pairs(workspace, ["a", "b"])
+        saved = _save_slug_storyboard(workspace, ["a", "b"])
+        saved.frames[0].style_note = "keep it a facade shot"
+        saved.save(workspace.default_storyboard_json)
+
+        reloaded = Storyboard.load(workspace.default_storyboard_json)
+        sb, _, _ = p._reconcile_storyboard(reloaded, pairs)
+        notes = {f.output_path: f.style_note for f in sb.frames}
+        assert notes["styled_images/a.png"] == "keep it a facade shot"
+        assert notes["styled_images/b.png"] == ""
+
+
 class TestResolveMusicFile:
     """The bed is always a supplied track; nothing is ever generated."""
 
