@@ -131,6 +131,41 @@ _RESTAGE_SWAP_SYSTEM = (
     "with no preamble or quotes."
 )
 
+# Finish a motion prompt whose last beat leaves someone out of the frame.
+# Detected in code (`ends_offscreen`) for the same reason word caps are: the
+# rule is in _MODE_A_SYSTEM and the planner writes them anyway — a full
+# re-plan of a real 44-pair movie came back with the SAME 29 pairs ending on
+# an exit, because nothing rejected them.
+_COMPLETE_ENDING_SYSTEM = (
+    "You fix motion prompts for an image-to-video model that interpolates "
+    "between two given frames (the START and END of one clip). The prompt you "
+    "are given has one specific fault: its LAST beat leaves somebody out of "
+    "the frame — they walk out, exit past the camera, or end up offscreen — "
+    "and nothing brings them back. "
+    "THE CLIP IS PINNED TO THE END FRAME, which SHOWS those people standing "
+    "in it. A prompt that empties the frame and stops there describes a clip "
+    "that cannot exist, so the video model resolves it the only way it can: "
+    "with a cut, or by teleporting everyone into place at the last instant. "
+    "Rewrite the prompt so it ENDS on the people arranged as the end frame "
+    "shows them. Keep the original's staging and its concrete physical verbs "
+    "— if people leave the frame, that exit can stay, but the same prompt "
+    "must then walk them back in (say which side each returns from) and the "
+    "final clause is them standing where they end up. If the exit earns "
+    "nothing, drop it instead and let them move directly to their end-frame "
+    "positions. Never end on anyone leaving, walking away, or being "
+    "offscreen. "
+    "Rules that still apply: describe ONLY the people, never the setting, "
+    "the background or the location (the two frames already fix all of "
+    "that); give everyone who moves a concrete physical verb (walk, step, "
+    "turn, cross, crouch) and never an abstraction ('squeeze closer', "
+    "'share a moment'); refer to each person by their visible-appearance "
+    "epithet, never a name or a relationship word, and never a bare "
+    "collective 'they' for an action belonging to one person; keep the pace "
+    "unhurried and describe an ARRIVAL rather than a whole route; stay "
+    "within the stated word limit. Present tense. Return ONLY the rewritten "
+    "motion prompt, with no preamble or quotes."
+)
+
 # Condense an over-budget motion prompt down to what the clip can hold.
 _CONDENSE_MOTION_SYSTEM = (
     "You condense motion prompts for an image-to-video model that "
@@ -163,9 +198,14 @@ _CONDENSE_MOTION_SYSTEM = (
     "position-swap staging (people leaving frame and re-entering, one "
     "crossing past another) — that staging is what prevents the model from "
     "morphing one person into another, so condense around it, never into "
-    "everyone holding still; (4) a brief final clause "
+    "everyone holding still. If the prompt walks someone OUT of frame, the "
+    "words that walk them BACK IN are not optional padding: cutting them "
+    "leaves the clip ending on an empty frame when it has to land on the end "
+    "frame, and the model answers that with a cut. Drop the whole exit "
+    "before you drop its return; (4) a brief final clause "
     "landing on the same end state the original ends on, on the same side "
-    "of the frame. CUT EVERY WORD ABOUT THE SCENE FIRST: the background, "
+    "of the frame — never on anyone leaving, walking away or offscreen. "
+    "CUT EVERY WORD ABOUT THE SCENE FIRST: the background, "
     "the location and its name, the light, the weather, the time of day — "
     "the two frames already fix all of it and the video model interpolates "
     "it by itself, so those words are free to lose and always go before "
@@ -2195,8 +2235,29 @@ class OpenAIClient:
             # prompt was missing, and may come back over budget.
             if i in swaps and not stages_a_crossing(motion):
                 motion = self._restage_swapped_pair(motion, duration, *orders(i))
+            # An exit with no return is HALF a staging, and the clip is pinned
+            # to the end frame — so a prompt whose last beat empties the frame
+            # describes a clip that cannot exist and the model answers with a
+            # cut. Enforced here rather than left to _MODE_A_SYSTEM for the
+            # same reason word caps are: a full re-plan of a real 44-pair
+            # movie came back with the SAME 29 pairs ending on an exit.
+            # Also before the cap — the walk-back-in costs words.
+            if ends_offscreen(motion):
+                motion = self._complete_offscreen_ending(
+                    motion, duration, orders(i)[1]
+                )
             if len(motion.split()) > _motion_word_limit(duration):
+                landed = not ends_offscreen(motion)
                 motion = self._condense_motion_prompt(motion, duration)
+                # Condensing is told to drop an exit before its return; say so
+                # out loud when it does it anyway, because the result is a
+                # prompt that reads fine and renders as a cut.
+                if landed and ends_offscreen(motion):
+                    logger.warning(
+                        "Condensing put the ending back offscreen for pair %d; "
+                        "the clip will be flagged as ending offscreen.",
+                        i + 1,
+                    )
             sound = str(item.get("sound_prompt") or "").strip()
             plans.append((motion, duration, sound))
         return plans
@@ -2262,6 +2323,60 @@ class OpenAIClient:
             logger.warning(
                 "Restaging the swapped pair failed (%s); keeping the original",
                 exc,
+            )
+        return prompt
+
+    def _complete_offscreen_ending(
+        self, prompt: str, duration: int, end_order: Any = None,
+    ) -> str:
+        """Rewrite a prompt whose last beat leaves someone out of the frame.
+
+        Accepts the rewrite only if it actually lands the clip — a rewrite
+        that still ends offscreen has fixed nothing, and taking it would
+        replace a known-bad prompt with a differently-worded bad one while
+        clearing the warning the panel shows. Falls back to the original on
+        any failure: a badly staged clip still renders, and planning must
+        never hard-stop over it.
+        """
+        limit = _motion_word_limit(duration)
+        names = (
+            ", ".join(str(n) for n in end_order)
+            if isinstance(end_order, list) and end_order
+            else "(not reported)"
+        )
+        logger.info(
+            "Motion prompt ends with someone offscreen but the clip has to "
+            "land on the end frame; rewriting the ending (end frame, left to "
+            "right: %s)", names,
+        )
+        try:
+            client = self._ensure_client()
+            resp = client.chat.completions.create(
+                model=self.config.openai_text_model,
+                messages=[
+                    {"role": "system", "content": _COMPLETE_ENDING_SYSTEM},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Clip length: {duration} seconds. "
+                            f"Word limit: {limit}.\n"
+                            f"End frame, left to right: {names}\n\n"
+                            f"{prompt}"
+                        ),
+                    },
+                ],
+            )
+            self._note_text_usage(resp, "complete offscreen ending")
+            fixed = (resp.choices[0].message.content or "").strip()
+            if fixed and not ends_offscreen(fixed):
+                return fixed
+            logger.warning(
+                "The rewrite still ended offscreen; keeping the original"
+            )
+        except Exception as exc:  # noqa: BLE001 - keep planning alive
+            logger.warning(
+                "Completing the offscreen ending failed (%s); keeping the "
+                "original", exc,
             )
         return prompt
 

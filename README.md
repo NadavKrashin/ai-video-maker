@@ -686,6 +686,15 @@ clip interpolates from one styled frame to the next):
    fakes beats it can't fit (whip-pan blurs, swapped people). Keep hand-edited
    prompts inside the same budget.
 
+   A prompt whose **last beat leaves someone out of the frame** ("…and walk
+   out of frame to the left") is rewritten the same way, before the word cap.
+   The clip is pinned to its end frame, which shows those people, so a prompt
+   that empties the frame and stops describes a clip that cannot exist — the
+   video model answers it with a cut or a teleport. The rewrite adds the walk
+   back in; if it can't, the original is kept and the transition is flagged
+   **ends offscreen** in `status` and the panel, for you to fix by hand or
+   re-plan. Hand-edited prompts should land on the end frame too.
+
 `--no-analyze` skips step 3's vision call and uses the single global motion
 prompt with one duration for every clip. `--duration 5|10` forces one length
 for all clips even with analysis on.
