@@ -105,7 +105,16 @@ Core design rules:
   REFUSED — taking it would swap a known-bad prompt for a differently-worded
   bad one while clearing the panel's badge. Condensing is told to drop a
   whole exit before dropping its return, and warns if it reopens the ending
-  anyway. Pinned by TestOffscreenEndingsAreRewritten. General lesson worth
+  anyway — and then REPAIRS it with one more completion call at the tighter
+  budget (the text is short by then, so the walk-back-in has room). If the
+  repair still won't land, the CONDENSED prompt is kept, never the long one
+  that landed: an over-budget prompt renders as a rushed blur that reads
+  like a cut, so swapping one failure for another would only clear the
+  panel's badge without earning it. Measured on am-130826-pcfd: 29/44
+  offscreen endings → 9 with the rewrite, → 6 with the repair. Prompts are
+  stochastic, so the survivors differ run to run; the residual is the
+  rewriter genuinely refusing on hard pairs, which is the honest outcome.
+  Pinned by TestOffscreenEndingsAreRewritten. General lesson worth
   keeping: in this pipeline a prompt-side rule is a hypothesis; only a code
   check is a guarantee.
 - EVERY PERSON WHO MOVES GETS A CONCRETE PHYSICAL VERB (user call,

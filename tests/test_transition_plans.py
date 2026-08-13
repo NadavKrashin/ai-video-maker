@@ -1213,25 +1213,78 @@ class TestOffscreenEndingsAreRewritten:
         _plans(config, self._data(long_offscreen), 1)
         assert order == ["ending", "condense"]
 
-    def test_condensing_that_reopens_the_ending_is_reported(
-        self, config, monkeypatch, caplog
-    ):
-        """It still gets flagged, but it must not pass silently."""
+    def _reopening_condense(self, monkeypatch, endings):
+        """Condense always re-opens the ending; `endings` feeds the rewriter.
+
+        Measured on am-130826-pcfd: condensing put 7 of the 9 remaining
+        endings back offscreen, despite being told to drop a whole exit
+        before dropping its return.
+        """
+        calls = iter(endings)
+        seen = []
         monkeypatch.setattr(
             OpenAIClient, "_complete_offscreen_ending",
-            lambda self, p, d, e=None: (
-                TestOffscreenEndingsAreRewritten.LONG_LANDS
-            ),
+            lambda self, p, d, e=None: seen.append(p) or next(calls),
         )
         monkeypatch.setattr(
             OpenAIClient, "_condense_motion_prompt",
             lambda self, p, d: "the boy walks out of frame",
         )
+        return seen
+
+    def test_condensing_that_reopens_the_ending_is_repaired(
+        self, config, monkeypatch
+    ):
+        """The prompt is short by now, so the walk-back-in has room."""
+        short_landing = "the boy steps back in from the left beside the woman"
+        seen = self._reopening_condense(
+            monkeypatch, [self.LONG_LANDS, short_landing]
+        )
+        long_offscreen = self.THE_REAL_ONE + " " + " ".join(["extra"] * 60)
+        motion, _, _ = _plans(config, self._data(long_offscreen), 1)[0]
+        assert motion == short_landing
+        assert not ends_offscreen(motion)
+        # The repair ran on the CONDENSED text, not the original.
+        assert seen[1] == "the boy walks out of frame"
+
+    def test_a_failed_repair_keeps_the_condensed_prompt(
+        self, config, monkeypatch, caplog
+    ):
+        """Never swap one failure for another just to clear the badge.
+
+        The long prompt lands but blows the word cap, which renders as a
+        rushed blur that reads like a cut. Keeping it would clear the panel's
+        warning without earning it, so the condensed prompt stays and stays
+        flagged.
+        """
+        self._reopening_condense(
+            monkeypatch, [self.LONG_LANDS, "they all walk out of frame"]
+        )
         long_offscreen = self.THE_REAL_ONE + " " + " ".join(["extra"] * 60)
         with caplog.at_level("WARNING"):
             motion, _, _ = _plans(config, self._data(long_offscreen), 1)[0]
+        assert motion == "the boy walks out of frame"  # condensed, not the long one
         assert ends_offscreen(motion)  # surfaced, not silently kept
-        assert "back offscreen" in caplog.text
+        assert "did not land it" in caplog.text
+
+    def test_no_repair_when_condensing_kept_the_landing(
+        self, config, monkeypatch
+    ):
+        calls = []
+        monkeypatch.setattr(
+            OpenAIClient, "_complete_offscreen_ending",
+            lambda self, p, d, e=None: (
+                calls.append(p) or TestOffscreenEndingsAreRewritten.LONG_LANDS
+            ),
+        )
+        monkeypatch.setattr(
+            OpenAIClient, "_condense_motion_prompt",
+            lambda self, p, d: "the boy steps back in from the left",
+        )
+        long_offscreen = self.THE_REAL_ONE + " " + " ".join(["extra"] * 60)
+        motion, _, _ = _plans(config, self._data(long_offscreen), 1)[0]
+        assert motion == "the boy steps back in from the left"
+        assert len(calls) == 1  # the first rewrite only, no repair
 
     def test_the_end_frame_people_are_given_to_the_rewriter(
         self, config, monkeypatch

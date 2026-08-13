@@ -2249,15 +2249,29 @@ class OpenAIClient:
             if len(motion.split()) > _motion_word_limit(duration):
                 landed = not ends_offscreen(motion)
                 motion = self._condense_motion_prompt(motion, duration)
-                # Condensing is told to drop an exit before its return; say so
-                # out loud when it does it anyway, because the result is a
-                # prompt that reads fine and renders as a cut.
+                # Condensing is TOLD to drop a whole exit before dropping its
+                # return, and does it anyway: on the movie that prompted the
+                # rewrite step, condensing re-opened 7 of the 9 endings that
+                # were left. Repair it once, at the tighter budget this time
+                # — the prompt is already short, so the walk-back-in has room.
                 if landed and ends_offscreen(motion):
-                    logger.warning(
-                        "Condensing put the ending back offscreen for pair %d; "
-                        "the clip will be flagged as ending offscreen.",
-                        i + 1,
+                    repaired = self._complete_offscreen_ending(
+                        motion, duration, orders(i)[1]
                     )
+                    if not ends_offscreen(repaired):
+                        motion = repaired
+                    else:
+                        # Keep the CONDENSED prompt, not the long one that
+                        # landed: an over-budget prompt renders as a rushed
+                        # blur that reads like a cut, so swapping one failure
+                        # for another would only clear the panel's badge
+                        # without earning it.
+                        logger.warning(
+                            "Condensing put the ending back offscreen for pair "
+                            "%d and the repair did not land it; the clip stays "
+                            "flagged as ending offscreen.",
+                            i + 1,
+                        )
             sound = str(item.get("sound_prompt") or "").strip()
             plans.append((motion, duration, sound))
         return plans
