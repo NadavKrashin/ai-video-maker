@@ -91,6 +91,23 @@ Core design rules:
   "…squeeze a little closer, share a quiet smile, then slowly step toward
   the camera and past it" — hold-steady staging on swapped people, ending
   on the exit. Pinned by TestMotionPromptsDescribeSubjectsOnly.
+- ...AND THE EXIT RULE NEEDED CODE TOO (2026-08-13), exactly like the word
+  caps. With the rule in `_MODE_A_SYSTEM` and `ends_offscreen` written, a
+  full `--replan-all` of a real 44-pair movie (am-130826-pcfd, correctly
+  tagged first) came back with the SAME 29 pairs ending on an exit — the
+  identical id set, because nothing rejected them: `ends_offscreen` was
+  called in exactly ONE place, the arrangement-swap restage retry, and that
+  retry gave up 6 times out of 7 ("keeping the original", which was itself
+  offscreen-ending). `_coerce_transition_plans` now runs every planned
+  prompt through `_complete_offscreen_ending` (a targeted rewrite that adds
+  the walk-back-in, `_COMPLETE_ENDING_SYSTEM`), BEFORE the word cap because
+  the return beat costs words. A rewrite that still ends offscreen is
+  REFUSED — taking it would swap a known-bad prompt for a differently-worded
+  bad one while clearing the panel's badge. Condensing is told to drop a
+  whole exit before dropping its return, and warns if it reopens the ending
+  anyway. Pinned by TestOffscreenEndingsAreRewritten. General lesson worth
+  keeping: in this pipeline a prompt-side rule is a hypothesis; only a code
+  check is a guarantee.
 - EVERY PERSON WHO MOVES GETS A CONCRETE PHYSICAL VERB (user call,
   2026-07-28, same thread). Kling animates BODIES, so the prompt must name
   a movement you could act out — walk, step, turn, crouch, kneel, climb,

@@ -1090,3 +1090,180 @@ class TestSwappedPairsAreRestagedCompletely:
             "left; the woman crosses behind him to the right"
         )
         assert self._restage(config, good, monkeypatch) == good
+
+
+class TestOffscreenEndingsAreRewritten:
+    """An exit with no return is enforced in CODE, not just in the prompt.
+
+    The rule lives in _MODE_A_SYSTEM, and the planner writes them anyway: a
+    full --replan-all of a real 44-pair movie (am-130826-pcfd) came back with
+    the SAME 29 pairs ending on an exit, because nothing rejected them. Only
+    the arrangement-swap restage checked, and it gave up 6 times out of 7.
+    """
+
+    # Straight off that movie's 0e_to_0f card, planned with correct tags.
+    THE_REAL_ONE = (
+        "The teenage boy with short brown hair, teenage girl with long dark "
+        "hair, woman with long dark hair, and man with short brown hair stand "
+        "up, push back their chairs, and walk out of frame to the left as the "
+        "remaining five stay seated."
+    )
+    LANDS = (
+        "the teenage boy with short brown hair walks out past the camera and "
+        "steps back in from the left beside the woman with long dark hair"
+    )
+    # The same landing rewrite, still over budget — the walk-back-in costs
+    # words, which is exactly why the cap has to run after it.
+    LONG_LANDS = LANDS + " " + " ".join(["slowly"] * 60)
+
+    def _data(self, motion, difficulty=1):
+        return {"transitions": [{
+            "pair_index": 1, "difficulty": difficulty,
+            "motion_prompt": motion, "sound_prompt": "",
+        }]}
+
+    def _client(self, config, reply, monkeypatch, boom=False):
+        client = OpenAIClient(config)
+
+        class _Msg:
+            content = reply
+
+        class _Choice:
+            message = _Msg()
+
+        class _Resp:
+            choices = [_Choice()]
+            usage = None
+
+        class _Completions:
+            @staticmethod
+            def create(**kwargs):
+                if boom:
+                    raise RuntimeError("the model is down")
+                return _Resp()
+
+        class _Client:
+            class chat:
+                completions = _Completions()
+
+        monkeypatch.setattr(client, "_ensure_client", lambda: _Client())
+        return client
+
+    def test_the_real_prompt_is_detected(self):
+        assert ends_offscreen(self.THE_REAL_ONE)
+
+    def test_an_offscreen_ending_is_rewritten(self, config, monkeypatch):
+        client = self._client(config, self.LANDS, monkeypatch)
+        motion, _, _ = client._coerce_transition_plans(
+            self._data(self.THE_REAL_ONE), 1, None
+        )[0]
+        assert motion == self.LANDS
+        assert not ends_offscreen(motion)
+
+    def test_a_landing_prompt_is_left_alone(self, config, monkeypatch):
+        """No rewrite call at all when the prompt already lands."""
+        good = "the bald man turns to face the camera and smiles"
+        calls = []
+        monkeypatch.setattr(
+            OpenAIClient, "_complete_offscreen_ending",
+            lambda self, p, d, e=None: calls.append(p) or p,
+        )
+        motion, _, _ = _plans(config, self._data(good), 1)[0]
+        assert motion == good
+        assert calls == []
+
+    def test_a_rewrite_that_still_ends_offscreen_is_refused(
+        self, config, monkeypatch
+    ):
+        """Taking it would clear the panel's warning without fixing the clip."""
+        client = self._client(
+            config, "they all walk out of frame to the left", monkeypatch
+        )
+        assert client._complete_offscreen_ending(
+            self.THE_REAL_ONE, 10
+        ) == self.THE_REAL_ONE
+
+    def test_an_empty_rewrite_is_refused(self, config, monkeypatch):
+        client = self._client(config, "   ", monkeypatch)
+        assert client._complete_offscreen_ending(
+            self.THE_REAL_ONE, 10
+        ) == self.THE_REAL_ONE
+
+    def test_a_failed_call_never_sinks_planning(self, config, monkeypatch):
+        client = self._client(config, "unused", monkeypatch, boom=True)
+        assert client._complete_offscreen_ending(
+            self.THE_REAL_ONE, 10
+        ) == self.THE_REAL_ONE
+
+    def test_the_rewrite_runs_before_the_word_cap(self, config, monkeypatch):
+        """The walk-back-in costs words, so it must be added before trimming."""
+        order = []
+        monkeypatch.setattr(
+            OpenAIClient, "_complete_offscreen_ending",
+            lambda self, p, d, e=None: (
+                order.append("ending")
+                or TestOffscreenEndingsAreRewritten.LONG_LANDS
+            ),
+        )
+        monkeypatch.setattr(
+            OpenAIClient, "_condense_motion_prompt",
+            lambda self, p, d: order.append("condense") or "short landing prompt",
+        )
+        long_offscreen = self.THE_REAL_ONE + " " + " ".join(["extra"] * 60)
+        _plans(config, self._data(long_offscreen), 1)
+        assert order == ["ending", "condense"]
+
+    def test_condensing_that_reopens_the_ending_is_reported(
+        self, config, monkeypatch, caplog
+    ):
+        """It still gets flagged, but it must not pass silently."""
+        monkeypatch.setattr(
+            OpenAIClient, "_complete_offscreen_ending",
+            lambda self, p, d, e=None: (
+                TestOffscreenEndingsAreRewritten.LONG_LANDS
+            ),
+        )
+        monkeypatch.setattr(
+            OpenAIClient, "_condense_motion_prompt",
+            lambda self, p, d: "the boy walks out of frame",
+        )
+        long_offscreen = self.THE_REAL_ONE + " " + " ".join(["extra"] * 60)
+        with caplog.at_level("WARNING"):
+            motion, _, _ = _plans(config, self._data(long_offscreen), 1)[0]
+        assert ends_offscreen(motion)  # surfaced, not silently kept
+        assert "back offscreen" in caplog.text
+
+    def test_the_end_frame_people_are_given_to_the_rewriter(
+        self, config, monkeypatch
+    ):
+        """It has to know where people end up to write them back in."""
+        seen = {}
+        client = OpenAIClient(config)
+
+        class _Msg:
+            content = TestOffscreenEndingsAreRewritten.LANDS
+
+        class _Choice:
+            message = _Msg()
+
+        class _Resp:
+            choices = [_Choice()]
+            usage = None
+
+        class _Completions:
+            @staticmethod
+            def create(**kwargs):
+                seen.update(kwargs)
+                return _Resp()
+
+        class _Client:
+            class chat:
+                completions = _Completions()
+
+        monkeypatch.setattr(client, "_ensure_client", lambda: _Client())
+        client._complete_offscreen_ending(
+            self.THE_REAL_ONE, 10, ["the bald man", "the woman"]
+        )
+        user = seen["messages"][1]["content"]
+        assert "the bald man, the woman" in user
+        assert "Word limit: 60" in user
