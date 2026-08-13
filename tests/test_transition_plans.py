@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ai_video_maker.clients.openai_client import (
     _MODE_A_SYSTEM,
+    CAMERA_SHIFT_MOTION_PROMPT,
     OpenAIClient,
     _coerce_frame_people,
     _tagged_people_block,
@@ -1213,25 +1214,79 @@ class TestOffscreenEndingsAreRewritten:
         _plans(config, self._data(long_offscreen), 1)
         assert order == ["ending", "condense"]
 
-    def test_condensing_that_reopens_the_ending_is_reported(
-        self, config, monkeypatch, caplog
-    ):
-        """It still gets flagged, but it must not pass silently."""
+    def _reopening_condense(self, monkeypatch, endings):
+        """Condense always re-opens the ending; `endings` feeds the rewriter.
+
+        Measured on am-130826-pcfd: condensing put 7 of the 9 remaining
+        endings back offscreen, despite being told to drop a whole exit
+        before dropping its return.
+        """
+        calls = iter(endings)
+        seen = []
         monkeypatch.setattr(
             OpenAIClient, "_complete_offscreen_ending",
-            lambda self, p, d, e=None: (
-                TestOffscreenEndingsAreRewritten.LONG_LANDS
-            ),
+            lambda self, p, d, e=None: seen.append(p) or next(calls),
         )
         monkeypatch.setattr(
             OpenAIClient, "_condense_motion_prompt",
             lambda self, p, d: "the boy walks out of frame",
         )
+        return seen
+
+    def test_condensing_that_reopens_the_ending_is_repaired(
+        self, config, monkeypatch
+    ):
+        """The prompt is short by now, so the walk-back-in has room."""
+        short_landing = "the boy steps back in from the left beside the woman"
+        seen = self._reopening_condense(
+            monkeypatch, [self.LONG_LANDS, short_landing]
+        )
+        long_offscreen = self.THE_REAL_ONE + " " + " ".join(["extra"] * 60)
+        motion, _, _ = _plans(config, self._data(long_offscreen), 1)[0]
+        assert motion == short_landing
+        assert not ends_offscreen(motion)
+        # The repair ran on the CONDENSED text, not the original.
+        assert seen[1] == "the boy walks out of frame"
+
+    def test_a_failed_repair_never_keeps_the_over_budget_prompt(
+        self, config, monkeypatch, caplog
+    ):
+        """Never swap one failure for another.
+
+        The long prompt lands but blows the word cap, which renders as a
+        rushed blur that reads like a cut — so it is not the answer either.
+        The pair falls through to the camera-move last resort instead, and
+        the reason is logged on the way past.
+        """
+        self._reopening_condense(
+            monkeypatch, [self.LONG_LANDS, "they all walk out of frame"]
+        )
         long_offscreen = self.THE_REAL_ONE + " " + " ".join(["extra"] * 60)
         with caplog.at_level("WARNING"):
             motion, _, _ = _plans(config, self._data(long_offscreen), 1)[0]
-        assert ends_offscreen(motion)  # surfaced, not silently kept
-        assert "back offscreen" in caplog.text
+        assert motion != self.LONG_LANDS  # the over-budget one is refused
+        assert motion == CAMERA_SHIFT_MOTION_PROMPT
+        assert not ends_offscreen(motion)
+        assert "did not land it" in caplog.text
+
+    def test_no_repair_when_condensing_kept_the_landing(
+        self, config, monkeypatch
+    ):
+        calls = []
+        monkeypatch.setattr(
+            OpenAIClient, "_complete_offscreen_ending",
+            lambda self, p, d, e=None: (
+                calls.append(p) or TestOffscreenEndingsAreRewritten.LONG_LANDS
+            ),
+        )
+        monkeypatch.setattr(
+            OpenAIClient, "_condense_motion_prompt",
+            lambda self, p, d: "the boy steps back in from the left",
+        )
+        long_offscreen = self.THE_REAL_ONE + " " + " ".join(["extra"] * 60)
+        motion, _, _ = _plans(config, self._data(long_offscreen), 1)[0]
+        assert motion == "the boy steps back in from the left"
+        assert len(calls) == 1  # the first rewrite only, no repair
 
     def test_the_end_frame_people_are_given_to_the_rewriter(
         self, config, monkeypatch
@@ -1267,3 +1322,87 @@ class TestOffscreenEndingsAreRewritten:
         user = seen["messages"][1]["content"]
         assert "the bald man, the woman" in user
         assert "Word limit: 60" in user
+
+
+class TestNothingShipsWithAnOffscreenEnding:
+    """User call, 2026-08-13: "I don't want any clip to have an offscreen."
+
+    Every rewrite above may decline, and on hard pairs they do — nine people
+    cannot walk out and back in inside one clip. The last resort moves the
+    CAMERA instead of the people: a deliberate, narrow exception to the
+    no-camera-moves rule, taken because the real alternative on those pairs
+    is a cut, not a better staging.
+    """
+
+    OFFSCREEN = "the nine of them walk out of frame to the left"
+
+    def _data(self, motion):
+        return {"transitions": [{
+            "pair_index": 1, "difficulty": 1,
+            "motion_prompt": motion, "sound_prompt": "",
+        }]}
+
+    def _refuse_everything(self, monkeypatch):
+        """Every rewrite declines, exactly as it does on the hard pairs."""
+        monkeypatch.setattr(
+            OpenAIClient, "_complete_offscreen_ending",
+            lambda self, p, d, e=None: p,
+        )
+        monkeypatch.setattr(
+            OpenAIClient, "_condense_motion_prompt", lambda self, p, d: p,
+        )
+
+    def test_the_fallback_itself_lands(self):
+        """It would be absurd for the last resort to trip the same check."""
+        assert not ends_offscreen(CAMERA_SHIFT_MOTION_PROMPT)
+
+    def test_an_unstageable_pair_falls_back_to_a_camera_move(
+        self, config, monkeypatch
+    ):
+        self._refuse_everything(monkeypatch)
+        motion, _, _ = _plans(config, self._data(self.OFFSCREEN), 1)[0]
+        assert motion == CAMERA_SHIFT_MOTION_PROMPT
+
+    def test_small_groups_get_it_too(self, config, monkeypatch):
+        """The >5 case is where it fires most, not a threshold to hide behind.
+
+        Three of six real survivors on am-130826-pcfd had 5, 4 and 3 people;
+        gating on group size would have left those clips ending offscreen.
+        """
+        self._refuse_everything(monkeypatch)
+        motion, _, _ = _plans(
+            config, self._data("the two of them walk out of frame"), 1
+        )[0]
+        assert motion == CAMERA_SHIFT_MOTION_PROMPT
+
+    def test_it_is_a_last_resort_not_a_shortcut(self, config, monkeypatch):
+        """A prompt the rewrite lands keeps its staging — people, not camera."""
+        landed = "the bald man steps back in from the left beside the woman"
+        monkeypatch.setattr(
+            OpenAIClient, "_complete_offscreen_ending",
+            lambda self, p, d, e=None: landed,
+        )
+        motion, _, _ = _plans(config, self._data(self.OFFSCREEN), 1)[0]
+        assert motion == landed
+
+    def test_a_prompt_that_never_left_the_frame_is_untouched(self, config):
+        good = "the bald man turns to face the camera and smiles"
+        assert _plans(config, self._data(good), 1)[0][0] == good
+
+    def test_no_plan_can_leave_the_coercer_ending_offscreen(
+        self, config, monkeypatch
+    ):
+        """The guarantee, stated as one assertion over a mixed batch."""
+        self._refuse_everything(monkeypatch)
+        data = {"transitions": [
+            {"pair_index": n + 1, "difficulty": 1, "sound_prompt": "",
+             "motion_prompt": m}
+            for n, m in enumerate([
+                self.OFFSCREEN,
+                "the boy exits left",
+                "she walks out past the camera",
+                "the bald man turns and smiles",
+            ])
+        ]}
+        plans = _plans(config, data, 4)
+        assert not any(ends_offscreen(m) for m, _, _ in plans)
