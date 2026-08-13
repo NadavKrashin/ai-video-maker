@@ -730,6 +730,30 @@ plans only: it never marks a rendered clip outdated, and existing prompts
 keep their old wording until you re-plan those clips
 (`storyboard --replan-clip ID` / the panel's re-plan button).
 
+**Per-frame styling guidance — `style_note`:** each frame in the storyboard
+has a `style_note` field (empty by default, hand-edited between steps).
+Whatever you put there is appended to the shared style prompt *for that frame
+only*, and it survives later `storyboard` runs. It exists because the shared
+prompt is written for portraits of people ("the subjects are the picture",
+"keep the people at least as large as in the source") — which is wrong for the
+occasional photo that is really *of a place*, or that shows people only
+indirectly. A real frame was a stone facade whose glass door carried a small
+silhouetted reflection of a couple; styling promoted them to physically
+present foreground characters with two invented faces. A note like
+`"This is a photo of the house facade. The couple appear ONLY as a small
+silhouetted reflection inside the glass door — keep them a reflection, same
+size and position, no faces."` steers just that frame.
+
+Writing a note does **not** re-style anything on its own (styling resume is
+existence-based, and re-styling spends image credits). Apply it deliberately:
+
+```bash
+python pipeline.py storyboard myfilm --restyle-frame 0i.png
+```
+
+That marks the frame's adjacent clips outdated, so re-plan/re-render those
+afterwards if the picture changed materially.
+
 ### `render`
 
 Reads the storyboard, generates any missing key frames (idea-based projects

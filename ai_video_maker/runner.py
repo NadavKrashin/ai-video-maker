@@ -582,7 +582,12 @@ class Pipeline:
             for f in (saved.frames if saved else [])
             if f.source_path
         }
-        frame_pairs = self._style_images(images, recorded_sources)
+        style_notes = {
+            f.output_path: f.style_note
+            for f in (saved.frames if saved else [])
+            if f.style_note
+        }
+        frame_pairs = self._style_images(images, recorded_sources, style_notes)
         if len(frame_pairs) < 2:
             logger.warning(
                 "Need at least 2 styled images to make a clip; have %d.",
@@ -663,7 +668,10 @@ class Pipeline:
         return targets
 
     def _style_images(
-        self, images: list[Path], recorded_sources: dict[str, str]
+        self,
+        images: list[Path],
+        recorded_sources: dict[str, str],
+        style_notes: Optional[dict[str, str]] = None,
     ) -> list[tuple[Path, Path]]:
         """Style every input; return ordered (source, styled) pairs on disk.
 
@@ -673,6 +681,12 @@ class Pipeline:
         project). Because redoing spends image credits, the list is shown and
         gated on confirmation first; declining keeps the old files. --force
         redoes everything without asking.
+
+        ``style_notes`` maps a styled path (workspace-relative) to that
+        frame's ``Frame.style_note``, appended to the shared prompt for that
+        frame only. A note is NOT a redo trigger — resume here is
+        existence-based, so a newly written note takes effect on the next
+        explicit ``--restyle-frame``, never as a surprise credit spend.
         """
         style_prompt = self.options.style_prompt or self.config.style_prompt
         # Lessons learned from earlier styled frames ride along with the
@@ -686,6 +700,7 @@ class Pipeline:
                 len(style_lessons),
             )
             style_prompt += lesson_prompt_block(style_lessons, SCOPE_STYLE)
+        style_notes = style_notes or {}
         targets = self._styled_targets(images)
         jobs = list(zip(images, targets))
 
@@ -732,6 +747,13 @@ class Pipeline:
             ):
                 redo.clear()
 
+        def prompt_for(dst: Path) -> str:
+            rel = dst.relative_to(self.workspace.root).as_posix()
+            note = style_notes.get(rel, "").strip()
+            if not note:
+                return style_prompt
+            return f"{style_prompt}\n\nFOR THIS IMAGE SPECIFICALLY: {note}"
+
         def work(job: tuple[Path, Path]) -> None:
             src, dst = job
             job_id = f"style:{dst.name}"
@@ -749,7 +771,7 @@ class Pipeline:
                 return
 
             try:
-                self.openai.style_image(src, style_prompt, dst)
+                self.openai.style_image(src, prompt_for(dst), dst)
                 if not verify_dimensions(dst, self.config.target_width, self.config.target_height):
                     # Remove the bad file: leaving it would make the next run
                     # skip this image as "done" (resume is existence-based).
@@ -805,6 +827,13 @@ class Pipeline:
             f.output_path: f.people
             for f in (saved.frames if saved else []) if f.people
         }
+        # Hand-written per-frame style notes are rebuilt-from-disk casualties
+        # for the same reason, and have to be carried over just as explicitly.
+        saved_notes = {
+            f.output_path: f.style_note
+            for f in (saved.frames if saved else [])
+            if f.style_note
+        }
         frames = [
             Frame(
                 id=self._frame_id(dst),
@@ -814,6 +843,7 @@ class Pipeline:
                 source_path=src.relative_to(root).as_posix(),
                 styled_hash=hashes[dst],
                 people=tagged.get(dst.relative_to(root).as_posix(), []),
+                style_note=saved_notes.get(dst.relative_to(root).as_posix(), ""),
             )
             for src, dst in frame_pairs
         ]

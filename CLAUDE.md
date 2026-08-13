@@ -407,6 +407,34 @@ Core design rules:
   and a clip is booked when it is DOWNLOADED (a submitted-but-uncollected
   render is money the ledger can't see yet — that's what `pending_renders`
   is for). `costs` reports across projects. Pinned by tests/test_costs.py.
+- NOT EVERY PHOTO IS A PORTRAIT, and the people-first styling rules turn
+  destructive when applied to one that isn't (2026-08-13). A real input
+  (frame `0i` on am-130826-pcfd) was a stone house facade whose glass door
+  carried a small silhouetted REFLECTION of a couple standing behind the
+  camera. "The subjects are the picture" + "keep the people at least as
+  large as in the source" + "crop INTO the scene" read as an instruction to
+  promote them: the styling lifted both figures out of the glass onto the
+  doorstep as physically present characters and INVENTED TWO FACES where the
+  source has zero facial pixels — on a paid order. `style_prompt` now
+  decides what the photo is OF before the PEOPLE FIRST block: people shown
+  indirectly (reflection, shadow, distant backlit silhouette, mirror,
+  screen, photo-within-photo) stay indirect at the same size/position/
+  medium, and a face is never invented from pixels that don't contain one.
+  It defers to NEVER CUT A PERSON OFF, which still governs whoever is
+  genuinely present. Note this failure is NOT an orientation bug — EXIF
+  orientation (this file was `Orientation=6`) is baked correctly by
+  `prepare_image_for_upload`; check that first anyway, then look at what the
+  photo actually depicts.
+- Per-frame styling escape hatch: `Frame.style_note` (models.py) is appended
+  to the shared style prompt for that ONE frame and is carried across
+  reconciles (`_reconcile_storyboard` rebuilds frames from disk, so it must
+  be copied over explicitly). Writing a note deliberately does NOT re-style —
+  styling resume is existence-based and re-styling costs credits, so it
+  lands on the next explicit `storyboard --restyle-frame <name>`, matching
+  the "redoing is always a named action" rule. Pinned by
+  TestPerFrameStyleNote. It sits alongside the per-frame `people` tagging
+  (`FramePerson`), which is carried over in the same place for the same
+  reason — frames are rebuilt from disk every run.
 - BALDNESS GETS "CORRECTED" BY THE IMAGE MODEL unless forbidden: a real
   styling gave a cleanly bald man a horseshoe of dark hair around his ears
   (frame 920acc69 on Ari&Michal), and changed wraparound mirrored
