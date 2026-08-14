@@ -153,9 +153,15 @@ Core design rules:
   they turned and walked WITH the camera and the transit collapsed into
   whip blur with faces smearing together; every clean camera clip had
   neutral ground mid-transit, so the wording now builds it in — blur over
-  walls is camera speed, blur over faces is mush), else the standing
-  travel-and-settle (kept for unknown rosters and the offscreen last
-  resort).
+  walls is camera speed, blur over faces is mush. VERIFIED: 0a_to_0b was
+  re-planned and re-rendered with this wording (2026-08-14, on Kling 2.5
+  Turbo Pro) and the user confirmed it "looks a lot better", so this is
+  settled evidence, not a theory — do not revert it to the generic travel
+  for group-to-group pairs. Not yet re-checked on Kling 3.0 Pro, the
+  default since; a single-clip render there is the way to confirm it
+  carries over), else the
+  standing travel-and-settle (kept for unknown rosters and the offscreen
+  last resort).
   Gate runs FIRST in `_coerce_transition_plans` and skips
   restage/complete (a template can't end offscreen). A camera transition is
   ALWAYS 5s — one continuous beat — overriding both the difficulty rating
