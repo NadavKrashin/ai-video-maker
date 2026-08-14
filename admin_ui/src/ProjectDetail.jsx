@@ -390,13 +390,17 @@ function SpendCard({ project, cost }) {
   );
 }
 
-function TransitionCard({ project, tr, framesById, clip, edited, placeholder, verdict, planBehind, endsOffscreen, unstageable, onEdit, onRegenerate, onReplan, onRedoAudio, onFeedback, busy, replanBusy, audioBusy, mediaV }) {
+function TransitionCard({ project, tr, framesById, clip, edited, placeholder, verdict, planBehind, endsOffscreen, unstageable, selected, onToggleSelect, onEdit, onRegenerate, onReplan, onRedoAudio, onFeedback, busy, replanBusy, audioBusy, mediaV }) {
   const startImg = frameName(framesById, tr.start_frame);
   const endImg = frameName(framesById, tr.end_frame);
   const clipFile = tr.output_path.split('/').pop();
   return (
     <Card withBorder padding="md">
       <Group gap="xs" mb="sm">
+        <Checkbox size="xs" checked={selected}
+          onChange={() => onToggleSelect(tr.id)}
+          aria-label={`Select ${tr.id} for re-planning`}
+          title="Select this pair, then re-plan the selected prompts in one job" />
         <Text fw={700}>{tr.id}</Text>
         <Badge variant="light" color={clip?.rendered ? 'green' : 'yellow'}>
           {clip?.rendered ? (clip.sfx ? 'rendered · sfx' : 'rendered · silent') : 'not rendered'}
@@ -1120,6 +1124,8 @@ export default function ProjectDetail({ name, onBack }) {
   const [snap, setSnap] = useState(null);
   const [storyboard, setStoryboard] = useState(null); // parsed, editable copy
   const [dirty, setDirty] = useState(new Set());
+  // Transitions hand-picked for a batched re-plan (ids, see toggleSelected).
+  const [selected, setSelected] = useState(new Set());
   const [busyAction, setBusyAction] = useState('');
   const [logJob, setLogJob] = useState(null);
   const [showPhotos, setShowPhotos] = useState(false);
@@ -1223,6 +1229,15 @@ export default function ProjectDetail({ name, onBack }) {
   // Prompts that finish with someone out of frame — impossible for a clip
   // pinned to an end frame those people are standing in.
   const offscreenEndings = new Set(snap.storyboard?.ends_offscreen || []);
+  // Hand-picked transitions for a batched re-plan. Kept as ids (not
+  // indices) so a poll that reorders or drops a transition can't silently
+  // move the selection onto a different pair; ids that no longer exist are
+  // filtered out wherever the set is used.
+  const toggleSelected = (id) => setSelected((prev) => {
+    const next = new Set(prev);
+    if (!next.delete(id)) next.add(id);
+    return next;
+  });
   // Pairs whose saved prompt stages people though the tags say the
   // choreography can't exist (too many movers / too crowded). Re-planning
   // them yields the deterministic camera transition.
@@ -1496,6 +1511,37 @@ export default function ProjectDetail({ name, onBack }) {
         'One vision call. Clips whose plan changes are marked "outdated"; nothing is re-rendered or deleted here.'
       ],
       cost: 'openai',
+      label: `Re-plan ${ids.length}`,
+      action: () => run('storyboard', { replan_clips: ids },
+        `re-plan ${ids.length} prompt(s)`)
+    });
+  };
+
+  // Re-plan an arbitrary hand-picked set. The backend has always taken a
+  // list (it is what the single-clip button and "re-plan all" both send);
+  // this is the UI for choosing one. Consecutive pairs are grouped into a
+  // single vision call server-side, so a batch costs far less than clicking
+  // the same clips one at a time.
+  const replanSelected = () => {
+    if (needsSave()) return;
+    const ids = (storyboard?.transitions || [])
+      .map((t) => t.id)
+      .filter((id) => selected.has(id));
+    if (!ids.length) return;
+    const renderedIds = ids.filter((id) => clipsById[id]?.rendered);
+    ask({
+      title: `Re-plan ${ids.length} selected prompt(s)?`,
+      lines: [
+        `The planner looks at these pairs again and writes fresh motion prompts, using the current cast and whoever you have tagged: ${ids.join(', ')}.`,
+        'Any motion prompt you hand-wrote in this selection is REPLACED — re-plan is not a merge.',
+        'Every prompt you did NOT select is left exactly as it is.',
+        renderedIds.length > 0
+          ? `${renderedIds.length} of them are already rendered; those whose plan changes get marked "outdated". Nothing is re-rendered or deleted here.`
+          : 'None of these are rendered yet, so nothing is invalidated.',
+        'One vision call per run of consecutive pairs — cheaper than re-planning them one by one.'
+      ],
+      cost: 'openai',
+      danger: renderedIds.length > 0,
       label: `Re-plan ${ids.length}`,
       action: () => run('storyboard', { replan_clips: ids },
         `re-plan ${ids.length} prompt(s)`)
@@ -2197,6 +2243,51 @@ export default function ProjectDetail({ name, onBack }) {
               )}
             </Card>
           )}
+          {(() => {
+            // Pick a few pairs and re-plan exactly those. The quick-select
+            // buttons exist because the sets worth re-planning are already
+            // computed and can be large — a real movie flagged 24 pairs
+            // needing a camera transition, which is a lot of clicking.
+            const allIds = storyboard.transitions.map((t) => t.id);
+            const live = allIds.filter((id) => selected.has(id));
+            const pick = (ids) => setSelected(new Set(
+              allIds.filter((id) => ids.has(id))));
+            const groups = [
+              ['needs camera transition', unstageablePairs],
+              ['behind your tags', outdatedPlans],
+              ['ends offscreen', offscreenEndings],
+              ['generic prompt', placeholderIds]
+            ].filter(([, set]) => allIds.some((id) => set.has(id)));
+            return (
+              <Card withBorder padding="sm">
+                <Group gap="xs" wrap="wrap">
+                  <Text size="sm" fw={500}>
+                    {live.length
+                      ? `${live.length} of ${allIds.length} selected`
+                      : 'Select pairs to re-plan together'}
+                  </Text>
+                  <Button size="compact-xs" variant="filled" disabled={locked || !live.length}
+                    loading={busyAction === `re-plan ${live.length} prompt(s)`}
+                    onClick={replanSelected}
+                    title="One job re-plans exactly the selected prompts. Clips are never re-rendered here.">
+                    Re-plan selected…
+                  </Button>
+                  <div style={{ flex: 1 }} />
+                  {groups.map(([label, set]) => (
+                    <Button key={label} size="compact-xs" variant="default"
+                      disabled={locked} onClick={() => pick(set)}
+                      title={`Select the pairs flagged “${label}”`}>
+                      {label} ({allIds.filter((id) => set.has(id)).length})
+                    </Button>
+                  ))}
+                  <Button size="compact-xs" variant="default" disabled={locked}
+                    onClick={() => setSelected(new Set(allIds))}>Select all</Button>
+                  <Button size="compact-xs" variant="subtle" disabled={!live.length}
+                    onClick={() => setSelected(new Set())}>Clear</Button>
+                </Group>
+              </Card>
+            );
+          })()}
           {storyboard.transitions.map((tr) => (
             <TransitionCard key={tr.id} project={name} tr={tr} framesById={framesById}
               clip={clipsById[tr.output_path.split('/').pop()?.replace(/\.mp4$/, '')]}
@@ -2205,6 +2296,7 @@ export default function ProjectDetail({ name, onBack }) {
               planBehind={outdatedPlans.has(tr.id)}
               endsOffscreen={offscreenEndings.has(tr.id)}
               unstageable={unstageablePairs.has(tr.id)}
+              selected={selected.has(tr.id)} onToggleSelect={toggleSelected}
               onEdit={editTransition}
               onRegenerate={regenerate} onReplan={replanPrompt} onRedoAudio={redoAudio}
               onFeedback={openFeedback}

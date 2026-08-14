@@ -737,6 +737,34 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
                     return {"command": job.command, "state": job.state}
             return None
 
+        client = CloudinaryClient.from_config(config)
+
+        def cloudinary_photos(folder: str, project: str) -> Optional[int]:
+            """How many photos are sitting in the order's folder RIGHT NOW.
+
+            Answers "is this order actually complete?" before anyone spends a
+            click on ingest — the frontend confirms payment before the photos
+            finish uploading, so a folder existing has never meant the order
+            is whole.
+
+            Only for orders not yet ingested: once there is a project, its own
+            snapshot reports the photos that actually landed (`progress`), and
+            counting again would spend a Cloudinary call per row on every
+            refresh for no new information. Best-effort by construction — a
+            listing hiccup returns None (the panel shows nothing) and must
+            never take the whole orders page down with it.
+            """
+            if project or not folder:
+                return None
+            try:
+                return len(client.list_order_assets(folder))
+            except Exception:  # noqa: BLE001 - a count is never worth a 500
+                logger.warning(
+                    "Could not count Cloudinary photos for %s", folder,
+                    exc_info=True,
+                )
+                return None
+
         def row(folder: str) -> dict[str, Any]:
             parsed = parse_order_folder(folder)
             job = latest_ingest.get(folder)
@@ -753,6 +781,8 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
                 "ingest_state": job.state if job else "",
                 "ingest_error": job.error if job else "",
                 "ingest_job": job.id if job else "",
+                # Live Cloudinary count for orders still awaiting ingest.
+                "cloudinary_photos": cloudinary_photos(folder, project),
             }
 
         out: list[dict[str, Any]] = []
@@ -783,7 +813,6 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
                 })
                 out.append(entry)
 
-        client = CloudinaryClient.from_config(config)
         for folder in client.list_order_folders():
             if folder in seen_folders:
                 continue

@@ -107,11 +107,16 @@ export default function OrdersTab({ onOpenProject }) {
     return () => clearInterval(timer);
   }, [orders, refresh]);
 
+  // Ingest ONLY: create the project and download the order's photos into it.
+  // Storyboarding is a separate, deliberate click — it styles every photo and
+  // plans every pair, which spends real OpenAI credits, and the photos are
+  // worth a look first (an order can be short a few, or hold something that
+  // wants a different frame order).
   const ingest = async (order) => {
     setBusyRow(order.folder);
     try {
-      const res = await api.ingestOrder(order.folder, true);
-      notify(`Ingesting as project "${res.project}" (storyboard follows)`);
+      const res = await api.ingestOrder(order.folder, false);
+      notify(`Ingesting photos as project "${res.project}"`);
       await refresh();
     } catch (e) { notify(`Ingest failed: ${e.message}`, 'red'); }
     finally { setBusyRow(''); }
@@ -200,6 +205,15 @@ export default function OrdersTab({ onOpenProject }) {
           o.uploaded_at && `uploaded ${o.uploaded_at}`
         ].filter(Boolean).join(' · ');
         const progress = progressLine(o.progress);
+        // What is actually sitting in the order's Cloudinary folder right
+        // now, shown BEFORE the ingest click. The frontend confirms payment
+        // before the photos finish uploading, so a folder existing has never
+        // meant the order is whole — and when the order doc records an
+        // expected count, a shortfall is the thing worth seeing.
+        const photos = o.cloudinary_photos;
+        const expected = o.photo_count || 0;
+        const short = photos !== null && photos !== undefined
+          && (photos === 0 || (expected > 0 && photos < expected));
         return (
           <Card key={o.folder || o.order_id} withBorder padding="md">
             <Group align="center" wrap="nowrap">
@@ -207,6 +221,16 @@ export default function OrdersTab({ onOpenProject }) {
                 <Text fw={600}>{o.customer || o.folder || o.order_id}</Text>
                 <Text size="xs" c="dimmed">{details}</Text>
                 {progress && <Text size="xs">{progress}</Text>}
+                {photos !== null && photos !== undefined && (
+                  <Text size="xs" c={short ? 'orange' : undefined}
+                    title="Photos currently in this order's Cloudinary folder. Uploads continue after payment, so refresh if it looks short.">
+                    {photos} photo{photos === 1 ? '' : 's'} in Cloudinary
+                    {expected > 0 && ` · order says ${expected}`}
+                    {short && (photos === 0
+                      ? ' — nothing uploaded yet'
+                      : ' — still uploading?')}
+                  </Text>
+                )}
                 {o.blessing && (
                   <Text size="xs" c="dimmed" fs="italic"
                     title="The customer's blessing / dedication text">
@@ -232,7 +256,7 @@ export default function OrdersTab({ onOpenProject }) {
                   loading={Boolean(o.folder) && busyRow === o.folder}
                   title={o.folder ? '' : 'No photo folder recorded for this order yet'}
                   onClick={() => ingest(o)}>
-                  {failed ? 'Retry ingest' : 'Ingest + storyboard'}
+                  {failed ? 'Retry ingest' : 'Ingest photos'}
                 </Button>
               )}
             </Group>

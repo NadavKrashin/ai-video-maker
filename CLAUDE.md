@@ -158,7 +158,13 @@ Core design rules:
   gate takes the max of census and roster. `_tagged_people_block` stops
   prescribing exit-and-entrance on gated pairs, and `_MODE_A_SYSTEM` has a
   matching "TOO MANY PEOPLE TO CHOREOGRAPH" block (hint only; the code is
-  the guarantee). The gate acts at PLAN time, so saved storyboards keep
+  the guarantee). The gate reports WHICH rule fired
+  (`unstageable_reason` -> "movers"/"crowd", with `is_unstageable_pair` a
+  thin yes/no over it) because deriving the explanation separately let the
+  two drift: a 6-person frame losing ONE person was told "1 people change
+  between these frames — TOO MANY TO CHOREOGRAPH", ungrammatical AND the
+  wrong cause. Keep the sentence sourced from the reason — incoherent
+  reasoning erodes compliance on the pairs whose wording still matters. The gate acts at PLAN time, so saved storyboards keep
   their many-mover prompts until re-planned — surfaced (tags-only, no
   census on disk; untagged projects stay silent) as
   `snapshot()["storyboard"]["unstageable_pairs"]` + status line + a red
@@ -634,6 +640,30 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   `v=` cache-buster (`fileUrl`'s 4th argument, bumped by the panel's poll
   and once more when a job settles); without it a regenerated frame kept
   showing its previous version and looked like the button did nothing.
+- INGEST ONLY INGESTS (user call, 2026-08-14). The panel's order button was
+  "Ingest + storyboard" and sent `storyboard: true`, so one click both
+  downloaded the photos AND spent OpenAI credits styling/planning the whole
+  order. Now it sends `false` and reads "Ingest photos"; storyboarding is a
+  separate deliberate click once the photos have been looked at. The API
+  keeps the chaining capability (`then=`), because the opt-in watcher's
+  `watch_auto_storyboard` uses the same path — don't delete it, just don't
+  ask for it from the panel. Also on that page: each not-yet-ingested order
+  shows a LIVE Cloudinary photo count (`cloudinary_photos` in /api/orders),
+  orange when empty or short of the order doc's expected `photo_count`,
+  because payment confirms before uploads finish. Counted only for orders
+  without a project (an ingested one already reports `progress.photos`, and
+  counting every row would spend a Cloudinary call per row per refresh) and
+  best-effort — a listing failure returns None, never a 500. Pinned by
+  tests/test_server_orders.py.
+- TESTS MUST NOT SEE THE REAL FIRESTORE. `firebase-service-account.json`
+  sits at the repo root on this machine, so `FirebaseClient.configured()` is
+  TRUE in a local test run: a new /api/orders test listed real customer
+  orders and failed on a live name. Any test touching /api/orders must
+  monkeypatch `FirebaseClient.configured` to False. Same shape of trap:
+  `JobRunner.enqueue` RUNS the job immediately, so a test that posts to
+  /api/orders/ingest performed a real ingest attempt (network downloads with
+  retries) — patch `JobRunner.enqueue` to capture instead. CI is keyless so
+  it never saw either.
 - THE CLOSING LETTER IS AUTHORED IN THE PANEL (2026-07-28). combine could
   always be TOLD to scroll `projects/<n>/letter.txt` (`--letter` /
   `closing_letter`), but nothing could WRITE it — behind the tunnel that
