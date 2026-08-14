@@ -1150,6 +1150,11 @@ def _merge_cast(
     return cast
 
 
+def _people_count(n: int) -> str:
+    """"1 person" / "5 people" — the planner reads these sentences."""
+    return f"{n} person" if n == 1 else f"{n} people"
+
+
 def _tagged_people_block(tags: list[Optional[list[str]]]) -> str:
     """Tell the planner who is in each frame, and what that means per pair.
 
@@ -1181,21 +1186,35 @@ def _tagged_people_block(tags: list[Optional[list[str]]]) -> str:
         shared = [p for p in start if p in end]
         gone = [p for p in start if p not in end]
         arrived = [p for p in end if p not in start]
-        if is_unstageable_pair(start, end):
-            # Do NOT prescribe the exit-and-entrance here: with this many
-            # movers it is exactly the choreography that renders as ghost
-            # dissolves and mushed bodies. The camera carries these pairs.
-            movers = len(gone) + len(arrived)
-            what = (
-                f"{movers} people change between these frames"
-                if movers
-                else "the group rearranges in a crowded frame"
-            )
+        reason = unstageable_reason(start, end)
+        if reason:
+            # Do NOT prescribe the exit-and-entrance here: on these pairs it
+            # is exactly the choreography that renders as ghost dissolves
+            # and mushed bodies. The camera carries them instead. The cause
+            # is named by the gate itself, so this sentence can never again
+            # explain a crowd rule as if it were a mover count.
+            if reason == "movers":
+                cause = (
+                    f"{_people_count(len(gone) + len(arrived))} leave or "
+                    "arrive between these frames — TOO MANY CHANGES TO "
+                    "CHOREOGRAPH one at a time"
+                )
+            else:
+                cause = (
+                    f"these frames hold {_people_count(max(len(start), len(end)))}"
+                    + (
+                        " and the group changes"
+                        if (gone or arrived)
+                        else " and they rearrange"
+                    )
+                    + " — TOO CROWDED TO CHOREOGRAPH person by person, "
+                    "because in a group that size an epithet no longer picks "
+                    "anyone out"
+                )
             verdict = (
-                f"{what} — TOO MANY TO CHOREOGRAPH person by person. Stage "
-                "no exits and no entrances: everyone stays as they are, and "
-                "the camera transition carries the change (see TOO MANY "
-                "PEOPLE TO CHOREOGRAPH)"
+                f"{cause}. Stage no exits and no entrances: everyone stays "
+                "as they are, and the camera transition carries the change "
+                "(see TOO MANY PEOPLE TO CHOREOGRAPH)"
             )
         elif shared and not gone and not arrived:
             verdict = (
@@ -1566,21 +1585,28 @@ def _head_count(value: Any) -> int:
         return 0
 
 
-def is_unstageable_pair(
+def unstageable_reason(
     start_order: Any, end_order: Any,
     start_heads: Any = None, end_heads: Any = None,
-) -> bool:
-    """Can this pair no longer be staged through the people themselves?
+) -> Optional[str]:
+    """WHY this pair can no longer be staged through the people, or None.
 
-    True when the pair needs identity choreography (people leaving,
-    arriving, or trading sides) that cannot fit the beat budget: more than
-    ``_MOVER_BUDGET`` people change between the frames, or the pair is
-    crowded past ``_CROWD_LIMIT`` while its roster or arrangement changes.
-    Such a pair gets a deterministic camera transition instead of a staged
-    prompt — repairing the wording cannot help when the staging itself is
-    impossible.
+    ``"movers"``  — more than ``_MOVER_BUDGET`` people leave or arrive, so
+    the choreography cannot fit the beat budget however few people are on
+    screen. ``"crowd"`` — the frame is fuller than ``_CROWD_LIMIT`` and the
+    group changes at all: past that size the epithets stop picking anyone
+    out ("the teenage boy with short brown hair" in a 13-person frame points
+    at nobody), so choreography of ANY size mushes.
 
-    A big group that is the SAME on both sides (no movers, no swap) stays
+    The reason exists so the explanation handed to the planner names the
+    rule that actually fired. Deriving the wording separately let the two
+    drift: a 6-person frame losing ONE person was told "1 people change
+    between these frames — TOO MANY TO CHOREOGRAPH", which is both
+    ungrammatical and the wrong cause (the crowd is the cause), and
+    incoherent reasoning is exactly what erodes compliance on the pairs
+    where the planner's own wording still matters.
+
+    A big group that is the SAME on both sides (no movers, no swap) is
     stageable: hold-steady with small gestures works at any size — it is
     exits, entrances and crossings that fall apart in a crowd.
 
@@ -1593,7 +1619,7 @@ def is_unstageable_pair(
     headcount difference proves.
     """
     if not isinstance(start_order, list) or not isinstance(end_order, list):
-        return False
+        return None
     starts = [_person_tokens(n) for n in start_order]
     ends = [_person_tokens(n) for n in end_order]
     pairs = _match_people(starts, ends)
@@ -1602,14 +1628,31 @@ def is_unstageable_pair(
     else:
         movers = (len(starts) - len(pairs)) + (len(ends) - len(pairs))
     if movers > _MOVER_BUDGET:
-        return True
+        return "movers"
     crowd = max(
         len(starts), len(ends),
         _head_count(start_heads), _head_count(end_heads),
     )
     if crowd <= _CROWD_LIMIT:
-        return False
-    return movers > 0 or is_arrangement_swap(start_order, end_order)
+        return None
+    if movers > 0 or is_arrangement_swap(start_order, end_order):
+        return "crowd"
+    return None
+
+
+def is_unstageable_pair(
+    start_order: Any, end_order: Any,
+    start_heads: Any = None, end_heads: Any = None,
+) -> bool:
+    """Can this pair no longer be staged through the people themselves?
+
+    See ``unstageable_reason`` — this is that decision as a yes/no. Such a
+    pair gets a deterministic camera transition instead of a staged prompt:
+    repairing the wording cannot help when the staging itself is impossible.
+    """
+    return unstageable_reason(
+        start_order, end_order, start_heads, end_heads
+    ) is not None
 
 
 def camera_shift_prompt(start_order: Any = None, end_order: Any = None) -> str:

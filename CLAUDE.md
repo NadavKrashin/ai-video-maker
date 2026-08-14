@@ -158,7 +158,13 @@ Core design rules:
   gate takes the max of census and roster. `_tagged_people_block` stops
   prescribing exit-and-entrance on gated pairs, and `_MODE_A_SYSTEM` has a
   matching "TOO MANY PEOPLE TO CHOREOGRAPH" block (hint only; the code is
-  the guarantee). The gate acts at PLAN time, so saved storyboards keep
+  the guarantee). The gate reports WHICH rule fired
+  (`unstageable_reason` -> "movers"/"crowd", with `is_unstageable_pair` a
+  thin yes/no over it) because deriving the explanation separately let the
+  two drift: a 6-person frame losing ONE person was told "1 people change
+  between these frames — TOO MANY TO CHOREOGRAPH", ungrammatical AND the
+  wrong cause. Keep the sentence sourced from the reason — incoherent
+  reasoning erodes compliance on the pairs whose wording still matters. The gate acts at PLAN time, so saved storyboards keep
   their many-mover prompts until re-planned — surfaced (tags-only, no
   census on disk; untagged projects stay silent) as
   `snapshot()["storyboard"]["unstageable_pairs"]` + status line + a red

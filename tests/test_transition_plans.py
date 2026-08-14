@@ -1612,8 +1612,9 @@ class TestThePlannerIsTaughtTheSameGate:
             ["the man"],
         ])
         pair_line = next(l for l in block.splitlines() if "Pair 1" in l)
-        assert "TOO MANY TO CHOREOGRAPH" in pair_line
+        assert "CHOREOGRAPH" in pair_line
         assert "Stage an exit" not in pair_line
+        assert "Stage no exits and no entrances" in pair_line
 
     def test_tagged_block_still_prescribes_exits_on_small_pairs(self):
         # One person handing over to another: the designed two-mover case.
@@ -1712,3 +1713,61 @@ class TestCameraTransitionRecognition:
             "the bald man walks forward past the camera and steps back in"
         )
         assert not is_camera_transition("")
+
+
+class TestTheStatedCauseMatchesTheRuleThatFired:
+    """The planner must be told WHICH rule gated the pair, not a guess.
+
+    Deriving the sentence separately from the decision let the two drift: a
+    6-person frame losing ONE person was told "1 people change between these
+    frames — TOO MANY TO CHOREOGRAPH" — ungrammatical, and naming the wrong
+    cause (the crowd, not the mover count). Incoherent reasoning is what
+    erodes compliance on the pairs where the planner's wording still counts.
+    """
+
+    SIX = [f"person {i}" for i in range(6)]
+
+    def _verdict(self, start, end):
+        from ai_video_maker.clients.openai_client import _tagged_people_block
+        block = _tagged_people_block([start, end])
+        return next(l for l in block.splitlines() if "Pair 1" in l)
+
+    def test_the_gate_reports_which_rule_fired(self):
+        from ai_video_maker.clients.openai_client import unstageable_reason
+        # Small frames, four movers: the budget rule, not the crowd rule.
+        assert unstageable_reason(
+            ["the man", "the woman"], ["the boy", "the girl"]
+        ) == "movers"
+        # Six people, ONE of them leaving: the crowd rule.
+        assert unstageable_reason(self.SIX, self.SIX[:5]) == "crowd"
+        assert unstageable_reason(self.SIX, list(self.SIX)) is None
+
+    def test_a_crowded_pair_is_never_blamed_on_its_mover_count(self):
+        # The exact real shape (am-130826-pcfd 0a_to_0b): 6 tagged -> 5, one
+        # person leaves. It must not read "1 people change ... TOO MANY".
+        line = self._verdict(self.SIX, self.SIX[:5])
+        assert "TOO CROWDED TO CHOREOGRAPH" in line
+        assert "6 people" in line
+        assert "1 people" not in line
+        assert "TOO MANY CHANGES" not in line
+
+    def test_a_mover_heavy_pair_is_never_called_crowded(self):
+        # Two-person frames are not crowded, whatever else is wrong.
+        line = self._verdict(["the man", "the woman"], ["the boy", "the girl"])
+        assert "TOO MANY CHANGES TO CHOREOGRAPH" in line
+        assert "TOO CROWDED" not in line
+        assert "4 people leave or arrive" in line
+
+    def test_a_crowded_swap_says_they_rearrange(self):
+        swapped = self.SIX[1:] + self.SIX[:1]
+        line = self._verdict(self.SIX, swapped)
+        assert "rearrange" in line
+        assert "TOO CROWDED TO CHOREOGRAPH" in line
+
+    def test_counts_are_never_ungrammatical(self):
+        from ai_video_maker.clients.openai_client import _people_count
+        assert _people_count(1) == "1 person"
+        assert _people_count(2) == "2 people"
+        # And end to end: a single mover is only ever reported by the crowd
+        # branch, which counts the frame, so "1 person" reads correctly.
+        assert "1 people" not in self._verdict(self.SIX, self.SIX[:5])
