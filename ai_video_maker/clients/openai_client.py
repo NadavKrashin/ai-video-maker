@@ -190,6 +190,23 @@ CAMERA_SHIFT_TO_SCENE_PROMPT = (
     "settles there, framing the scene exactly as the end frame shows it."
 )
 
+# The move for a pair with faces filling BOTH frames (a group on each side).
+# The generic travel invites the model to keep the people in shot for the
+# whole journey — on a real render (0a_to_0b, walkway selfie -> hallway pose)
+# the group turned and walked WITH the camera, and the transit collapsed into
+# whip blur with faces smearing into each other: the disguised cut wearing
+# the camera prompt as cover. Every camera clip that rendered clean had
+# neutral ground mid-transit (an anchor to follow, an empty destination, a
+# pan onto scenery), so this wording builds that in: the camera turns AWAY
+# from the people first and travels across the surroundings — blur over
+# walls reads as camera speed; blur over faces reads as people dissolving —
+# and the arrival is a reveal. This is how a real editor cuts a whip-pan.
+CAMERA_SHIFT_THROUGH_SCENERY_PROMPT = (
+    "Everyone holds still as the camera turns away from them and glides "
+    "across the surroundings, then comes to rest on the people exactly as "
+    "the end frame shows them."
+)
+
 
 # Reword a prompt that OpenAI's safety filter wrongly flagged. The video pipeline
 # never intends harmful content, so flags are typically benign wording the filter
@@ -822,7 +839,11 @@ _MODE_A_SYSTEM = (
     "subject choreography: the people simply stay as they are, or keep "
     "doing what they are visibly doing, while the camera moves smoothly "
     "and steadily across to the new setting and settles on exactly what "
-    "the end frame shows. Name nobody individually in it, stage no exits "
+    "the end frame shows. When BOTH frames are full of people, have the "
+    "camera turn away from them first and travel across the surroundings "
+    "before settling — a transit that keeps faces in frame smears them "
+    "into each other, while blur over scenery reads as ordinary camera "
+    "speed. Name nobody individually in it, stage no exits "
     "and no entrances. This is a deliberate exception to CAMERA LAST, and "
     "code enforces the same rule: a many-mover staging is replaced with a "
     "deterministic camera prompt anyway, so spend your effort on the pairs "
@@ -1592,16 +1613,20 @@ def is_unstageable_pair(
 def camera_shift_prompt(start_order: Any = None, end_order: Any = None) -> str:
     """The deterministic camera prompt for a pair, picked by its shape.
 
-    Three shapes, all deterministic, all under the 5-second word cap, none
-    containing an exit marker (a camera prompt that tripped ``ends_offscreen``
-    would re-enter the very machinery it replaces):
+    Four shapes, all deterministic, all one continuous beat, none containing
+    an exit marker (a camera prompt that tripped ``ends_offscreen`` would
+    re-enter the very machinery it replaces):
 
     - end frame shows nobody: travel to the scene itself;
     - a group narrowing to ONE of its own people: everyone holds where they
       are and the camera drifts to that person — the staging the clip
       reviewer independently proposed for a real group-to-single pair whose
       staged prompt had rendered as a ghost dissolve;
-    - anything else: the standing travel-and-settle wording.
+    - people on BOTH sides: turn away from them and travel through the
+      scenery, so the whip blur lands on walls rather than faces (a real
+      generic-worded render dragged the group through the pan and mushed
+      them mid-clip);
+    - unknown rosters: the standing travel-and-settle wording.
     """
     if not isinstance(end_order, list):
         return CAMERA_SHIFT_MOTION_PROMPT
@@ -1625,6 +1650,13 @@ def camera_shift_prompt(start_order: Any = None, end_order: Any = None) -> str:
                 f"and steadily across to {the}{who}, who fills the frame "
                 f"exactly as the end frame shows."
             )
+    if (
+        len(end_order) >= 2
+        and isinstance(start_order, list)
+        and len(start_order) >= 1
+    ):
+        # Faces on both sides: give the transit neutral ground to cross.
+        return CAMERA_SHIFT_THROUGH_SCENERY_PROMPT
     return CAMERA_SHIFT_MOTION_PROMPT
 
 
@@ -1635,6 +1667,7 @@ def camera_shift_prompt(start_order: Any = None, end_order: Any = None) -> str:
 _CAMERA_PROMPT_OPENINGS = (
     "The camera moves smoothly and steadily across",
     "Everyone stays where they are as the camera",
+    "Everyone holds still as the camera",
 )
 
 

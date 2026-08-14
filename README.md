@@ -662,8 +662,13 @@ staging can exist at all: more than **3 people** leaving or arriving, or a
 frame holding **more than 4 people** whose roster or arrangement changes,
 replaces the choreography with a deterministic **camera transition** — the
 camera travels to the new setting and settles on exactly what the end frame
-shows (with a drift-to-one-person variant when a group narrows to one of its
-own, and a scene variant when the end frame is empty). The planner also
+shows — with a drift-to-one-person variant when a group narrows to one of its
+own, a scene variant when the end frame is empty, and a **turn-away variant
+when faces fill both frames**: the camera turns away from the people and
+travels through the surroundings, because a transit that keeps faces in shot
+smears them into each other (a real render dragged the group through the
+whip-pan and mushed them mid-clip), while blur over scenery reads as ordinary
+camera speed. The planner also
 reports a per-frame **headcount census** (everyone visible, tagged or not),
 so a crowded frame with only two people tagged still gates correctly. Small
 pairs keep subject staging — this is the only other place camera language is

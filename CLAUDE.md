@@ -145,9 +145,17 @@ Core design rules:
   rosters (tags first, model orders second): movers (leave+arrive) >
   `_MOVER_BUDGET` (3), or crowd > `_CROWD_LIMIT` (4) while the roster or
   arrangement changes → the planned choreography is REPLACED (never
-  repaired) by `camera_shift_prompt`, a deterministic 3-shape family:
+  repaired) by `camera_shift_prompt`, a deterministic 4-shape family:
   drift-to-one-of-its-own (the reviewer's own 12_to_13 suggestion),
-  scene-only for an empty end frame, else the standing travel-and-settle.
+  scene-only for an empty end frame, TURN-AWAY-THROUGH-SCENERY when people
+  stand on both sides (added 2026-08-14: the generic travel let Kling keep
+  the group in shot for the whole journey on the real 0a_to_0b render —
+  they turned and walked WITH the camera and the transit collapsed into
+  whip blur with faces smearing together; every clean camera clip had
+  neutral ground mid-transit, so the wording now builds it in — blur over
+  walls is camera speed, blur over faces is mush), else the standing
+  travel-and-settle (kept for unknown rosters and the offscreen last
+  resort).
   Gate runs FIRST in `_coerce_transition_plans` and skips
   restage/complete (a template can't end offscreen). A camera transition is
   ALWAYS 5s — one continuous beat — overriding both the difficulty rating

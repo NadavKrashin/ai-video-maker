@@ -7,6 +7,7 @@ from ai_video_maker.clients.openai_client import (
     _TRANSITIONS_SCHEMA,
     CAMERA_SHIFT_MOTION_PROMPT,
     CAMERA_SHIFT_TO_SCENE_PROMPT,
+    CAMERA_SHIFT_THROUGH_SCENERY_PROMPT,
     OpenAIClient,
     _coerce_frame_people,
     _tagged_people_block,
@@ -1354,6 +1355,26 @@ class TestCameraShiftPromptFamily:
 
     def test_unknown_rosters_get_the_generic_prompt(self):
         assert camera_shift_prompt(None, None) == CAMERA_SHIFT_MOTION_PROMPT
+        # An unknown START also stays generic: "turns away from them" needs
+        # someone known to turn away from.
+        assert camera_shift_prompt(
+            None, ["the man", "the woman"]
+        ) == CAMERA_SHIFT_MOTION_PROMPT
+        assert camera_shift_prompt(
+            [], ["the man", "the woman"]
+        ) == CAMERA_SHIFT_MOTION_PROMPT
+
+    def test_faces_on_both_sides_travel_through_the_scenery(self):
+        # The 0a_to_0b failure: walkway selfie -> hallway pose, both frames
+        # full of faces. The generic travel dragged the group through the
+        # pan and mushed them; this variant turns away from them first.
+        assert camera_shift_prompt(
+            self.GROUP, self.GROUP[:5]
+        ) == CAMERA_SHIFT_THROUGH_SCENERY_PROMPT
+        # One large-in-frame person opening onto a group is the same trap.
+        assert camera_shift_prompt(
+            ["the man"], self.GROUP
+        ) == CAMERA_SHIFT_THROUGH_SCENERY_PROMPT
 
     def test_no_family_member_ends_offscreen_or_rambles(self):
         # A camera prompt that tripped ends_offscreen would re-enter the very
@@ -1364,6 +1385,7 @@ class TestCameraShiftPromptFamily:
             camera_shift_prompt(self.GROUP, []),
             CAMERA_SHIFT_MOTION_PROMPT,
             CAMERA_SHIFT_TO_SCENE_PROMPT,
+    CAMERA_SHIFT_THROUGH_SCENERY_PROMPT,
         ]
         for prompt in family:
             assert not ends_offscreen(prompt)
@@ -1397,7 +1419,9 @@ class TestUnstageablePairsAreReplacedInCoercion:
         motion, duration, sound = _plans(
             config, self._data(big, big[:2] + ["the newcomer"]), 1
         )[0]
-        assert motion == CAMERA_SHIFT_MOTION_PROMPT
+        # Faces on both sides -> the turn-away variant, so the whip blur
+        # lands on scenery instead of dragging the group through the pan.
+        assert motion == CAMERA_SHIFT_THROUGH_SCENERY_PROMPT
         # ALWAYS 5s, though the pair is rated 5: the camera prompt is one
         # continuous beat, and 10s of it is a slack shot at twice the price.
         assert duration == 5
@@ -1424,7 +1448,7 @@ class TestUnstageablePairsAreReplacedInCoercion:
             self._data([], []), 1, None,
             frame_people=[big, big[:2] + ["the newcomer"]],
         )
-        assert plans[0][0] == CAMERA_SHIFT_MOTION_PROMPT
+        assert plans[0][0] == CAMERA_SHIFT_THROUGH_SCENERY_PROMPT
 
     def test_a_stageable_pair_never_reaches_the_camera(self, config):
         good = "the man walks to the bench and sits beside the tall woman"
@@ -1548,6 +1572,7 @@ class TestCameraTransitionRecognition:
         for prompt in [
             CAMERA_SHIFT_MOTION_PROMPT,
             CAMERA_SHIFT_TO_SCENE_PROMPT,
+    CAMERA_SHIFT_THROUGH_SCENERY_PROMPT,
             camera_shift_prompt(group, ["the tall woman"]),
         ]:
             assert is_camera_transition(prompt)
