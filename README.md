@@ -634,10 +634,15 @@ typos are caught early.
 **Clip length:** you don't set it per clip. The planner rates each frame pair's
 difficulty 1–5 and the code derives the duration — 4 and 5 get 10 seconds,
 everything else 5 — because prompt-side instructions alone came back either
-all-5s or all-10s. `long_clip_max_fraction` (default `0.5`) caps how many of a
-movie's clips may be long: raise it toward `1.0` if hard transitions are being
-squeezed into 5s and teleporting, lower it for a shorter, pacier movie.
-Remember a 10s clip costs roughly twice a 5s one.
+all-5s or all-10s. **Every pair that earns it gets the long clip**: there is no
+quota. (There used to be a `long_clip_max_fraction` ceiling; it demoted
+genuinely hard pairs to 5s, where they teleport, and because it applied per
+planning call the same pair could come back a different length depending on
+which others you re-planned alongside it.) Rating honestly is the planner's
+job — if too much comes back long, that is a rating problem, and a 10s clip
+costs roughly twice a 5s one. **Camera transitions are always 5 seconds**,
+whatever their difficulty: that prompt is one continuous beat, so ten seconds
+of it is a slack shot at twice the price.
 
 **Position swaps are caught in code.** When the same people appear in both
 frames but trade left–right places, pinning them where they stand makes the
@@ -657,8 +662,13 @@ staging can exist at all: more than **3 people** leaving or arriving, or a
 frame holding **more than 4 people** whose roster or arrangement changes,
 replaces the choreography with a deterministic **camera transition** — the
 camera travels to the new setting and settles on exactly what the end frame
-shows (with a drift-to-one-person variant when a group narrows to one of its
-own, and a scene variant when the end frame is empty). The planner also
+shows — with a drift-to-one-person variant when a group narrows to one of its
+own, a scene variant when the end frame is empty, and a **turn-away variant
+when faces fill both frames**: the camera turns away from the people and
+travels through the surroundings, because a transit that keeps faces in shot
+smears them into each other (a real render dragged the group through the
+whip-pan and mushed them mid-clip), while blur over scenery reads as ordinary
+camera speed. The planner also
 reports a per-frame **headcount census** (everyone visible, tagged or not),
 so a crowded frame with only two people tagged still gates correctly. Small
 pairs keep subject staging — this is the only other place camera language is
@@ -738,13 +748,15 @@ clip interpolates from one styled frame to the next):
    (5 or 10s, leaning 5s; 10s is reserved for genuinely hard transitions),
    and a **sound prompt**, and writes
    `storyboard/storyboard.json` + `storyboard.md`. Motion prompts are
-   budgeted to the clip length (5s ≈ one action, ≤35 words; 10s ≤60 words) —
-   an over-budget prompt is automatically condensed, because the video model
-   fakes beats it can't fit (whip-pan blurs, swapped people). Keep hand-edited
-   prompts inside the same budget.
+   budgeted in BEATS, not words: 5s is one continuous action, 10s at most
+   two, because the video model fakes beats it can't fit (whip-pan blurs,
+   swapped people). Nothing counts or trims words — the planner is told to
+   say the one thing and stop, and a prompt that wanders into scenery, poses
+   and atmosphere is worse than a short one, not richer. Write hand-edited
+   prompts the same way.
 
    A prompt whose **last beat leaves someone out of the frame** ("…and walk
-   out of frame to the left") is rewritten the same way, before the word cap.
+   out of frame to the left") is rewritten automatically.
    The clip is pinned to its end frame, which shows those people, so a prompt
    that empties the frame and stops describes a clip that cannot exist — the
    video model answers it with a cut or a teleport. The rewrite adds the walk

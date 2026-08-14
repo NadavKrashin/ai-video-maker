@@ -145,12 +145,21 @@ Core design rules:
   rosters (tags first, model orders second): movers (leave+arrive) >
   `_MOVER_BUDGET` (3), or crowd > `_CROWD_LIMIT` (4) while the roster or
   arrangement changes → the planned choreography is REPLACED (never
-  repaired) by `camera_shift_prompt`, a deterministic 3-shape family:
+  repaired) by `camera_shift_prompt`, a deterministic 4-shape family:
   drift-to-one-of-its-own (the reviewer's own 12_to_13 suggestion),
-  scene-only for an empty end frame, else the standing travel-and-settle.
+  scene-only for an empty end frame, TURN-AWAY-THROUGH-SCENERY when people
+  stand on both sides (added 2026-08-14: the generic travel let Kling keep
+  the group in shot for the whole journey on the real 0a_to_0b render —
+  they turned and walked WITH the camera and the transit collapsed into
+  whip blur with faces smearing together; every clean camera clip had
+  neutral ground mid-transit, so the wording now builds it in — blur over
+  walls is camera speed, blur over faces is mush), else the standing
+  travel-and-settle (kept for unknown rosters and the offscreen last
+  resort).
   Gate runs FIRST in `_coerce_transition_plans` and skips
-  restage/complete/condense (a template can't end offscreen or bust the
-  cap). A same-roster group holding steady is NOT gated — hold-steady works
+  restage/complete (a template can't end offscreen). A camera transition is
+  ALWAYS 5s — one continuous beat — overriding both the difficulty rating
+  and any `--duration`. A same-roster group holding steady is NOT gated — hold-steady works
   at any size; it is exits/entrances/crossings that mush. Because tags list
   who MATTERS, not who is THERE (real frame 12: ten aboard, two tagged, and
   the plan staged the two as if alone), the planner now returns
@@ -188,9 +197,9 @@ Core design rules:
   against the pace rule by MATCH THE VERB TO THE REAL PACE AND GROUND:
   run/jog/sprint only when the shot really is running AND the ground is
   short (never as a way to cross a route faster), climb/wade/ski only when
-  the frames show that terrain. `_CONDENSE_MOTION_SYSTEM` must keep the
-  verb rather than generalise it back to "move"/"share a moment". Pinned by
-  the same test class.
+  the frames show that terrain. Any rewrite path must keep the verb rather
+  than generalise it back to "move"/"share a moment". Pinned by the same
+  test class.
 - Motion prompts are BEAT-BUDGETED to the clip length: 5s = exactly one
   continuous action, 10s = max two beats. User-verified on a real clip: an
   overloaded 5s prompt (lift-carry-seat-examine) made Kling swap in another
@@ -198,19 +207,26 @@ Core design rules:
   rendered fine. Kling also can't show cross-ground travel when the subject
   fills both frames — stage exit-past-camera + re-entry, or world morphs
   around a steady subject, instead.
-- Beat budgets need WORD CAPS enforced in code, not just prompt rules: a
-  real plan under the beat-budget rule alone still wrote 79–113 words for
-  every 5s clip, and an 84-word 5s prompt rendered as a whip-pan blur (a
-  disguised cut). Caps: 5s ≤ 35 words, 10s ≤ 60 (`_MOTION_WORD_LIMITS`);
-  over-budget prompts get a targeted condense call in
-  `_coerce_transition_plans` (`_condense_motion_prompt`, falls back to the
-  original on failure).
+- THE WORD CAPS ARE GONE (user call, 2026-08-14: "remove the word count
+  gate, just make sure that the prompts are to the point"). They existed for
+  a real reason — a plan under the beat rules alone wrote 79–113 words per 5s
+  clip and an 84-word prompt rendered as a whip-pan blur — but the cure grew
+  worse than the disease: `_condense_motion_prompt` reworked prompts that
+  were fine, dropped identity/pace anchors, and re-opened endings the
+  offscreen rewriter had just closed (7 of 9 on a real movie), forcing a
+  repair pass to undo it. `_MOTION_WORD_LIMITS`, `_motion_word_limit`,
+  `_condense_motion_prompt` and `_CONDENSE_MOTION_SYSTEM` are DELETED; the
+  replacement is `_MODE_A_SYSTEM`'s "SAY THE ONE THING, THEN STOP" plus the
+  beat count, and the restage/complete/review calls ask for "one action" /
+  "two beats" instead of a number. Nothing counts words anywhere now — if
+  sprawl returns, the honest fix is sharper beat rules or a VISIBLE warning,
+  never a silent rewrite. Pinned by TestNoMechanicalWordCap.
 - NO OFF-SCREEN HANDS in motion prompts: an action done TO the subject by
   someone not visible in the frames ("as if being lifted out", "is gently
   set down") makes Kling levitate the subject — a real clip had the toddler
   flying out of his stroller into glowing light. Subjects act under their
   own power, or hold steady while the world transforms. Enforced in
-  `_MODE_A_SYSTEM` and `_CONDENSE_MOTION_SYSTEM`.
+  `_MODE_A_SYSTEM`.
 - When a pair's two frames show DIFFERENT people, the motion prompt must stage
   an exit-and-entrance (or reveal) — never continuous identity: Kling morphs
   one person into the other otherwise, which the user finds creepy. Same
@@ -241,8 +257,7 @@ Core design rules:
   visible-appearance epithet ("the bald man", "the younger brown-haired
   man"), reused consistently; an action belonging to one person names that
   person, never a bare collective "they". Enforced in `_MODE_A_SYSTEM`,
-  `_CONDENSE_MOTION_SYSTEM` (condense swaps relationship words for
-  epithets), and `_REWORD_MOTION_SYSTEM` (identity anchors are not "risky
+  and `_REWORD_MOTION_SYSTEM` (identity anchors are not "risky
   detail" to drop); pinned by TestIdentityPromptRules.
 - EVERY STALENESS IS VISIBLE, NONE IS FIXED SILENTLY (user question,
   2026-08-02: "is there any way I can know if something is not in the most
@@ -388,29 +403,31 @@ Core design rules:
   bench and settles onto it") and name the pace. Genuinely far-apart frames
   aren't a walking shot at all: rate 4-5 and stage exit-past-camera +
   re-entry, or a world morph around a steady subject. Enforced in
-  `_MODE_A_SYSTEM`, `_CONDENSE_MOTION_SYSTEM` and `_REWORD_MOTION_SYSTEM`
-  (pace anchors are not "risky detail" to drop).
-- The WORD CAP DOES NOT CATCH BEAT OVERLOAD: a real 10s prompt ("they
-  laugh, step back from the edge, and stroll down toward a green resort
-  lawn where they change into white robes, set backpacks aside, and move
-  together into a relaxed selfie") was only 46 words — inside the 60-word
-  cap — but SIX beats, and rendered as a frantic sprint. `_MODE_A_SYSTEM`
-  therefore tells the planner to COUNT beats explicitly (chained
-  and/then/where/until = another beat) on top of the word cap. Beats are
-  not mechanically enforced — only word counts are.
+  `_MODE_A_SYSTEM` and `_REWORD_MOTION_SYSTEM` (pace anchors are not "risky
+  detail" to drop).
+- BEATS, NOT WORDS, ARE THE REAL BUDGET: a real 10s prompt ("they laugh,
+  step back from the edge, and stroll down toward a green resort lawn where
+  they change into white robes, set backpacks aside, and move together into
+  a relaxed selfie") was only 46 words — inside the old 60-word cap — but
+  SIX beats, and rendered as a frantic sprint. That is why the word cap was
+  never the thing doing the work. `_MODE_A_SYSTEM` tells the planner to
+  COUNT beats explicitly (chained and/then/where/until = another beat).
+  NOTHING about length is mechanically enforced any more.
 - Clip durations must LEAN SHORT, and prompt-side bias alone cannot deliver
   it: real plans came back all-5s under "prefer 5" and all-10s under a
   hard-transition checklist (in a photo-album movie nearly every pair
   changes setting or outfit). The planner therefore only RATES each pair's
   difficulty 1-5 (3 = one major change, 4 = two at once OR any transition
   that can't physically play out in 5s, 5 = shares almost nothing /
-  different people) and code derives durations: >=4 → 10s, capped at
-  `config.long_clip_max_fraction` of the clips (default 0.5, was a hardcoded
-  1/3 until 2026-07-26 — the cap was demoting genuinely hard pairs to 5s;
-  `_select_long_clips` in clients/openai_client.py). A hard pair squeezed
-  into 5s visibly teleports (seen in a real render), so keep both sides of
-  the balance — raising the fraction also raises cost, since a 10s clip is
-  about twice a 5s one.
+  different people) and code derives durations: >=4 → 10s, with NO QUOTA
+  (`_select_long_clips`). The `long_clip_max_fraction` ceiling was removed
+  2026-08-14 (user call) along with the config key: it demoted genuinely
+  hard pairs to 5s, where they visibly teleport, and — being applied per
+  planning call — handed the same pair a different length depending on which
+  others were re-planned alongside it, which is indefensible once re-planning
+  a hand-picked subset is a normal action. Rating honestly is now entirely
+  the planner's job, and the rubric says so ("every pair you rate 4 or 5
+  becomes a 10-second clip"). A 10s clip still costs about twice a 5s one.
 - A RELOCATION WITHIN ONE SETTING (high chair → couch across the same room,
   subject prominent in both frames) is a difficulty-4 pair even though the
   setting/outfit don't change: exit + crossing + arrival can't compress
@@ -477,8 +494,7 @@ Core design rules:
   the existing save→outdated→confirmed-render path takes over (clips are
   still never auto-re-rendered). Guards that must stay: the reviewer gets
   `_MODE_A_SYSTEM` + the active lessons so its rewrite obeys the same
-  rulebook; `_coerce_review` holds the suggestion to the word cap
-  (condensing like a planned prompt), rejects impossible durations, and
+  rulebook; `_coerce_review` rejects impossible durations and
   falls back to the ORIGINAL prompt when the model returns nothing (so
   "apply" can never blank a transition); the reviewer is told which part of
   the prompt is the auto-prepended `global_motion_prompt` so its rewrite

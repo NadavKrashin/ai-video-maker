@@ -4,7 +4,6 @@ from __future__ import annotations
 import base64
 import io
 import json
-import math
 import os
 import re
 from pathlib import Path
@@ -34,22 +33,16 @@ T = TypeVar("T")
 # ~512px anyway, so anything bigger is pure upload weight.
 _VISION_MAX_EDGE = 768
 
-# Fallback ceiling on how many of a movie's clips may get the long (10s)
-# duration; `config.long_clip_max_fraction` overrides it. The planner rates
-# each pair's difficulty and code derives durations from it
-# (_coerce_transition_plans); the cap keeps the movie from turning long and
-# slow when the model inflates its ratings — real plans have come back all-5s
-# and all-10s under prompt-side guidance alone. Raised from 1/3 to 1/2 on
-# 2026-07-26: hard pairs were being demoted to 5s by the cap and teleporting.
-_LONG_CLIP_MAX_FRACTION = 0.5
-
-# Hard word budgets for motion prompts, by clip duration. Kling drops or fakes
-# beats it can't fit (a real 84-word 5s prompt rendered as a whip-pan blur —
-# a disguised cut), and prompt-side guidance alone doesn't hold the line: a
-# real plan under the beat-budget rule still wrote 79-113 words for every 5s
-# clip. Over-budget prompts are condensed by a targeted text call in
-# _coerce_transition_plans, mirroring how durations are derived in code.
-_MOTION_WORD_LIMITS = {min(VALID_DURATIONS): 35, max(VALID_DURATIONS): 60}
+# NOTE (user call, 2026-08-14): there is no longer a cap on how many clips
+# may be long, and no mechanical word budget for motion prompts. Difficulty
+# alone decides 5s vs 10s, and prompt LENGTH is governed by the beat rules in
+# _MODE_A_SYSTEM ("say the one thing, then stop") rather than by counting
+# words and rewriting what goes over. The counted cap existed because a real
+# plan wrote 79-113 words for every 5s clip and an 84-word prompt rendered as
+# a whip-pan blur; the replacement for that is a prompt that stays on point,
+# not a truncation pass — condensing was reworking prompts that were fine and
+# re-opening endings it had just closed. If sprawl comes back, the honest fix
+# is sharper beat rules (or a VISIBLE warning), never a silent rewrite.
 
 # Function words dropped when comparing two descriptions of the same person.
 # Only articles/prepositions — NEVER adjectives: 'the tall man' and 'the short
@@ -125,7 +118,7 @@ _RESTAGE_SWAP_SYSTEM = (
     "('squeeze closer', 'share a moment'); refer to each person by their "
     "visible-appearance epithet, never a name or a relationship word, and "
     "never a bare collective 'they' for an action belonging to one of them; "
-    "stay within the stated word limit; and END with them standing where the "
+    "say it in as few words as the staging needs and stop — no scene-setting, no inventory of poses; and END with them standing where the "
     "END frame shows them, each on their end-frame side — never end on "
     "people leaving. Present tense. Return ONLY the rewritten motion prompt, "
     "with no preamble or quotes."
@@ -162,7 +155,7 @@ _COMPLETE_ENDING_SYSTEM = (
     "epithet, never a name or a relationship word, and never a bare "
     "collective 'they' for an action belonging to one person; keep the pace "
     "unhurried and describe an ARRIVAL rather than a whole route; stay "
-    "within the stated word limit. Present tense. Return ONLY the rewritten "
+    "to the point — as few words as the staging needs, then stop. Present tense. Return ONLY the rewritten "
     "motion prompt, with no preamble or quotes."
 )
 
@@ -197,63 +190,23 @@ CAMERA_SHIFT_TO_SCENE_PROMPT = (
     "settles there, framing the scene exactly as the end frame shows it."
 )
 
-# Condense an over-budget motion prompt down to what the clip can hold.
-_CONDENSE_MOTION_SYSTEM = (
-    "You condense motion prompts for an image-to-video model that "
-    "interpolates between two given frames (the START and END of one clip). "
-    "The prompt you receive stages more action than the clip's length can "
-    "hold; the video model reacts by dropping or faking beats — a whip-pan "
-    "blur, a morphed or swapped person. Rewrite the prompt to fit the stated "
-    "word limit, keeping only: (1) the single most essential subject action, "
-    "AS THE CONCRETE PHYSICAL VERB the original used — keep 'walks', "
-    "'climbs', 'crouches', 'steps back in from the left'; never generalise "
-    "a body movement into 'move', 'shift', 'come closer', 'settle in' or "
-    "'share a moment', which the video model cannot animate and answers "
-    "with a morph "
-    "(a 5-second clip holds exactly ONE continuous action; 10 seconds at "
-    "most two beats); (2) identity phrasing: same-person wording ('the same "
-    "little boy, now ...') with singular he/she — never 'they' — and, when "
-    "several people appear, each person's short distinguishing epithet ('the "
-    "bald man in pink sunglasses', 'the younger man with brown hair'). NEVER "
-    "shorten an epithet down to a feature two people share — cutting 'the "
-    "bald man in pink sunglasses' to 'the bald man' when the film has two "
-    "bald men saves three words and makes the clip animate the wrong person. "
-    "Cut scenery before identity. Keep any left/right position or direction "
-    "wording too ('the man on the right', 'turns left'): that is how the "
-    "model knows which figure to move where. Never collapse named "
-    "individuals into a collective 'they' or 'the couple', which makes the "
-    "video model blend their identities, and if the prompt refers to anyone "
-    "by name or by relationship words ('the son', 'the father', 'mom'), "
-    "replace those with visible-appearance epithets — the video model knows "
-    "only what the frames show; (3) any exit-and-entrance or "
-    "position-swap staging (people leaving frame and re-entering, one "
-    "crossing past another) — that staging is what prevents the model from "
-    "morphing one person into another, so condense around it, never into "
-    "everyone holding still. If the prompt walks someone OUT of frame, the "
-    "words that walk them BACK IN are not optional padding: cutting them "
-    "leaves the clip ending on an empty frame when it has to land on the end "
-    "frame, and the model answers that with a cut. Drop the whole exit "
-    "before you drop its return; (4) a brief final clause "
-    "landing on the same end state the original ends on, on the same side "
-    "of the frame — never on anyone leaving, walking away or offscreen. "
-    "CUT EVERY WORD ABOUT THE SCENE FIRST: the background, "
-    "the location and its name, the light, the weather, the time of day — "
-    "the two frames already fix all of it and the video model interpolates "
-    "it by itself, so those words are free to lose and always go before "
-    "anything a person does. Cut secondary "
-    "gestures and wardrobe inventories, and camera directions, next.Collapse route-spanning "
-    "travel into the ARRIVAL: 'strolls along the meadow trail until they "
-    "stop beside the bench' becomes 'takes the last few unhurried steps to "
-    "the bench and settles onto it'. A clip cannot cover a whole route in "
-    "its length and the video model compensates by sprinting the people "
-    "across the ground, so keep the destination and an unhurried pace but "
-    "drop the journey. Every remaining action must "
-    "be performed by a visible person under their own power: remove actions "
-    "done to the subject by anyone off-screen (being lifted, carried, set "
-    "down). No editing terms (crossfade, dissolve, morph, transition). "
-    "Present tense. Return ONLY the condensed motion prompt, no preamble or "
-    "quotes."
+# The move for a pair with faces filling BOTH frames (a group on each side).
+# The generic travel invites the model to keep the people in shot for the
+# whole journey — on a real render (0a_to_0b, walkway selfie -> hallway pose)
+# the group turned and walked WITH the camera, and the transit collapsed into
+# whip blur with faces smearing into each other: the disguised cut wearing
+# the camera prompt as cover. Every camera clip that rendered clean had
+# neutral ground mid-transit (an anchor to follow, an empty destination, a
+# pan onto scenery), so this wording builds that in: the camera turns AWAY
+# from the people first and travels across the surroundings — blur over
+# walls reads as camera speed; blur over faces reads as people dissolving —
+# and the arrival is a reveal. This is how a real editor cuts a whip-pan.
+CAMERA_SHIFT_THROUGH_SCENERY_PROMPT = (
+    "Everyone holds still as the camera turns away from them and glides "
+    "across the surroundings, then comes to rest on the people exactly as "
+    "the end frame shows them."
 )
+
 
 # Reword a prompt that OpenAI's safety filter wrongly flagged. The video pipeline
 # never intends harmful content, so flags are typically benign wording the filter
@@ -886,7 +839,11 @@ _MODE_A_SYSTEM = (
     "subject choreography: the people simply stay as they are, or keep "
     "doing what they are visibly doing, while the camera moves smoothly "
     "and steadily across to the new setting and settles on exactly what "
-    "the end frame shows. Name nobody individually in it, stage no exits "
+    "the end frame shows. When BOTH frames are full of people, have the "
+    "camera turn away from them first and travel across the surroundings "
+    "before settling — a transit that keeps faces in frame smears them "
+    "into each other, while blur over scenery reads as ordinary camera "
+    "speed. Name nobody individually in it, stage no exits "
     "and no entrances. This is a deliberate exception to CAMERA LAST, and "
     "code enforces the same rule: a many-mover staging is replaced with a "
     "deterministic camera prompt anyway, so spend your effort on the pairs "
@@ -894,18 +851,24 @@ _MODE_A_SYSTEM = (
     "BEAT BUDGET: rate the pair's difficulty BEFORE writing the motion, "
     "because the rating sets the clip's length and the length sets how much "
     "can happen. Difficulty 1-3 = a 5-second clip = exactly ONE continuous "
-    "action, ONE sentence, AT MOST 35 WORDS ('she crosses the kitchen and "
-    "sets the tray on the table' / 'the toddler runs to the patio chair and "
-    "settles onto it'). Difficulty 4-5 = up to 10 seconds = at most TWO "
-    "beats, two sentences, AT MOST 60 WORDS. These word caps are hard "
-    "limits: an over-cap prompt is mechanically condensed before rendering "
-    "and may lose the wrong detail, so stay under the cap yourself. A "
-    "prompt with more beats than the clip can hold does not get compressed "
-    "— the model drops or fakes the beats, typically by swapping in a "
-    "different-looking subject mid-clip. "
-    "COUNT THE BEATS BEFORE YOU WRITE — the word cap will NOT do it for "
-    "you. A beat is any distinct action a subject performs, and a prompt "
-    "can sit comfortably under the word cap while stacking far too many of "
+    "action, ONE sentence ('she crosses the kitchen and sets the tray on "
+    "the table' / 'the toddler runs to the patio chair and settles onto "
+    "it'). Difficulty 4-5 = up to 10 seconds = at most TWO beats, two "
+    "sentences. A prompt with more beats than the clip can hold does not "
+    "get compressed — the video model drops or fakes them, typically by "
+    "swapping in a different-looking subject mid-clip. "
+    "SAY THE ONE THING, THEN STOP. Nothing counts your words, so the "
+    "discipline is yours: write the shortest prompt that fully specifies "
+    "who moves, how, and where they end up — then end the sentence. Every "
+    "extra clause is a chance for the video model to invent a beat you did "
+    "not ask for. A prompt that wanders — narrating the setting, listing "
+    "each person's pose and expression, restating what the end frame "
+    "already shows, adding atmosphere — is WORSE than a short one, not "
+    "richer: the two frames already carry all of that, and the words spent "
+    "on it pull the model off the people. If a clause does not name a "
+    "person, a movement, or where that movement ends, cut it. "
+    "COUNT THE BEATS BEFORE YOU WRITE. A beat is any distinct action a "
+    "subject performs, and a short prompt can still stack far too many of "
     "them. A real 10-second prompt — 'they laugh, step back from the edge, "
     "and stroll down toward a green resort lawn where they change into "
     "white robes, set backpacks aside, and move together into a relaxed "
@@ -957,9 +920,11 @@ _MODE_A_SYSTEM = (
     "change. Rate honestly and comparatively: in a typical "
     "photo-album movie (family, travel, an event) most consecutive pairs "
     "change setting or outfit — that alone is a 3, not a 4. Clip length is "
-    "derived from this rating "
-    "(easy pairs get short, pacy clips; only the hardest get long ones), so "
-    "do not inflate it. "
+    "derived from this rating and NOTHING ELSE — every pair you rate 4 or 5 "
+    "becomes a 10-second clip, with no quota and no second opinion — so an "
+    "inflated rating directly makes the movie longer, slower and twice as "
+    "expensive on that pair. Rate 4+ only when the pair genuinely cannot "
+    "play out in five seconds. "
     "SOUND: also write sound_prompt — a short phrase describing the diegetic "
     "ambient sound and sound effects for that clip (e.g. 'waves lapping, gulls "
     "calling, soft wind'). Real on-screen/world sounds only — no music, no "
@@ -1104,16 +1069,6 @@ def _json_schema_format(name: str, schema: dict[str, Any]) -> dict[str, Any]:
         "type": "json_schema",
         "json_schema": {"name": name, "strict": True, "schema": schema},
     }
-
-
-def _motion_word_limit(duration: int) -> int:
-    """Word budget for a motion prompt of `duration` seconds.
-
-    Unknown durations get the most permissive budget rather than a guess —
-    the budget exists to catch clearly overloaded prompts, not to nickel-
-    and-dime borderline ones.
-    """
-    return _MOTION_WORD_LIMITS.get(duration, max(_MOTION_WORD_LIMITS.values()))
 
 
 def _merge_cast(
@@ -1658,16 +1613,20 @@ def is_unstageable_pair(
 def camera_shift_prompt(start_order: Any = None, end_order: Any = None) -> str:
     """The deterministic camera prompt for a pair, picked by its shape.
 
-    Three shapes, all deterministic, all under the 5-second word cap, none
-    containing an exit marker (a camera prompt that tripped ``ends_offscreen``
-    would re-enter the very machinery it replaces):
+    Four shapes, all deterministic, all one continuous beat, none containing
+    an exit marker (a camera prompt that tripped ``ends_offscreen`` would
+    re-enter the very machinery it replaces):
 
     - end frame shows nobody: travel to the scene itself;
     - a group narrowing to ONE of its own people: everyone holds where they
       are and the camera drifts to that person — the staging the clip
       reviewer independently proposed for a real group-to-single pair whose
       staged prompt had rendered as a ghost dissolve;
-    - anything else: the standing travel-and-settle wording.
+    - people on BOTH sides: turn away from them and travel through the
+      scenery, so the whip blur lands on walls rather than faces (a real
+      generic-worded render dragged the group through the pan and mushed
+      them mid-clip);
+    - unknown rosters: the standing travel-and-settle wording.
     """
     if not isinstance(end_order, list):
         return CAMERA_SHIFT_MOTION_PROMPT
@@ -1691,6 +1650,13 @@ def camera_shift_prompt(start_order: Any = None, end_order: Any = None) -> str:
                 f"and steadily across to {the}{who}, who fills the frame "
                 f"exactly as the end frame shows."
             )
+    if (
+        len(end_order) >= 2
+        and isinstance(start_order, list)
+        and len(start_order) >= 1
+    ):
+        # Faces on both sides: give the transit neutral ground to cross.
+        return CAMERA_SHIFT_THROUGH_SCENERY_PROMPT
     return CAMERA_SHIFT_MOTION_PROMPT
 
 
@@ -1701,6 +1667,7 @@ def camera_shift_prompt(start_order: Any = None, end_order: Any = None) -> str:
 _CAMERA_PROMPT_OPENINGS = (
     "The camera moves smoothly and steadily across",
     "Everyone stays where they are as the camera",
+    "Everyone holds still as the camera",
 )
 
 
@@ -2017,7 +1984,6 @@ class OpenAIClient:
         if not clip_frames:
             raise ValueError("No frames were sampled from the clip.")
         client = self._ensure_client()
-        limit = _motion_word_limit(duration)
 
         # The reviewer must judge — and rewrite — under exactly the rules the
         # planner writes under, including everything learned so far.
@@ -2029,8 +1995,9 @@ class OpenAIClient:
         )
 
         instruction = (
-            f"Clip length: {duration} seconds. Word limit for the replacement "
-            f"prompt: {limit} words.\n\n"
+            f"Clip length: {duration} seconds. Keep the replacement prompt "
+            f"to the point: the {'one action' if duration == min(VALID_DURATIONS) else 'two beats'} "
+            f"the clip can hold, and nothing else.\n\n"
             f"The motion prompt that produced this clip:\n{motion_prompt}\n"
         )
         if global_context.strip():
@@ -2090,12 +2057,15 @@ class OpenAIClient:
     def _coerce_review(
         self, data: dict[str, Any], motion_prompt: str, duration: int
     ) -> dict[str, Any]:
-        """Normalise a review into a usable, in-budget suggestion.
+        """Normalise a review into a usable suggestion.
 
         Same division of labour as the planner: the model observes, code
-        decides. A suggestion that is empty, over the word budget for its
-        length, or at an impossible duration would otherwise reach the user
-        as an "improvement" the pipeline itself would have rejected.
+        decides. A suggestion that is empty or at an impossible duration
+        would otherwise reach the user as an "improvement" the pipeline
+        itself would have rejected. Length is no longer policed here — the
+        reviewer writes under the planner's own beat rules (it is handed
+        _MODE_A_SYSTEM), and a suggestion is only ever a proposal the human
+        applies by hand.
         """
         suggested = " ".join(
             str(data.get("suggested_motion_prompt", "") or "").split()
@@ -2103,10 +2073,6 @@ class OpenAIClient:
         new_duration = self._coerce_duration(
             data.get("suggested_duration"), duration
         )
-        if suggested:
-            limit = _motion_word_limit(new_duration)
-            if len(suggested.split()) > limit:
-                suggested = self._condense_motion_prompt(suggested, new_duration)
         problems = [
             " ".join(str(p).split()) for p in (data.get("problems") or [])
             if str(p).strip()
@@ -2556,57 +2522,40 @@ class OpenAIClient:
             # mushed bodies, vanished people), so it is not repaired, it is
             # REPLACED with the deterministic camera transition, and the
             # repair machinery below is skipped — a template cannot end
-            # offscreen or bust the word cap.
+            # offscreen.
+            #
+            # ALWAYS the short clip (user call, 2026-08-14), whatever the
+            # difficulty rating or a --duration override says: this prompt is
+            # ONE continuous beat — the camera travels and settles — and ten
+            # seconds of it is a slack shot at twice the price. Difficulty
+            # rates how hard the pair is to STAGE, which is exactly the
+            # question this branch has already answered with "don't".
             if is_unstageable_pair(
                 *orders(i), item.get("start_heads"), item.get("end_heads"),
             ):
                 logger.info(
                     "Pair %d cannot be staged through its people (too many "
-                    "movers or too crowded); using a camera transition.",
-                    i + 1,
+                    "movers or too crowded); using a %ds camera transition.",
+                    i + 1, min(VALID_DURATIONS),
                 )
-                plans.append((camera_shift_prompt(*orders(i)), duration, sound))
+                plans.append((
+                    camera_shift_prompt(*orders(i)),
+                    min(VALID_DURATIONS),
+                    sound,
+                ))
                 continue
-            # Restage BEFORE the word cap: the rewrite adds the crossing the
-            # prompt was missing, and may come back over budget.
             if i in swaps and not stages_a_crossing(motion):
                 motion = self._restage_swapped_pair(motion, duration, *orders(i))
             # An exit with no return is HALF a staging, and the clip is pinned
             # to the end frame — so a prompt whose last beat empties the frame
             # describes a clip that cannot exist and the model answers with a
-            # cut. Enforced here rather than left to _MODE_A_SYSTEM for the
-            # same reason word caps are: a full re-plan of a real 44-pair
-            # movie came back with the SAME 29 pairs ending on an exit.
-            # Also before the cap — the walk-back-in costs words.
+            # cut. Enforced here rather than left to _MODE_A_SYSTEM because a
+            # full re-plan of a real 44-pair movie came back with the SAME 29
+            # pairs ending on an exit.
             if ends_offscreen(motion):
                 motion = self._complete_offscreen_ending(
                     motion, duration, orders(i)[1]
                 )
-            if len(motion.split()) > _motion_word_limit(duration):
-                landed = not ends_offscreen(motion)
-                motion = self._condense_motion_prompt(motion, duration)
-                # Condensing is TOLD to drop a whole exit before dropping its
-                # return, and does it anyway: on the movie that prompted the
-                # rewrite step, condensing re-opened 7 of the 9 endings that
-                # were left. Repair it once, at the tighter budget this time
-                # — the prompt is already short, so the walk-back-in has room.
-                if landed and ends_offscreen(motion):
-                    repaired = self._complete_offscreen_ending(
-                        motion, duration, orders(i)[1]
-                    )
-                    if not ends_offscreen(repaired):
-                        motion = repaired
-                    else:
-                        # Keep the CONDENSED prompt, not the long one that
-                        # landed: an over-budget prompt renders as a rushed
-                        # blur that reads like a cut, so swapping one failure
-                        # for another would only clear the panel's badge
-                        # without earning it.
-                        logger.warning(
-                            "Condensing put the ending back offscreen for pair "
-                            "%d and the repair did not land it.",
-                            i + 1,
-                        )
             # NOTHING ships with an offscreen ending. Every rewrite above can
             # decline, and on hard pairs they do — a group of nine cannot walk
             # out and back in inside one clip. Move the camera instead of the
@@ -2636,7 +2585,6 @@ class OpenAIClient:
         Falls back to the original prompt on any failure: a badly staged clip
         still renders, and planning must never hard-stop over it.
         """
-        limit = _motion_word_limit(duration)
 
         def _names(order: Any) -> str:
             if not isinstance(order, list):
@@ -2658,7 +2606,7 @@ class OpenAIClient:
                         "role": "user",
                         "content": (
                             f"Clip length: {duration} seconds. "
-                            f"Word limit: {limit}.\n"
+                            f"Keep it to the point: {'one action' if duration == min(VALID_DURATIONS) else 'two beats'}, no scene-setting.\n"
                             f"Start frame, left to right: {_names(start_order)}\n"
                             f"End frame, left to right: {_names(end_order)}\n\n"
                             f"{prompt}"
@@ -2703,7 +2651,6 @@ class OpenAIClient:
         any failure: a badly staged clip still renders, and planning must
         never hard-stop over it.
         """
-        limit = _motion_word_limit(duration)
         names = (
             ", ".join(str(n) for n in end_order)
             if isinstance(end_order, list) and end_order
@@ -2724,7 +2671,7 @@ class OpenAIClient:
                         "role": "user",
                         "content": (
                             f"Clip length: {duration} seconds. "
-                            f"Word limit: {limit}.\n"
+                            f"Keep it to the point: {'one action' if duration == min(VALID_DURATIONS) else 'two beats'}, no scene-setting.\n"
                             f"End frame, left to right: {names}\n\n"
                             f"{prompt}"
                         ),
@@ -2745,53 +2692,20 @@ class OpenAIClient:
             )
         return prompt
 
-    def _condense_motion_prompt(self, prompt: str, duration: int) -> str:
-        """Rewrite an over-budget motion prompt down to the clip's word budget.
-
-        Falls back to the original prompt if the rewrite call fails or comes
-        back no shorter — an overloaded prompt still renders (badly), so this
-        must never hard-stop planning.
-        """
-        limit = _motion_word_limit(duration)
-        logger.info(
-            "Motion prompt is %d words for a %ds clip (budget %d); condensing",
-            len(prompt.split()), duration, limit,
-        )
-        try:
-            client = self._ensure_client()
-            resp = client.chat.completions.create(
-                model=self.config.openai_text_model,
-                messages=[
-                    {"role": "system", "content": _CONDENSE_MOTION_SYSTEM},
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Clip length: {duration} seconds. "
-                            f"Word limit: {limit}.\n\n{prompt}"
-                        ),
-                    },
-                ],
-            )
-            self._note_text_usage(resp, "condense motion prompt")
-            condensed = (resp.choices[0].message.content or "").strip()
-            if condensed and len(condensed.split()) < len(prompt.split()):
-                return condensed
-        except Exception as exc:  # noqa: BLE001 - keep planning alive
-            logger.warning(
-                "Condensing motion prompt failed (%s); keeping the original",
-                exc,
-            )
-        return prompt
-
     def _select_long_clips(
         self, items: list[Any], count: int,
         swaps: Optional[set[int]] = None,
     ) -> set[int]:
         """Pick which pairs get the long duration from their difficulty ratings.
 
-        Difficulty >= 4 qualifies; if more qualify than
-        ``config.long_clip_max_fraction`` allows, only the highest-rated
-        (earliest on ties) keep the long clip.
+        Difficulty >= 4 gets 10 seconds. EVERY pair that earns it does, with
+        no quota (user call, 2026-08-14): the old ceiling capped a movie at
+        half long clips, so on a hard order it demoted genuinely hard pairs
+        to 5s — where they teleport — and, because the ceiling was applied
+        per planning call, re-planning a handful of pairs could hand the same
+        pair a different length depending on which others were selected
+        alongside it. Rating honestly is the planner's job; if too much comes
+        back long, that is a rating problem to fix in the rubric.
 
         A pair whose people trade sides is forced to at least 4 whatever the
         planner rated it: the staging that keeps them from morphing (walk out
@@ -2809,13 +2723,7 @@ class OpenAIClient:
             d = min(5, max(1, d))
             return max(d, 4) if i in swaps else d
 
-        candidates = [i for i in range(count) if rating(i) >= 4]
-        fraction = getattr(
-            self.config, "long_clip_max_fraction", _LONG_CLIP_MAX_FRACTION
-        )
-        cap = math.ceil(count * fraction)
-        candidates.sort(key=lambda i: (-rating(i), i))
-        return set(candidates[:cap])
+        return {i for i in range(count) if rating(i) >= 4}
 
     def _coerce_duration(self, value: Any, fallback: int) -> int:
         """Return `value` if it is a valid clip duration, else `fallback`."""
