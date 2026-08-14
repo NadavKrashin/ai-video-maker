@@ -2079,6 +2079,21 @@ export default function ProjectDetail({ name, onBack }) {
             // before that is left exactly as it is (its wording is baked into
             // prompts already planned) and flagged here instead.
             const fragile = new Set(snap.storyboard?.fragile_epithets || []);
+            // Groups of cast entries whose names can't be told apart
+            // ("woman with dark hair bun" / "young woman with dark hair
+            // bun"): the video model acts on whoever is nearest, and the
+            // pipeline's swap detection reads them as one person. Map each
+            // id to the OTHER epithets in its knot for the inline error.
+            const epithetById = Object.fromEntries(
+              (storyboard.characters || []).map((c) => [c.id, c.epithet]));
+            const indistinct = new Map();
+            (snap.storyboard?.indistinct_epithets || []).forEach((group) => {
+              group.forEach((id) => {
+                const others = group.filter((g) => g !== id)
+                  .map((g) => epithetById[g] || g);
+                indistinct.set(id, others);
+              });
+            });
             return (
               <Card withBorder padding="md">
                 <Text size="sm" fw={500}>Cast</Text>
@@ -2103,12 +2118,25 @@ export default function ProjectDetail({ name, onBack }) {
                     new wording.
                   </Alert>
                 )}
+                {indistinct.size > 0 && (
+                  <Alert color="orange" variant="light" mb="xs"
+                    title={`${indistinct.size} names can't be told apart`}>
+                    These entries differ only by a word or two, so a prompt
+                    naming one of them points at both — the video model acts
+                    on whoever is nearest, and swap detection reads them as
+                    the same person and gives up. Give each one a trait the
+                    other lacks (relative age or size, hair length, glasses),
+                    then re-plan the clips that mention them.
+                  </Alert>
+                )}
                 <Stack gap="xs">
                   {(storyboard.characters || []).map((c) => (
                     <TextInput key={c.id} size="xs" label={c.id} value={c.epithet}
                       error={fragile.has(c.id)
                         ? 'names clothing — use a feature that does not change'
-                        : undefined}
+                        : indistinct.has(c.id)
+                          ? `can't be told apart from “${indistinct.get(c.id).join('”, “')}”`
+                          : undefined}
                       onChange={(e) => editCharacter(c.id, e.target.value)} />
                   ))}
                 </Stack>

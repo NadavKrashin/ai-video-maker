@@ -1651,3 +1651,39 @@ class TestOffscreenEndingsAreVisible:
         )
         sb.save(workspace.default_storyboard_json)
         assert p.snapshot()["storyboard"]["ends_offscreen"] == []
+
+
+class TestIndistinctEpithetsAreVisible:
+    """A cast pair the matcher can't tell apart is surfaced, never rewritten.
+
+    Existing casts are frozen (their wording is baked into planned prompts),
+    so like fragile epithets these are flagged for a hand edit in the
+    panel's Cast editor — a real 29-entry cast carried "woman with dark hair
+    bun" AND "young woman with dark hair bun".
+    """
+
+    def test_colliding_cast_names_are_listed_as_a_group(
+        self, make_pipeline, workspace
+    ):
+        p = make_pipeline(analyze_frames=False)
+        _make_frame_pairs(workspace, ["a", "b"])
+        sb = _save_slug_storyboard(workspace, ["a", "b"])
+        sb.characters = [
+            Character(id="mum", epithet="woman with dark hair bun"),
+            Character(id="aunt", epithet="young woman with dark hair bun"),
+            Character(id="dad", epithet="the bald man"),
+        ]
+        sb.save(workspace.default_storyboard_json)
+        snap = p.snapshot()["storyboard"]
+        assert snap["indistinct_epithets"] == [["mum", "aunt"]]
+
+    def test_a_distinct_cast_reports_nothing(self, make_pipeline, workspace):
+        p = make_pipeline(analyze_frames=False)
+        _make_frame_pairs(workspace, ["a", "b"])
+        sb = _save_slug_storyboard(workspace, ["a", "b"])
+        sb.characters = [
+            Character(id="dad", epithet="the bald man"),
+            Character(id="son", epithet="the smaller boy with curly hair"),
+        ]
+        sb.save(workspace.default_storyboard_json)
+        assert p.snapshot()["storyboard"]["indistinct_epithets"] == []

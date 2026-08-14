@@ -303,6 +303,22 @@ Core design rules:
   (`_merge_cast`), so old projects keep their wording; `snapshot()`'s
   `fragile_epithets` flags them for a hand edit in the panel's Cast editor.
   Pinned by TestCastEpithetsSurviveTheMovie / TestCastPromptForbidsClothing.
+- EPITHETS MUST BE DISTINCT ACROSS THE WHOLE CAST (2026-08-14, same
+  am-130826-pcfd review). Its 29-entry cast carried "woman with dark hair
+  bun" AND "young woman with dark hair bun", "teenage girl with long dark
+  hair" AND "...and bun": a prompt naming one points at both, and the
+  pipeline's own `_match_people` reads them as one person and aborts —
+  silently disabling swap/mover detection wherever either appears.
+  `indistinct_epithets` (openai_client.py) flags groups the matcher cannot
+  tell apart (word-subset or near-identical token sets — operational, not
+  aesthetic: "the taller boy"/"the smaller boy" is fine), surfaced as
+  `snapshot()["storyboard"]["indistinct_epithets"]` + a Cast-editor alert
+  with inline errors. NOTHING is auto-rewritten — existing casts stay
+  frozen (`_merge_cast`), fix is hand edit + re-plan, exactly like fragile
+  epithets. The planner is also told: distinctiveness is CAST-WIDE, and a
+  background crowd that is scenery may be ONE collective entry ("the large
+  dinner group") instead of an entry per stranger. Pinned by
+  TestIndistinctEpithets / TestIndistinctEpithetsAreVisible.
 - ARRANGEMENT SWAP: when the same people appear in both frames but trade
   left-right positions, hold-steady/world-morphs staging is FORBIDDEN — the
   interpolator maps left onto left, so pinned-in-place swapped people morph

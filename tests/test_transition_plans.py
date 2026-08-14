@@ -1622,3 +1622,72 @@ class TestThePlannerIsTaughtTheSameGate:
             ["the small boy"],
         ])
         assert "Stage an exit and an entrance" in block
+
+
+class TestIndistinctEpithets:
+    """Cast entries the person-matcher literally cannot tell apart.
+
+    Straight off am-130826-pcfd's 29-entry cast: "woman with dark hair bun"
+    next to "young woman with dark hair bun", "teenage girl with long dark
+    hair" next to "teenage girl with long dark hair and bun". A prompt
+    naming one points at both, and swap/mover matching aborts as ambiguous
+    wherever either appears.
+    """
+
+    def _cast(self, *epithets):
+        return [
+            Character(id=f"c{i}", epithet=e)
+            for i, e in enumerate(epithets, start=1)
+        ]
+
+    def test_a_word_subset_collides(self):
+        from ai_video_maker.clients.openai_client import indistinct_epithets
+        groups = indistinct_epithets(self._cast(
+            "woman with dark hair bun",
+            "young woman with dark hair bun",
+            "the bald man",
+        ))
+        assert groups == [["c1", "c2"]]
+
+    def test_collisions_group_transitively(self):
+        from ai_video_maker.clients.openai_client import indistinct_epithets
+        groups = indistinct_epithets(self._cast(
+            "teenage girl with long dark hair",
+            "teenage girl with long dark hair and bun",
+            "girl with long dark hair",
+        ))
+        assert groups == [["c1", "c2", "c3"]]
+
+    def test_relative_traits_keep_lookalikes_apart(self):
+        # "the taller boy" / "the smaller boy" is exactly the recommended
+        # separation — it must never be flagged as a collision.
+        from ai_video_maker.clients.openai_client import indistinct_epithets
+        assert indistinct_epithets(self._cast(
+            "the taller boy", "the smaller boy",
+        )) == []
+
+    def test_a_distinct_cast_reports_nothing(self):
+        from ai_video_maker.clients.openai_client import indistinct_epithets
+        assert indistinct_epithets(self._cast(
+            "the bald man", "woman with long curly hair", "the small girl",
+        )) == []
+
+    def test_junk_entries_are_skipped(self):
+        from ai_video_maker.clients.openai_client import indistinct_epithets
+        assert indistinct_epithets(
+            [Character(id="", epithet="the bald man"),
+             Character(id="c2", epithet="  ")] + [None]
+        ) == []
+        assert indistinct_epithets(None) == []
+
+    def test_planner_dicts_work_too(self):
+        # Fresh off the planner the cast is plain dicts, not Characters.
+        from ai_video_maker.clients.openai_client import indistinct_epithets
+        assert indistinct_epithets([
+            {"id": "a", "epithet": "woman with dark hair bun"},
+            {"id": "b", "epithet": "young woman with dark hair bun"},
+        ]) == [["a", "b"]]
+
+    def test_planner_is_told_the_cast_wide_rule(self):
+        assert "DISTINCT ACROSS THE WHOLE CAST" in _MODE_A_SYSTEM
+        assert "ONE collective entry" in _MODE_A_SYSTEM

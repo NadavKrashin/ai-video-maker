@@ -326,6 +326,20 @@ Two people who share every durable trait are separated by relative size
 passing detail can still ride along inside one clip's prompt — "the smaller
 boy with curly hair, here in a striped shirt" — without changing the epithet.
 
+Epithets must also be **distinct across the whole cast**. On a big-family
+order the planner returned "woman with dark hair bun" *and* "young woman with
+dark hair bun": a prompt naming one points at both, the video model acts on
+whoever is nearest, and the pipeline's own swap detection reads them as the
+same person and gives up. The planner is now told to separate look-alikes
+cast-wide, and colliding entries are surfaced as
+`snapshot()["storyboard"]["indistinct_epithets"]` plus a warning with inline
+errors in the panel's Cast editor — existing casts are never rewritten
+automatically (their wording is baked into planned prompts), so the fix is a
+hand edit followed by re-planning the clips that mention them. A background
+crowd that is really scenery (a full dinner table, distant swimmers) may be
+one **collective entry** ("the large dinner group") rather than an entry per
+stranger.
+
 ### Saying who is who (per-frame tagging)
 
 The cast fixes what each person is CALLED. Which of them is standing in a

@@ -39,6 +39,7 @@ from .clients.download import download_file
 from .clients.openai_client import (
     OpenAIClient,
     ends_offscreen,
+    indistinct_epithets,
     is_clothing_anchored,
 )
 from .clients.video import VideoClient
@@ -2458,6 +2459,17 @@ class Pipeline:
                     c.id for c in storyboard.characters
                     if is_clothing_anchored(c.epithet)
                 ],
+                # Cast members whose epithets cannot be told apart — one a
+                # word-subset of the other ("woman with dark hair bun" /
+                # "young woman with dark hair bun"). The video model has no
+                # anchor to keep them apart, and the pipeline's own swap and
+                # mover matching reads them as one person and gives up.
+                # Groups of ids, flagged for a hand edit like fragile ones:
+                # existing casts are frozen, their wording is already baked
+                # into planned prompts.
+                "indistinct_epithets": indistinct_epithets(
+                    storyboard.characters
+                ),
                 # Prompts written before the identity facts they should have
                 # used: a photo tagged (or re-tagged) since, or a cast member
                 # renamed. Both are plan-time inputs that change nothing on

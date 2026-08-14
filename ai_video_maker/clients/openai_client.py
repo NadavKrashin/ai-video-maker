@@ -820,6 +820,22 @@ _MODE_A_SYSTEM = (
     "using ONLY these carried-over features, with no garment word at all. "
     "It is the wording the film falls back on, so make it a drop-in "
     "replacement — same shape, 2-5 words. "
+    "EPITHETS MUST BE DISTINCT ACROSS THE WHOLE CAST, not merely within "
+    "one pair. Never return two cast entries that differ only by an added "
+    "or dropped word — 'woman with dark hair bun' next to 'young woman "
+    "with dark hair bun', 'teenage girl with long dark hair' next to "
+    "'teenage girl with long dark hair and bun' (both from a real cast): "
+    "in any prompt that mentions one of them, the video model cannot tell "
+    "which is meant and acts on whoever is nearest, and the pipeline's own "
+    "identity matching reads them as one person and gives up. Before "
+    "returning the cast, re-read it as a set and separate every pair of "
+    "look-alikes by a trait the other genuinely lacks — relative age or "
+    "size, hair length or texture, glasses, facial hair, build. "
+    "A background crowd that acts as scenery — a full dinner table, "
+    "distant swimmers, a busy plaza — may be ONE collective entry ('the "
+    "large dinner group') instead of an entry per stranger: individual "
+    "entries are for people who recur and carry action. Never give a "
+    "collective entry person-level choreography in a motion prompt. "
     "Within one pair you may still add a passing detail inline when it "
     "helps that clip: 'the smaller boy with curly hair, here in a striped "
     "shirt'. The epithet itself stays as it is. "
@@ -1357,6 +1373,58 @@ def repair_cast_epithets(data: dict[str, Any]) -> list[str]:
                         for v in value
                     ]
     return [f"{old!r} -> {new!r}" for old, new in swaps]
+
+
+def indistinct_epithets(characters: Any) -> list[list[str]]:
+    """Groups of cast ids whose epithets cannot be told apart.
+
+    The test is operational, not aesthetic: two epithets collide when the
+    person-matcher behind swap and mover detection (``_PERSON_MATCH_RULES``)
+    would read them as the same person — one a word-subset of the other, or
+    nearly all words shared. Such a pair does double damage: the video model
+    has no anchor to keep the two people apart (it acts on whoever is
+    nearest), and the pipeline's own matching aborts as ambiguous, silently
+    disabling swap and mover detection for every frame either person is in.
+    A real cast carried "woman with dark hair bun" AND "young woman with
+    dark hair bun" — on a 29-entry cast built from a big-family order.
+
+    Merely similar entries ("the taller boy" / "the smaller boy") are NOT
+    flagged: they share a noun but the matcher tells them apart, and so can
+    the video model. Nothing here rewrites anything — existing casts are
+    frozen (their wording is baked into planned prompts), so the groups are
+    surfaced for a hand edit in the panel's Cast editor, like fragile
+    epithets are.
+    """
+    entries: list[tuple[str, frozenset[str]]] = []
+    for c in characters or []:
+        # Both shapes pass through here over time: Character objects from a
+        # saved storyboard, plain dicts fresh off the planner.
+        get = c.get if isinstance(c, dict) else lambda k, c=c: getattr(c, k, "")
+        cid = str(get("id") or "").strip()
+        tokens = _person_tokens(str(get("epithet") or ""))
+        if cid and tokens:
+            entries.append((cid, tokens))
+
+    # Transitive grouping: if A collides with B and B with C, all three are
+    # one knot the human untangles together.
+    parent = list(range(len(entries)))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(len(entries)):
+        for j in range(i + 1, len(entries)):
+            a, b = entries[i][1], entries[j][1]
+            if any(rule(a, b) for rule in _PERSON_MATCH_RULES):
+                parent[find(j)] = find(i)
+
+    groups: dict[int, list[str]] = {}
+    for i, (cid, _) in enumerate(entries):
+        groups.setdefault(find(i), []).append(cid)
+    return [ids for ids in groups.values() if len(ids) > 1]
 
 
 def _swap_all(text: str, swaps: list[tuple[str, str]]) -> str:
