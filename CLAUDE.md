@@ -133,6 +133,43 @@ Core design rules:
   offscreen) and must contain no `_EXIT_MARKERS` — "nobody leaves the frame"
   would trip the very check it exists to satisfy. Pinned by
   TestNothingShipsWithAnOffscreenEnding.
+- UNSTAGEABLE PAIRS GET THE CAMERA UP FRONT, NOT AS A LAST RESORT (user
+  call, 2026-08-14, after reviewing am-130826-pcfd frame by frame). Person
+  staging assumes every mover can be named and pathed inside the beat
+  budget; with a 29-entry cast and 9-13-person frames that broke — plans
+  staged 7 exits + 3 entrances in 10s and Kling rendered ghost dissolves,
+  mushed bodies, vanishing people (a sampled 4-mover pair already churned),
+  while the 7 camera-fallback clips were the BEST in the movie: a camera
+  move is a global solution, no person-to-person mapping at all.
+  `is_unstageable_pair` (openai_client.py) decides in code from the pair's
+  rosters (tags first, model orders second): movers (leave+arrive) >
+  `_MOVER_BUDGET` (3), or crowd > `_CROWD_LIMIT` (4) while the roster or
+  arrangement changes → the planned choreography is REPLACED (never
+  repaired) by `camera_shift_prompt`, a deterministic 3-shape family:
+  drift-to-one-of-its-own (the reviewer's own 12_to_13 suggestion),
+  scene-only for an empty end frame, else the standing travel-and-settle.
+  Gate runs FIRST in `_coerce_transition_plans` and skips
+  restage/complete/condense (a template can't end offscreen or bust the
+  cap). A same-roster group holding steady is NOT gated — hold-steady works
+  at any size; it is exits/entrances/crossings that mush. Because tags list
+  who MATTERS, not who is THERE (real frame 12: ten aboard, two tagged, and
+  the plan staged the two as if alone), the planner now returns
+  `start_heads`/`end_heads` — a census of every visible figure — and the
+  gate takes the max of census and roster. `_tagged_people_block` stops
+  prescribing exit-and-entrance on gated pairs, and `_MODE_A_SYSTEM` has a
+  matching "TOO MANY PEOPLE TO CHOREOGRAPH" block (hint only; the code is
+  the guarantee). The gate acts at PLAN time, so saved storyboards keep
+  their many-mover prompts until re-planned — surfaced (tags-only, no
+  census on disk; untagged projects stay silent) as
+  `snapshot()["storyboard"]["unstageable_pairs"]` + status line + a red
+  "needs camera transition" clip badge, skipping prompts already
+  camera-family (`is_camera_transition`, strict-family on purpose). On
+  am-130826-pcfd the gate flags 24 of 44 pairs — that movie really is
+  unstageable nearly everywhere, which is the user's own diagnosis of it.
+  Pinned by TestUnstageablePairs / TestCameraShiftPromptFamily /
+  TestUnstageablePairsAreReplacedInCoercion /
+  TestThePlannerIsTaughtTheSameGate / TestUnstageablePairsAreVisible /
+  TestCameraTransitionRecognition.
 - EVERY PERSON WHO MOVES GETS A CONCRETE PHYSICAL VERB (user call,
   2026-07-28, same thread). Kling animates BODIES, so the prompt must name
   a movement you could act out — walk, step, turn, crouch, kneel, climb,
@@ -275,6 +312,22 @@ Core design rules:
   (`_merge_cast`), so old projects keep their wording; `snapshot()`'s
   `fragile_epithets` flags them for a hand edit in the panel's Cast editor.
   Pinned by TestCastEpithetsSurviveTheMovie / TestCastPromptForbidsClothing.
+- EPITHETS MUST BE DISTINCT ACROSS THE WHOLE CAST (2026-08-14, same
+  am-130826-pcfd review). Its 29-entry cast carried "woman with dark hair
+  bun" AND "young woman with dark hair bun", "teenage girl with long dark
+  hair" AND "...and bun": a prompt naming one points at both, and the
+  pipeline's own `_match_people` reads them as one person and aborts —
+  silently disabling swap/mover detection wherever either appears.
+  `indistinct_epithets` (openai_client.py) flags groups the matcher cannot
+  tell apart (word-subset or near-identical token sets — operational, not
+  aesthetic: "the taller boy"/"the smaller boy" is fine), surfaced as
+  `snapshot()["storyboard"]["indistinct_epithets"]` + a Cast-editor alert
+  with inline errors. NOTHING is auto-rewritten — existing casts stay
+  frozen (`_merge_cast`), fix is hand edit + re-plan, exactly like fragile
+  epithets. The planner is also told: distinctiveness is CAST-WIDE, and a
+  background crowd that is scenery may be ONE collective entry ("the large
+  dinner group") instead of an entry per stranger. Pinned by
+  TestIndistinctEpithets / TestIndistinctEpithetsAreVisible.
 - ARRANGEMENT SWAP: when the same people appear in both frames but trade
   left-right positions, hold-steady/world-morphs staging is FORBIDDEN — the
   interpolator maps left onto left, so pinned-in-place swapped people morph

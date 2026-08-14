@@ -39,7 +39,10 @@ from .clients.download import download_file
 from .clients.openai_client import (
     OpenAIClient,
     ends_offscreen,
+    indistinct_epithets,
+    is_camera_transition,
     is_clothing_anchored,
+    is_unstageable_pair,
 )
 from .clients.video import VideoClient
 from .config import Config
@@ -2417,6 +2420,10 @@ class Pipeline:
         order = read_order_record(ws.order_file)
         published["publishable"] = bool((order or {}).get("order_folder"))
 
+        # Tags resolved to epithets, keyed by styled-frame path — the same
+        # rosters planning feeds the unstageable-pair gate.
+        _snapshot_people = tagged_people(storyboard) if storyboard else {}
+
         if storyboard is None and not storyboard_error:
             next_step = "storyboard"
         elif storyboard is not None and missing:
@@ -2458,6 +2465,17 @@ class Pipeline:
                     c.id for c in storyboard.characters
                     if is_clothing_anchored(c.epithet)
                 ],
+                # Cast members whose epithets cannot be told apart — one a
+                # word-subset of the other ("woman with dark hair bun" /
+                # "young woman with dark hair bun"). The video model has no
+                # anchor to keep them apart, and the pipeline's own swap and
+                # mover matching reads them as one person and gives up.
+                # Groups of ids, flagged for a hand edit like fragile ones:
+                # existing casts are frozen, their wording is already baked
+                # into planned prompts.
+                "indistinct_epithets": indistinct_epithets(
+                    storyboard.characters
+                ),
                 # Prompts written before the identity facts they should have
                 # used: a photo tagged (or re-tagged) since, or a cast member
                 # renamed. Both are plan-time inputs that change nothing on
@@ -2473,6 +2491,23 @@ class Pipeline:
                 "ends_offscreen": [
                     t.id for t in storyboard.transitions
                     if ends_offscreen(t.motion_prompt)
+                ],
+                # Saved prompts still choreographing people on a pair whose
+                # TAGS say the choreography cannot exist — too many movers,
+                # or a crowd whose roster changes (is_unstageable_pair, the
+                # same gate new plans go through). Rendered, these mush or
+                # dissolve; the fix is re-planning the pair, which now
+                # yields a deterministic camera transition. A pair already
+                # carrying a camera-family prompt is not listed, and
+                # untagged frames have no opinion — so pre-existing
+                # untagged projects stay silent.
+                "unstageable_pairs": [
+                    t.id for t in storyboard.transitions
+                    if is_unstageable_pair(
+                        _snapshot_people.get(t.start_frame),
+                        _snapshot_people.get(t.end_frame),
+                    )
+                    and not is_camera_transition(t.motion_prompt)
                 ],
             },
             "storyboard_error": storyboard_error,
@@ -3158,6 +3193,18 @@ class Pipeline:
                 f"{' …' if len(outdated_plans) > 6 else ''}\n"
                 "     Apply them with:\n     "
                 + self._next_command("storyboard", "--replan-all")
+            )
+
+        # Saved prompts still choreographing people on pairs whose tags say
+        # the choreography cannot exist (too many movers / too crowded).
+        unstageable = (snap["storyboard"] or {}).get("unstageable_pairs") or []
+        if unstageable:
+            print(
+                f"  !! {len(unstageable)} prompt(s) stage people on pairs too "
+                "crowded to choreograph (renders mush or dissolve): "
+                f"{', '.join(unstageable[:6])}"
+                f"{' …' if len(unstageable) > 6 else ''}\n"
+                "     Re-plan them to get camera transitions instead."
             )
 
         for clip in snap["clips"]:

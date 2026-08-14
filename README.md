@@ -326,6 +326,20 @@ Two people who share every durable trait are separated by relative size
 passing detail can still ride along inside one clip's prompt — "the smaller
 boy with curly hair, here in a striped shirt" — without changing the epithet.
 
+Epithets must also be **distinct across the whole cast**. On a big-family
+order the planner returned "woman with dark hair bun" *and* "young woman with
+dark hair bun": a prompt naming one points at both, the video model acts on
+whoever is nearest, and the pipeline's own swap detection reads them as the
+same person and gives up. The planner is now told to separate look-alikes
+cast-wide, and colliding entries are surfaced as
+`snapshot()["storyboard"]["indistinct_epithets"]` plus a warning with inline
+errors in the panel's Cast editor — existing casts are never rewritten
+automatically (their wording is baked into planned prompts), so the fix is a
+hand edit followed by re-planning the clips that mention them. A background
+crowd that is really scenery (a full dinner table, distant swimmers) may be
+one **collective entry** ("the large dinner group") rather than an entry per
+stranger.
+
 ### Saying who is who (per-frame tagging)
 
 The cast fixes what each person is CALLED. Which of them is standing in a
@@ -614,6 +628,30 @@ itself: a swapped pair is forced to a 10-second clip, and if its motion
 prompt has nobody crossing or leaving frame, a targeted rewrite restages it
 as an exit past the camera plus a walk back in. Prompt-side instructions
 alone kept missing these.
+
+**Unstageable pairs become camera transitions.** Exit-and-entrance staging
+works for a couple of people and falls apart in a crowd: on a real order the
+planner staged seven exits and three entrances inside one ten-second clip and
+the video model rendered ghost dissolves, bodies mushing into each other, and
+people vanishing. The pipeline now decides in code, per pair, whether the
+staging can exist at all: more than **3 people** leaving or arriving, or a
+frame holding **more than 4 people** whose roster or arrangement changes,
+replaces the choreography with a deterministic **camera transition** — the
+camera travels to the new setting and settles on exactly what the end frame
+shows (with a drift-to-one-person variant when a group narrows to one of its
+own, and a scene variant when the end frame is empty). The planner also
+reports a per-frame **headcount census** (everyone visible, tagged or not),
+so a crowded frame with only two people tagged still gates correctly. Small
+pairs keep subject staging — this is the only other place camera language is
+allowed, alongside the offscreen last resort below.
+
+The gate acts when a pair is planned, so storyboards written before it keep
+their many-mover choreography until re-planned. Those pairs are surfaced —
+`snapshot()["storyboard"]["unstageable_pairs"]`, a `status` warning, and a
+red **needs camera transition** badge on the clip card — wherever the saved
+tags say the staging can't exist and the prompt isn't already a camera one.
+Re-planning the pair (its badge's re-plan button, or `--replan-all`) yields
+the camera transition.
 
 **Per-project overrides:** drop a `config.json` inside a project
 (`projects/<name>/config.json`) with just the keys you want to change for that
