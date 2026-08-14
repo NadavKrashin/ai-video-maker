@@ -185,8 +185,16 @@ the `ADMIN_API_TOKEN` from `.env`:
   involved. With the **Firebase order ledger** configured (below) that
   means the Firestore `orders` collection — the authoritative "someone
   paid" record with the customer's details and `status`; without it, the
-  Cloudinary folder listing. Ingesting is one click ("Ingest + storyboard"),
-  and the pipeline writes progress back into the order doc's `status`
+  Cloudinary folder listing. Each order not yet ingested shows **how many
+  photos are actually in its Cloudinary folder right now** (flagged orange
+  when the folder is empty, or short of the count the order doc expects) —
+  payment confirms *before* the photos finish uploading, so a folder
+  existing has never meant the order is whole, and that count is what tells
+  you whether it is worth ingesting yet. Ingesting is one click ("Ingest
+  photos"), which **only** creates the project and downloads the photos:
+  storyboarding styles every photo and plans every pair, so it stays a
+  separate deliberate click once you have looked at what arrived. The
+  pipeline writes progress back into the order doc's `status`
   (`new → ingesting → ingested`).
 - **Optional background watcher** (off by default): set
   `watch_enabled: true` to also have the server re-check every
@@ -395,6 +403,17 @@ run will NOT do it: it reconciles rather than regenerates, so pairs that are
 already planned are carried over verbatim. Clips whose plan actually changes
 — in wording *or* in length — are then marked outdated for you to regenerate
 when you want to spend the credits.
+
+**Re-planning a hand-picked few.** Between "this one pair" and "the whole
+movie" there is the usual case: a handful of prompts you want rewritten.
+Each clip card has a checkbox, and the bar above the list re-plans exactly
+what you ticked in one job (`storyboard --replan-clip A --replan-clip B`
+on the CLI). It also offers one-click selection of the sets already worth
+re-planning — *needs camera transition*, *behind your tags*, *ends
+offscreen*, *generic prompt* — with the count next to each, since those
+sets can be large. Prompts you did not select are left untouched, and
+consecutive pairs share a single vision call, so a batch costs less than
+clicking the same clips one at a time.
 
 > **An existing project keeps the cast it was planned with.** Epithets are
 > frozen on purpose: their wording is already baked into planned prompts, so
