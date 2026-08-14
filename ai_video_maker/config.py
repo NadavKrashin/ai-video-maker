@@ -205,13 +205,6 @@ class Config(BaseModel):
     # and try again, up to this many times. Set 0 to disable and fail fast.
     moderation_reword_attempts: int = 3
 
-    # Ceiling on how many of a movie's clips may be 10 seconds. The planner
-    # rates each pair's difficulty and code derives the durations; this cap
-    # stops an inflated set of ratings from turning the whole movie long and
-    # slow (real plans have come back all-10s under prompt guidance alone).
-    # Raise it when hard pairs are being squeezed into 5s and teleporting;
-    # remember a 10s clip costs about twice a 5s one.
-    long_clip_max_fraction: float = Field(default=0.5, ge=0.0, le=1.0)
 
     # --- Spending ledger (projects/<name>/logs/costs.json) ----------------- #
     # Unit prices used to value every API call the pipeline makes, so each

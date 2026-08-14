@@ -11,7 +11,6 @@ from ai_video_maker.clients.openai_client import (
     _coerce_frame_people,
     _tagged_people_block,
     _merge_cast,
-    _motion_word_limit,
     _realign_by_pair_index,
     camera_shift_prompt,
     is_arrangement_swap,
@@ -45,30 +44,28 @@ class TestCoerceTransitionPlans:
                                 _item(2), _item(3)]}
         assert _durations(_plans(config, data, 6)) == [5, 5, 10, 10, 5, 5]
 
-    def test_long_clips_capped_by_fraction_highest_difficulty_wins(self, config):
-        # 5 of 6 pairs claim to be hard; only ceil(6*0.5)=3 stay long, and the
-        # difficulty-5 pairs outrank the 4s (earliest 4 takes the last slot).
+    def test_every_hard_pair_gets_the_long_clip(self, config):
+        # No quota (user call, 2026-08-14): the old ceiling let only half a
+        # movie be long, so it demoted genuinely hard pairs to 5s — where
+        # they teleport — and, being applied per planning call, it handed the
+        # same pair a different length depending on what was selected with it.
         data = {"transitions": [_item(4), _item(5), _item(4), _item(5),
                                 _item(4), _item(1)]}
-        assert _durations(_plans(config, data, 6)) == [10, 10, 5, 10, 5, 5]
+        assert _durations(_plans(config, data, 6)) == [10, 10, 10, 10, 10, 5]
 
-    def test_tie_break_prefers_earlier_pairs(self, config):
+    def test_an_all_hard_batch_stays_all_long(self, config):
         data = {"transitions": [_item(4), _item(4), _item(4)]}
-        assert _durations(_plans(config, data, 3)) == [10, 10, 5]
+        assert _durations(_plans(config, data, 3)) == [10, 10, 10]
 
-    def test_long_clip_fraction_is_configurable(self, config):
-        # The cap is a knob because "how many 10s clips" is a taste/cost call:
-        # a real movie had hard pairs demoted to 5s and teleporting.
-        data = {"transitions": [_item(5), _item(5), _item(5), _item(5)]}
-        config.long_clip_max_fraction = 0.25
-        assert _durations(_plans(config, data, 4)) == [10, 5, 5, 5]
-        config.long_clip_max_fraction = 1.0
-        assert _durations(_plans(config, data, 4)) == [10, 10, 10, 10]
-
-    def test_long_clip_fraction_zero_forces_all_short(self, config):
-        data = {"transitions": [_item(5), _item(5)]}
-        config.long_clip_max_fraction = 0.0
-        assert _durations(_plans(config, data, 2)) == [5, 5]
+    def test_a_pairs_length_does_not_depend_on_its_neighbours(self, config):
+        # The same difficulty-5 pair, re-planned alone and re-planned inside
+        # a batch of hard pairs, must come back the same length.
+        alone = _durations(_plans(config, {"transitions": [_item(5)]}, 1))
+        batch = _durations(
+            _plans(config, {"transitions": [_item(5)] * 4}, 4)
+        )
+        assert alone == [10]
+        assert batch == [10, 10, 10, 10]
 
     def test_default_duration_overrides_difficulty(self, config):
         data = {"transitions": [_item(5)]}
@@ -101,69 +98,42 @@ def _words(n):
     return " ".join(["walks"] * n)
 
 
-class TestMotionWordBudget:
-    """Over-budget motion prompts get condensed; the budget follows the
-    clip's DERIVED duration (a real plan wrote 79-113 words for every 5s
-    clip despite the prompt-side beat-budget rule)."""
+class TestNoMechanicalWordCap:
+    """Prompt length is the planner's discipline, not a truncation pass.
 
-    def _client_with_recorder(self, config, condensed="short"):
+    User call, 2026-08-14: the counted cap is gone. It existed because a
+    real plan wrote 79-113 words for every 5s clip and an 84-word prompt
+    rendered as a whip-pan blur — but condensing also reworked prompts that
+    were fine and re-opened endings it had just closed. The replacement is
+    the "say the one thing, then stop" rules in _MODE_A_SYSTEM.
+    """
+
+    def test_a_very_long_prompt_is_left_exactly_as_written(self, config):
         client = OpenAIClient(config)
-        calls = []
+        # Any call to the model here would be a condense attempt.
+        client._ensure_client = lambda: (_ for _ in ()).throw(
+            AssertionError("no rewrite call may happen for length alone")
+        )
+        long_prompt = _words(120)
+        plans = client._coerce_transition_plans(
+            {"transitions": [_item(1, motion=long_prompt)]}, 1, None
+        )
+        assert plans[0][0] == long_prompt
 
-        def fake_condense(prompt, duration):
-            calls.append((prompt, duration))
-            return condensed
+    def test_the_condense_machinery_is_gone(self):
+        # Not just unused — removed, so nothing can quietly start calling it.
+        assert not hasattr(OpenAIClient, "_condense_motion_prompt")
+        import ai_video_maker.clients.openai_client as mod
+        assert not hasattr(mod, "_motion_word_limit")
+        assert not hasattr(mod, "_MOTION_WORD_LIMITS")
+        assert not hasattr(mod, "_CONDENSE_MOTION_SYSTEM")
 
-        client._condense_motion_prompt = fake_condense
-        return client, calls
-
-    def test_over_budget_5s_prompt_is_condensed(self, config):
-        client, calls = self._client_with_recorder(config)
-        data = {"transitions": [_item(1, motion=_words(84))]}
-        plans = client._coerce_transition_plans(data, 1, None)
-        assert calls == [(_words(84), 5)]
-        assert plans[0][0] == "short"
-
-    def test_under_budget_prompt_is_left_alone(self, config):
-        client, calls = self._client_with_recorder(config)
-        data = {"transitions": [_item(1, motion=_words(35))]}
-        plans = client._coerce_transition_plans(data, 1, None)
-        assert calls == []
-        assert plans[0][0] == _words(35)
-
-    def test_long_clip_gets_the_larger_budget(self, config):
-        # 50 words is over the 5s budget but inside the 10s budget.
-        client, calls = self._client_with_recorder(config)
-        data = {"transitions": [_item(5, motion=_words(50))]}
-        plans = client._coerce_transition_plans(data, 1, None)
-        assert plans[0][1] == 10
-        assert calls == []
-
-    def test_forced_duration_sets_the_budget(self, config):
-        # The same 50-word prompt is over budget when --duration 5 forces
-        # the clip short.
-        client, calls = self._client_with_recorder(config)
-        data = {"transitions": [_item(5, motion=_words(50))]}
-        client._coerce_transition_plans(data, 1, default_duration=5)
-        assert calls == [(_words(50), 5)]
-
-    def test_condense_failure_keeps_the_original_prompt(self, config):
-        # No API key / client failure must never hard-stop planning.
-        client = OpenAIClient(config)
-
-        def boom():
-            raise RuntimeError("no client in tests")
-
-        client._ensure_client = boom
-        assert client._condense_motion_prompt(_words(84), 5) == _words(84)
-
-
-class TestMotionWordLimit:
-    def test_budgets_scale_with_duration(self):
-        assert _motion_word_limit(5) < _motion_word_limit(10)
-
-    def test_unknown_duration_gets_most_permissive_budget(self):
-        assert _motion_word_limit(7) == _motion_word_limit(10)
+    def test_the_planner_is_told_to_stay_on_point_instead(self):
+        assert "SAY THE ONE THING, THEN STOP" in _MODE_A_SYSTEM
+        assert "COUNT THE BEATS BEFORE YOU WRITE" in _MODE_A_SYSTEM
+        # ...and no longer told a number it must fit under.
+        assert "AT MOST 35 WORDS" not in _MODE_A_SYSTEM
+        assert "AT MOST 60 WORDS" not in _MODE_A_SYSTEM
 
 
 class TestRealignByPairIndex:
@@ -208,12 +178,6 @@ class TestIdentityPromptRules:
         assert "ARRANGEMENT SWAP" in s
         assert "left-right arrangement" in s
 
-    def test_condense_preserves_and_fixes_identity_phrasing(self):
-        from ai_video_maker.clients import openai_client as oc
-        s = oc._CONDENSE_MOTION_SYSTEM
-        assert "epithet" in s
-        assert "relationship words" in s
-
     def test_reword_keeps_identity_anchors(self):
         from ai_video_maker.clients import openai_client as oc
         assert "Identity anchors" in oc._REWORD_MOTION_SYSTEM
@@ -244,12 +208,6 @@ class TestPaceAndBeatPromptRules:
         assert "COUNT THE BEATS" in s
         # The worked example is the real 46-word/six-beat prompt.
         assert "46 words" in s
-
-    def test_condense_collapses_routes_into_the_arrival(self):
-        from ai_video_maker.clients import openai_client as oc
-        s = oc._CONDENSE_MOTION_SYSTEM
-        assert "ARRIVAL" in s
-        assert "sprinting" in s
 
     def test_reword_keeps_pace_anchors(self):
         from ai_video_maker.clients import openai_client as oc
@@ -544,17 +502,6 @@ class TestMotionPromptsDescribeSubjectsOnly:
         assert "MATCH THE VERB TO THE REAL PACE AND GROUND" in s
         assert "never as a way to " in s
 
-    def test_condense_keeps_the_verb_instead_of_generalising_it(self):
-        from ai_video_maker.clients import openai_client as oc
-        s = oc._CONDENSE_MOTION_SYSTEM
-        assert "AS THE CONCRETE PHYSICAL VERB" in s
-        assert "'share a moment'" in s
-
-    def test_condense_drops_scenery_before_anything_a_person_does(self):
-        from ai_video_maker.clients import openai_client as oc
-        s = oc._CONDENSE_MOTION_SYSTEM
-        assert "CUT EVERY WORD ABOUT THE SCENE FIRST" in s
-
     def test_reword_does_not_fall_back_to_describing_the_room(self):
         # The safety rewrite used to suggest "as the scene moves to the cozy
         # room" as its generic escape hatch — scenery prose by another name.
@@ -649,12 +596,6 @@ class TestDistinguishingEpithetRules:
         assert "the right couple" in s  # the collective that failed
         assert "INDIVIDUALLY" in s
 
-    def test_condense_will_not_shorten_an_epithet_into_ambiguity(self):
-        from ai_video_maker.clients import openai_client as oc
-        s = oc._CONDENSE_MOTION_SYSTEM
-        assert "NEVER" in s and "bald man in pink sunglasses" in s
-        assert "Cut scenery before identity." in s
-
     def test_reword_keeps_the_distinguishing_part(self):
         from ai_video_maker.clients import openai_client as oc
         assert "bald man in pink sunglasses" in oc._REWORD_MOTION_SYSTEM
@@ -704,18 +645,15 @@ class TestClipReviewCoercion:
         }, duration=5)
         assert out["changes_clip"] is True
 
-    def test_an_over_budget_suggestion_is_condensed(self, config, monkeypatch):
-        # 5s clips are capped at 35 words; the reviewer's rewrite is held to
-        # the same budget a planned prompt is, via the same condense call.
+    def test_a_long_suggestion_is_passed_through_untouched(self, config):
+        # Length is not policed here any more: the reviewer writes under the
+        # planner's own beat rules, and its suggestion is only ever a
+        # proposal the human applies by hand.
         long_prompt = " ".join(["walks"] * 60)
-        monkeypatch.setattr(
-            OpenAIClient, "_condense_motion_prompt",
-            lambda self, prompt, duration: "the bald man takes a few steps",
-        )
         out = self._review(config, {
             "suggested_motion_prompt": long_prompt, "suggested_duration": 5,
         })
-        assert out["suggested_motion_prompt"] == "the bald man takes a few steps"
+        assert out["suggested_motion_prompt"] == long_prompt
 
     def test_problems_are_normalised_and_capped(self, config):
         out = self._review(config, {
@@ -1200,98 +1138,6 @@ class TestOffscreenEndingsAreRewritten:
             self.THE_REAL_ONE, 10
         ) == self.THE_REAL_ONE
 
-    def test_the_rewrite_runs_before_the_word_cap(self, config, monkeypatch):
-        """The walk-back-in costs words, so it must be added before trimming."""
-        order = []
-        monkeypatch.setattr(
-            OpenAIClient, "_complete_offscreen_ending",
-            lambda self, p, d, e=None: (
-                order.append("ending")
-                or TestOffscreenEndingsAreRewritten.LONG_LANDS
-            ),
-        )
-        monkeypatch.setattr(
-            OpenAIClient, "_condense_motion_prompt",
-            lambda self, p, d: order.append("condense") or "short landing prompt",
-        )
-        long_offscreen = self.THE_REAL_ONE + " " + " ".join(["extra"] * 60)
-        _plans(config, self._data(long_offscreen), 1)
-        assert order == ["ending", "condense"]
-
-    def _reopening_condense(self, monkeypatch, endings):
-        """Condense always re-opens the ending; `endings` feeds the rewriter.
-
-        Measured on am-130826-pcfd: condensing put 7 of the 9 remaining
-        endings back offscreen, despite being told to drop a whole exit
-        before dropping its return.
-        """
-        calls = iter(endings)
-        seen = []
-        monkeypatch.setattr(
-            OpenAIClient, "_complete_offscreen_ending",
-            lambda self, p, d, e=None: seen.append(p) or next(calls),
-        )
-        monkeypatch.setattr(
-            OpenAIClient, "_condense_motion_prompt",
-            lambda self, p, d: "the boy walks out of frame",
-        )
-        return seen
-
-    def test_condensing_that_reopens_the_ending_is_repaired(
-        self, config, monkeypatch
-    ):
-        """The prompt is short by now, so the walk-back-in has room."""
-        short_landing = "the boy steps back in from the left beside the woman"
-        seen = self._reopening_condense(
-            monkeypatch, [self.LONG_LANDS, short_landing]
-        )
-        long_offscreen = self.THE_REAL_ONE + " " + " ".join(["extra"] * 60)
-        motion, _, _ = _plans(config, self._data(long_offscreen), 1)[0]
-        assert motion == short_landing
-        assert not ends_offscreen(motion)
-        # The repair ran on the CONDENSED text, not the original.
-        assert seen[1] == "the boy walks out of frame"
-
-    def test_a_failed_repair_never_keeps_the_over_budget_prompt(
-        self, config, monkeypatch, caplog
-    ):
-        """Never swap one failure for another.
-
-        The long prompt lands but blows the word cap, which renders as a
-        rushed blur that reads like a cut — so it is not the answer either.
-        The pair falls through to the camera-move last resort instead, and
-        the reason is logged on the way past.
-        """
-        self._reopening_condense(
-            monkeypatch, [self.LONG_LANDS, "they all walk out of frame"]
-        )
-        long_offscreen = self.THE_REAL_ONE + " " + " ".join(["extra"] * 60)
-        with caplog.at_level("WARNING"):
-            motion, _, _ = _plans(config, self._data(long_offscreen), 1)[0]
-        assert motion != self.LONG_LANDS  # the over-budget one is refused
-        assert motion == CAMERA_SHIFT_MOTION_PROMPT
-        assert not ends_offscreen(motion)
-        assert "did not land it" in caplog.text
-
-    def test_no_repair_when_condensing_kept_the_landing(
-        self, config, monkeypatch
-    ):
-        calls = []
-        monkeypatch.setattr(
-            OpenAIClient, "_complete_offscreen_ending",
-            lambda self, p, d, e=None: (
-                calls.append(p) or TestOffscreenEndingsAreRewritten.LONG_LANDS
-            ),
-        )
-        monkeypatch.setattr(
-            OpenAIClient, "_condense_motion_prompt",
-            lambda self, p, d: "the boy steps back in from the left",
-        )
-        long_offscreen = self.THE_REAL_ONE + " " + " ".join(["extra"] * 60)
-        motion, _, _ = _plans(config, self._data(long_offscreen), 1)[0]
-        assert motion == "the boy steps back in from the left"
-        assert len(calls) == 1  # the first rewrite only, no repair
-
     def test_the_end_frame_people_are_given_to_the_rewriter(
         self, config, monkeypatch
     ):
@@ -1325,7 +1171,7 @@ class TestOffscreenEndingsAreRewritten:
         )
         user = seen["messages"][1]["content"]
         assert "the bald man, the woman" in user
-        assert "Word limit: 60" in user
+        assert "two beats" in user  # guidance now, not a counted budget
 
 
 class TestNothingShipsWithAnOffscreenEnding:
@@ -1351,9 +1197,6 @@ class TestNothingShipsWithAnOffscreenEnding:
         monkeypatch.setattr(
             OpenAIClient, "_complete_offscreen_ending",
             lambda self, p, d, e=None: p,
-        )
-        monkeypatch.setattr(
-            OpenAIClient, "_condense_motion_prompt", lambda self, p, d: p,
         )
 
     def test_the_fallback_itself_lands(self):
@@ -1512,9 +1355,10 @@ class TestCameraShiftPromptFamily:
     def test_unknown_rosters_get_the_generic_prompt(self):
         assert camera_shift_prompt(None, None) == CAMERA_SHIFT_MOTION_PROMPT
 
-    def test_no_family_member_ends_offscreen_or_busts_the_cap(self):
-        # A camera prompt that tripped ends_offscreen or the word cap would
-        # re-enter the very machinery it replaces.
+    def test_no_family_member_ends_offscreen_or_rambles(self):
+        # A camera prompt that tripped ends_offscreen would re-enter the very
+        # machinery it replaces; one that rambled would be the sprawl these
+        # deterministic templates exist to avoid.
         family = [
             camera_shift_prompt(self.GROUP, ["the tall woman"]),
             camera_shift_prompt(self.GROUP, []),
@@ -1523,7 +1367,7 @@ class TestCameraShiftPromptFamily:
         ]
         for prompt in family:
             assert not ends_offscreen(prompt)
-            assert len(prompt.split()) <= _motion_word_limit(5)
+            assert len(prompt.split()) <= 35  # one continuous beat, no more
 
 
 class TestUnstageablePairsAreReplacedInCoercion:
@@ -1542,8 +1386,7 @@ class TestUnstageablePairsAreReplacedInCoercion:
     def _no_repairs(self, monkeypatch):
         def _boom(*a, **k):
             raise AssertionError("repair machinery must not run")
-        for name in ("_restage_swapped_pair", "_complete_offscreen_ending",
-                     "_condense_motion_prompt"):
+        for name in ("_restage_swapped_pair", "_complete_offscreen_ending"):
             monkeypatch.setattr(OpenAIClient, name, _boom)
 
     def test_an_unstageable_pair_becomes_a_camera_move(
@@ -1555,7 +1398,9 @@ class TestUnstageablePairsAreReplacedInCoercion:
             config, self._data(big, big[:2] + ["the newcomer"]), 1
         )[0]
         assert motion == CAMERA_SHIFT_MOTION_PROMPT
-        assert duration == 10  # difficulty 5 still drives the length
+        # ALWAYS 5s, though the pair is rated 5: the camera prompt is one
+        # continuous beat, and 10s of it is a slack shot at twice the price.
+        assert duration == 5
         assert sound == "sea wind"  # the planned sound survives the swap
 
     def test_the_census_gates_even_a_two_person_roster(
