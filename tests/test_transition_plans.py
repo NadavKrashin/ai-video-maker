@@ -4,14 +4,18 @@ from __future__ import annotations
 
 from ai_video_maker.clients.openai_client import (
     _MODE_A_SYSTEM,
+    _TRANSITIONS_SCHEMA,
     CAMERA_SHIFT_MOTION_PROMPT,
+    CAMERA_SHIFT_TO_SCENE_PROMPT,
     OpenAIClient,
     _coerce_frame_people,
     _tagged_people_block,
     _merge_cast,
     _motion_word_limit,
     _realign_by_pair_index,
+    camera_shift_prompt,
     is_arrangement_swap,
+    is_unstageable_pair,
     ends_offscreen,
     is_clothing_anchored,
     repair_cast_epithets,
@@ -1406,3 +1410,215 @@ class TestNothingShipsWithAnOffscreenEnding:
         ]}
         plans = _plans(config, data, 4)
         assert not any(ends_offscreen(m) for m, _, _ in plans)
+
+
+class TestUnstageablePairs:
+    """Choreography past the budget is replaced, not repaired.
+
+    On am-130826-pcfd (45 frames, a 29-entry cast, frames holding 9-13
+    people) the plans staged up to seven exits and three entrances in one
+    ten-second clip, and Kling rendered ghost dissolves, bodies mushing into
+    each other, and people vanishing — while the pairs that shipped with the
+    deterministic camera prompt were the cleanest in the movie. A camera
+    move is a global solution: the model never maps person onto person, it
+    leaves the first arrangement behind and arrives on the second.
+    """
+
+    SIX = ["the man", "the tall woman", "the small boy", "the teenage girl",
+           "the older man", "the blonde woman"]
+
+    def test_more_movers_than_the_budget_is_unstageable(self):
+        # Two out and two in — four movers, one over the budget. A sampled
+        # real 4-mover clip (0o_to_01) already showed identity churn.
+        assert is_unstageable_pair(
+            ["the man", "the tall woman"],
+            ["the small boy", "the teenage girl"],
+        )
+
+    def test_a_couple_swapping_for_another_couple_needs_no_camera(self):
+        # One out, one in: the designed exit-and-entrance case stays staged.
+        assert not is_unstageable_pair(
+            ["the man", "the tall woman"],
+            ["the man", "the small boy"],
+        )
+
+    def test_a_crowd_whose_roster_changes_is_unstageable(self):
+        assert is_unstageable_pair(self.SIX, self.SIX[:-1])
+
+    def test_a_big_group_holding_steady_stays_stageable(self):
+        # Same people, same order: hold-steady staging works at any size.
+        assert not is_unstageable_pair(self.SIX, list(self.SIX))
+
+    def test_a_crowded_swap_is_unstageable(self):
+        # The London five-person swap: the restage must name every mover,
+        # which cannot fit the word cap — the camera carries it instead.
+        traded = list(self.SIX)
+        traded[0], traded[-1] = traded[-1], traded[0]
+        assert is_unstageable_pair(self.SIX, traded)
+
+    def test_the_headcount_census_catches_undertagged_frames(self):
+        # The real 12_to_13: ten people on the boat, two tagged. The tags
+        # alone say "stageable"; the planner's census says otherwise.
+        tags_start, tags_end = ["the man", "the older man"], ["the man"]
+        assert not is_unstageable_pair(tags_start, tags_end)
+        assert is_unstageable_pair(tags_start, tags_end, 10, 1)
+
+    def test_junk_orders_and_junk_heads_have_no_opinion(self):
+        assert not is_unstageable_pair(None, ["the man"])
+        assert not is_unstageable_pair("the man", ["the man"])
+        assert not is_unstageable_pair(
+            ["the man"], ["the man"], "many", None
+        )
+
+    def test_ambiguous_matching_counts_only_proven_movers(self):
+        # "the man" matches both end candidates, so matching aborts; the
+        # equal headcounts prove nothing, and ambiguity never buys a camera.
+        assert not is_unstageable_pair(
+            ["the man", "the woman"], ["the tall man", "the short man"],
+        )
+
+
+class TestCameraShiftPromptFamily:
+    """The deterministic camera prompt, picked by the pair's shape."""
+
+    GROUP = ["the man", "the tall woman", "the small boy", "the teenage girl",
+             "the older man", "the blonde woman"]
+
+    def test_group_to_one_of_its_own_drifts_to_that_person(self):
+        # The staging the clip reviewer independently proposed for 12_to_13.
+        prompt = camera_shift_prompt(self.GROUP, ["the tall woman"])
+        assert "the tall woman" in prompt
+        assert prompt.startswith("Everyone stays where they are")
+
+    def test_the_article_is_added_when_the_epithet_lacks_one(self):
+        # Cast epithets are stored without "the" ("tall woman", not "the
+        # tall woman"); the template must not read "across to tall woman".
+        prompt = camera_shift_prompt(self.GROUP + ["tall woman"], ["tall woman"])
+        assert "across to the tall woman" in prompt
+
+    def test_a_stranger_at_the_end_gets_the_generic_prompt(self):
+        # No anchor to travel toward — including pseudo-entries like a
+        # collective crowd tag or "no people".
+        assert camera_shift_prompt(
+            self.GROUP, ["no people"]
+        ) == CAMERA_SHIFT_MOTION_PROMPT
+
+    def test_an_empty_end_frame_gets_the_scene_prompt(self):
+        # "Holding on the people" would keep people in a frame that has none.
+        assert camera_shift_prompt(
+            self.GROUP, []
+        ) == CAMERA_SHIFT_TO_SCENE_PROMPT
+
+    def test_unknown_rosters_get_the_generic_prompt(self):
+        assert camera_shift_prompt(None, None) == CAMERA_SHIFT_MOTION_PROMPT
+
+    def test_no_family_member_ends_offscreen_or_busts_the_cap(self):
+        # A camera prompt that tripped ends_offscreen or the word cap would
+        # re-enter the very machinery it replaces.
+        family = [
+            camera_shift_prompt(self.GROUP, ["the tall woman"]),
+            camera_shift_prompt(self.GROUP, []),
+            CAMERA_SHIFT_MOTION_PROMPT,
+            CAMERA_SHIFT_TO_SCENE_PROMPT,
+        ]
+        for prompt in family:
+            assert not ends_offscreen(prompt)
+            assert len(prompt.split()) <= _motion_word_limit(5)
+
+
+class TestUnstageablePairsAreReplacedInCoercion:
+    """The gate runs first and skips the repair machinery entirely."""
+
+    def _data(self, start, end, heads=None, motion="seven people walk out"):
+        item = {
+            "pair_index": 1, "difficulty": 5, "motion_prompt": motion,
+            "sound_prompt": "sea wind", "start_order": start,
+            "end_order": end,
+        }
+        if heads:
+            item["start_heads"], item["end_heads"] = heads
+        return {"transitions": [item]}
+
+    def _no_repairs(self, monkeypatch):
+        def _boom(*a, **k):
+            raise AssertionError("repair machinery must not run")
+        for name in ("_restage_swapped_pair", "_complete_offscreen_ending",
+                     "_condense_motion_prompt"):
+            monkeypatch.setattr(OpenAIClient, name, _boom)
+
+    def test_an_unstageable_pair_becomes_a_camera_move(
+        self, config, monkeypatch
+    ):
+        self._no_repairs(monkeypatch)
+        big = TestUnstageablePairs.SIX
+        motion, duration, sound = _plans(
+            config, self._data(big, big[:2] + ["the newcomer"]), 1
+        )[0]
+        assert motion == CAMERA_SHIFT_MOTION_PROMPT
+        assert duration == 10  # difficulty 5 still drives the length
+        assert sound == "sea wind"  # the planned sound survives the swap
+
+    def test_the_census_gates_even_a_two_person_roster(
+        self, config, monkeypatch
+    ):
+        """The 12_to_13 shape: ten aboard, two tagged, one 'leaves'."""
+        self._no_repairs(monkeypatch)
+        motion, _, _ = _plans(
+            config,
+            self._data(["the man", "the older man"], ["the man"],
+                       heads=(10, 1)),
+            1,
+        )[0]
+        assert motion.startswith("Everyone stays where they are")
+        assert "the man" in motion
+
+    def test_tags_feed_the_gate_like_model_orders_do(self, config, monkeypatch):
+        self._no_repairs(monkeypatch)
+        big = TestUnstageablePairs.SIX
+        plans = OpenAIClient(config)._coerce_transition_plans(
+            self._data([], []), 1, None,
+            frame_people=[big, big[:2] + ["the newcomer"]],
+        )
+        assert plans[0][0] == CAMERA_SHIFT_MOTION_PROMPT
+
+    def test_a_stageable_pair_never_reaches_the_camera(self, config):
+        good = "the man walks to the bench and sits beside the tall woman"
+        motion, _, _ = _plans(
+            config,
+            self._data(["the man", "the tall woman"],
+                       ["the man", "the tall woman"], motion=good),
+            1,
+        )[0]
+        assert motion == good
+
+
+class TestThePlannerIsTaughtTheSameGate:
+    """Prompt-side hint of the code-enforced rule, plus the census fields."""
+
+    def test_planner_has_the_too_many_people_rule(self):
+        assert "TOO MANY PEOPLE TO CHOREOGRAPH" in _MODE_A_SYSTEM
+        assert "exception to CAMERA LAST" in _MODE_A_SYSTEM
+
+    def test_schema_demands_the_census(self):
+        item = _TRANSITIONS_SCHEMA["properties"]["transitions"]["items"]
+        assert "start_heads" in item["properties"]
+        assert "end_heads" in item["properties"]
+        assert "start_heads" in item["required"]
+        assert "end_heads" in item["required"]
+
+    def test_tagged_block_stops_prescribing_exits_on_unstageable_pairs(self):
+        block = _tagged_people_block([
+            TestUnstageablePairs.SIX,
+            ["the man"],
+        ])
+        pair_line = next(l for l in block.splitlines() if "Pair 1" in l)
+        assert "TOO MANY TO CHOREOGRAPH" in pair_line
+        assert "Stage an exit" not in pair_line
+
+    def test_tagged_block_still_prescribes_exits_on_small_pairs(self):
+        # One person handing over to another: the designed two-mover case.
+        block = _tagged_people_block([
+            ["the man"],
+            ["the small boy"],
+        ])
+        assert "Stage an exit and an entrance" in block

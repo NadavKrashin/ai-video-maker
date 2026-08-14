@@ -133,6 +133,34 @@ Core design rules:
   offscreen) and must contain no `_EXIT_MARKERS` — "nobody leaves the frame"
   would trip the very check it exists to satisfy. Pinned by
   TestNothingShipsWithAnOffscreenEnding.
+- UNSTAGEABLE PAIRS GET THE CAMERA UP FRONT, NOT AS A LAST RESORT (user
+  call, 2026-08-14, after reviewing am-130826-pcfd frame by frame). Person
+  staging assumes every mover can be named and pathed inside the beat
+  budget; with a 29-entry cast and 9-13-person frames that broke — plans
+  staged 7 exits + 3 entrances in 10s and Kling rendered ghost dissolves,
+  mushed bodies, vanishing people (a sampled 4-mover pair already churned),
+  while the 7 camera-fallback clips were the BEST in the movie: a camera
+  move is a global solution, no person-to-person mapping at all.
+  `is_unstageable_pair` (openai_client.py) decides in code from the pair's
+  rosters (tags first, model orders second): movers (leave+arrive) >
+  `_MOVER_BUDGET` (3), or crowd > `_CROWD_LIMIT` (4) while the roster or
+  arrangement changes → the planned choreography is REPLACED (never
+  repaired) by `camera_shift_prompt`, a deterministic 3-shape family:
+  drift-to-one-of-its-own (the reviewer's own 12_to_13 suggestion),
+  scene-only for an empty end frame, else the standing travel-and-settle.
+  Gate runs FIRST in `_coerce_transition_plans` and skips
+  restage/complete/condense (a template can't end offscreen or bust the
+  cap). A same-roster group holding steady is NOT gated — hold-steady works
+  at any size; it is exits/entrances/crossings that mush. Because tags list
+  who MATTERS, not who is THERE (real frame 12: ten aboard, two tagged, and
+  the plan staged the two as if alone), the planner now returns
+  `start_heads`/`end_heads` — a census of every visible figure — and the
+  gate takes the max of census and roster. `_tagged_people_block` stops
+  prescribing exit-and-entrance on gated pairs, and `_MODE_A_SYSTEM` has a
+  matching "TOO MANY PEOPLE TO CHOREOGRAPH" block (hint only; the code is
+  the guarantee). Pinned by TestUnstageablePairs /
+  TestCameraShiftPromptFamily / TestUnstageablePairsAreReplacedInCoercion /
+  TestThePlannerIsTaughtTheSameGate.
 - EVERY PERSON WHO MOVES GETS A CONCRETE PHYSICAL VERB (user call,
   2026-07-28, same thread). Kling animates BODIES, so the prompt must name
   a movement you could act out — walk, step, turn, crouch, kneel, climb,

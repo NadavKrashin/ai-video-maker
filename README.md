@@ -615,6 +615,22 @@ prompt has nobody crossing or leaving frame, a targeted rewrite restages it
 as an exit past the camera plus a walk back in. Prompt-side instructions
 alone kept missing these.
 
+**Unstageable pairs become camera transitions.** Exit-and-entrance staging
+works for a couple of people and falls apart in a crowd: on a real order the
+planner staged seven exits and three entrances inside one ten-second clip and
+the video model rendered ghost dissolves, bodies mushing into each other, and
+people vanishing. The pipeline now decides in code, per pair, whether the
+staging can exist at all: more than **3 people** leaving or arriving, or a
+frame holding **more than 4 people** whose roster or arrangement changes,
+replaces the choreography with a deterministic **camera transition** — the
+camera travels to the new setting and settles on exactly what the end frame
+shows (with a drift-to-one-person variant when a group narrows to one of its
+own, and a scene variant when the end frame is empty). The planner also
+reports a per-frame **headcount census** (everyone visible, tagged or not),
+so a crowded frame with only two people tagged still gates correctly. Small
+pairs keep subject staging — this is the only other place camera language is
+allowed, alongside the offscreen last resort below.
+
 **Per-project overrides:** drop a `config.json` inside a project
 (`projects/<name>/config.json`) with just the keys you want to change for that
 movie — e.g. its own `style_prompt` or a different `fal_model_id`. It is merged

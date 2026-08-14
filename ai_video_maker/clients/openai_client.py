@@ -166,20 +166,35 @@ _COMPLETE_ENDING_SYSTEM = (
     "motion prompt, with no preamble or quotes."
 )
 
-# Last resort when a pair simply cannot be staged so that everyone is back
-# in frame at the end: move the CAMERA instead of the people (user call,
-# 2026-08-13 — "I don't want any clip to have an offscreen"). This is a
-# deliberate, narrow exception to the standing no-camera-moves rule, and it
-# is the honest answer for the pairs that reach it: a group of nine cannot
-# walk out and walk back in inside 10 seconds, so the alternative is not a
-# better staging, it is a cut. Deterministic on purpose — no extra call, and
-# it can never come back still ending offscreen. Must contain no _EXIT_MARKERS
-# (pinned by a test): "nobody leaves the frame" would ironically trip the
-# very check this exists to satisfy.
+# Camera transitions: the staging for pairs that cannot be staged through
+# the people (user call, 2026-08-13 — "I don't want any clip to have an
+# offscreen" — widened 2026-08-14 after reviewing am-130826-pcfd's renders).
+# A deliberate, narrow exception to the standing no-camera-moves rule, and
+# the honest answer for the pairs that get it: a group of nine cannot walk
+# out and walk back in inside 10 seconds, so the alternative is not a better
+# staging, it is a cut — or the ghost-dissolve/mushed-bodies render that a
+# many-mover choreography actually produced on a real order, while the pairs
+# that shipped with this camera prompt were the cleanest in that movie. A
+# camera move works where person-staging fails because it is a GLOBAL
+# solution: the model never has to map person onto person — it leaves the
+# first arrangement behind and arrives on the second. Deterministic on
+# purpose — no extra call, and it can never come back still ending
+# offscreen. Must contain no _EXIT_MARKERS (pinned by a test): "nobody
+# leaves the frame" would ironically trip the very check this exists to
+# satisfy. Reached two ways: the offscreen last resort at the bottom of
+# _coerce_transition_plans, and the unstageable-pair gate at its top
+# (is_unstageable_pair / camera_shift_prompt).
 CAMERA_SHIFT_MOTION_PROMPT = (
     "The camera moves smoothly and steadily across to the new setting and "
     "settles there, holding on the people standing together exactly as the "
     "end frame shows them, everyone in full view."
+)
+
+# The same move for a pair whose END frame shows nobody: "holding on the
+# people" would ask the model to keep people in a frame that has none.
+CAMERA_SHIFT_TO_SCENE_PROMPT = (
+    "The camera moves smoothly and steadily across to the new setting and "
+    "settles there, framing the scene exactly as the end frame shows it."
 )
 
 # Condense an over-budget motion prompt down to what the clip can hold.
@@ -843,6 +858,23 @@ _MODE_A_SYSTEM = (
     "it happens. A "
     "position swap is at least difficulty 4; a swap combined with a setting "
     "change is 5. "
+    "TOO MANY PEOPLE TO CHOREOGRAPH: exit-and-entrance staging is for a FEW "
+    "people — it does not scale. When more than three people would have to "
+    "leave or arrive between the two frames, or either frame holds five or "
+    "more visible people and the roster or arrangement changes, per-person "
+    "choreography cannot fit the beat budget, and the video model answers a "
+    "many-body staging with ghost dissolves, bodies blending into each "
+    "other, and people vanishing — a real movie staged seven exits and "
+    "three entrances in ten seconds and got exactly that. For these pairs — "
+    "and only these — write the ONE allowed camera transition instead of "
+    "subject choreography: the people simply stay as they are, or keep "
+    "doing what they are visibly doing, while the camera moves smoothly "
+    "and steadily across to the new setting and settles on exactly what "
+    "the end frame shows. Name nobody individually in it, stage no exits "
+    "and no entrances. This is a deliberate exception to CAMERA LAST, and "
+    "code enforces the same rule: a many-mover staging is replaced with a "
+    "deterministic camera prompt anyway, so spend your effort on the pairs "
+    "that can be staged. "
     "BEAT BUDGET: rate the pair's difficulty BEFORE writing the motion, "
     "because the rating sets the clip's length and the length sets how much "
     "can happen. Difficulty 1-3 = a 5-second clip = exactly ONE continuous "
@@ -989,6 +1021,17 @@ _TRANSITIONS_SCHEMA: dict[str, Any] = {
                     # not chosen by the model — prompt-side "prefer 5" biases
                     # produced all-5s and all-10s plans on real projects.
                     "difficulty": {"type": "integer", "enum": [1, 2, 3, 4, 5]},
+                    # A census of the pixels, not the cast: EVERY visible
+                    # human figure in each frame, including background
+                    # people nobody tagged. Confirmed tags list who MATTERS,
+                    # and a real frame held ten people with two tagged — the
+                    # plan staged those two as if they were alone and the
+                    # render collapsed the other eight. Code takes the
+                    # larger of this count and the roster when deciding
+                    # whether a pair can be staged at all
+                    # (is_unstageable_pair).
+                    "start_heads": {"type": "integer"},
+                    "end_heads": {"type": "integer"},
                     # Who stands where, left to right, in each frame. Asked
                     # for as DATA because the planner reliably sees it but
                     # unreliably acts on it: it has twice written
@@ -1006,7 +1049,8 @@ _TRANSITIONS_SCHEMA: dict[str, Any] = {
                     "sound_prompt": {"type": "string"},
                 },
                 "required": [
-                    "pair_index", "difficulty", "start_order", "end_order",
+                    "pair_index", "difficulty", "start_heads", "end_heads",
+                    "start_order", "end_order",
                     "motion_prompt", "sound_prompt",
                 ],
                 "additionalProperties": False,
@@ -1121,7 +1165,23 @@ def _tagged_people_block(tags: list[Optional[list[str]]]) -> str:
         shared = [p for p in start if p in end]
         gone = [p for p in start if p not in end]
         arrived = [p for p in end if p not in start]
-        if shared and not gone and not arrived:
+        if is_unstageable_pair(start, end):
+            # Do NOT prescribe the exit-and-entrance here: with this many
+            # movers it is exactly the choreography that renders as ghost
+            # dissolves and mushed bodies. The camera carries these pairs.
+            movers = len(gone) + len(arrived)
+            what = (
+                f"{movers} people change between these frames"
+                if movers
+                else "the group rearranges in a crowded frame"
+            )
+            verdict = (
+                f"{what} — TOO MANY TO CHOREOGRAPH person by person. Stage "
+                "no exits and no entrances: everyone stays as they are, and "
+                "the camera transition carries the change (see TOO MANY "
+                "PEOPLE TO CHOREOGRAPH)"
+            )
+        elif shared and not gone and not arrived:
             verdict = (
                 f"the SAME {'people' if len(shared) > 1 else 'person'} "
                 f"({', '.join(shared)}) in both frames — animate them "
@@ -1413,6 +1473,114 @@ def is_arrangement_swap(start_order: Any, end_order: Any) -> bool:
     pairs.sort()
     end_positions = [j for _, j in pairs]
     return end_positions != sorted(end_positions)
+
+
+# Where per-person choreography stops being writable at all. Every identity
+# rule in this file assumes each mover can be named and given a path inside
+# the beat budget (5s = one action, 10s = two beats) — roughly a mover per
+# beat. On a real order (am-130826-pcfd: 45 frames, a 29-entry cast, frames
+# holding 9-13 people) that assumption broke: plans staged seven exits and
+# three entrances in ten seconds and Kling answered with ghost dissolves,
+# bodies mushing into each other, and people vanishing — and a sampled
+# 4-mover pair (two out, two in) already showed identity churn. The budget
+# is 3 movers; the crowd limit exists because past ~4 people the epithets
+# stop picking anyone out ("the teenage boy with short brown hair" in a
+# 13-person frame points at nobody), so choreography of ANY size mushes.
+_MOVER_BUDGET = 3
+_CROWD_LIMIT = 4
+
+
+def _head_count(value: Any) -> int:
+    """A planner-reported people count, or 0 when absent or junk."""
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def is_unstageable_pair(
+    start_order: Any, end_order: Any,
+    start_heads: Any = None, end_heads: Any = None,
+) -> bool:
+    """Can this pair no longer be staged through the people themselves?
+
+    True when the pair needs identity choreography (people leaving,
+    arriving, or trading sides) that cannot fit the beat budget: more than
+    ``_MOVER_BUDGET`` people change between the frames, or the pair is
+    crowded past ``_CROWD_LIMIT`` while its roster or arrangement changes.
+    Such a pair gets a deterministic camera transition instead of a staged
+    prompt — repairing the wording cannot help when the staging itself is
+    impossible.
+
+    A big group that is the SAME on both sides (no movers, no swap) stays
+    stageable: hold-steady with small gestures works at any size — it is
+    exits, entrances and crossings that fall apart in a crowd.
+
+    ``start_heads``/``end_heads`` are the planner's census of every visible
+    figure in each frame, tagged or not. They exist because tags list who
+    MATTERS, not who is THERE: a real frame held ten people with two tagged,
+    and the plan staged those two as if they were alone — the render
+    collapsed the other eight. Ambiguity stays conservative, matching the
+    swap detector: an unmatchable roster only counts the movers the
+    headcount difference proves.
+    """
+    if not isinstance(start_order, list) or not isinstance(end_order, list):
+        return False
+    starts = [_person_tokens(n) for n in start_order]
+    ends = [_person_tokens(n) for n in end_order]
+    pairs = _match_people(starts, ends)
+    if pairs is None:
+        movers = abs(len(starts) - len(ends))
+    else:
+        movers = (len(starts) - len(pairs)) + (len(ends) - len(pairs))
+    if movers > _MOVER_BUDGET:
+        return True
+    crowd = max(
+        len(starts), len(ends),
+        _head_count(start_heads), _head_count(end_heads),
+    )
+    if crowd <= _CROWD_LIMIT:
+        return False
+    return movers > 0 or is_arrangement_swap(start_order, end_order)
+
+
+def camera_shift_prompt(start_order: Any = None, end_order: Any = None) -> str:
+    """The deterministic camera prompt for a pair, picked by its shape.
+
+    Three shapes, all deterministic, all under the 5-second word cap, none
+    containing an exit marker (a camera prompt that tripped ``ends_offscreen``
+    would re-enter the very machinery it replaces):
+
+    - end frame shows nobody: travel to the scene itself;
+    - a group narrowing to ONE of its own people: everyone holds where they
+      are and the camera drifts to that person — the staging the clip
+      reviewer independently proposed for a real group-to-single pair whose
+      staged prompt had rendered as a ghost dissolve;
+    - anything else: the standing travel-and-settle wording.
+    """
+    if not isinstance(end_order, list):
+        return CAMERA_SHIFT_MOTION_PROMPT
+    if len(end_order) == 0:
+        return CAMERA_SHIFT_TO_SCENE_PROMPT
+    if (
+        len(end_order) == 1
+        and isinstance(start_order, list)
+        and len(start_order) > 1
+    ):
+        # Only when the single end person is confidently one of the start
+        # people — an anchor the camera can travel toward. A pseudo-entry
+        # ("no people", a collective crowd tag) won't match and falls
+        # through to the generic wording.
+        starts = [_person_tokens(n) for n in start_order]
+        if _match_people(starts, [_person_tokens(end_order[0])]):
+            who = " ".join(str(end_order[0]).split())
+            the = "" if who.lower().startswith("the ") else "the "
+            return (
+                f"Everyone stays where they are as the camera moves smoothly "
+                f"and steadily across to {the}{who}, who fills the frame "
+                f"exactly as the end frame shows."
+            )
+    return CAMERA_SHIFT_MOTION_PROMPT
 
 
 def _last_index(text: str, markers: tuple[str, ...]) -> int:
@@ -2094,6 +2262,7 @@ class OpenAIClient:
             "{\n"
             '  "transitions": [\n'
             '    {"pair_index": int, "difficulty": 1-5, '
+            '"start_heads": int, "end_heads": int, '
             '"start_order": [str, ...], "end_order": [str, ...], '
             '"motion_prompt": str, "sound_prompt": str}, ...\n'
             "  ],\n"
@@ -2103,7 +2272,12 @@ class OpenAIClient:
             "order. pair_index anchors each item to its frames: the item with "
             "pair_index k animates frame k into frame k+1 (pair_index 1 = "
             "frame 001 into 002), and its motion_prompt must END at exactly "
-            "what frame k+1 shows. start_order and end_order list every "
+            "what frame k+1 shows. start_heads and end_heads are a CENSUS of "
+            "frame k and frame k+1: count every visible human figure, "
+            "including background people, crowds, and anyone not in the cast "
+            "or the confirmed tags (the tags say who matters; this count "
+            "says how full the frame is — both are wanted, and the census is "
+            "never limited by the tags). start_order and end_order list every "
             "person visible in frame k and in frame k+1 respectively, LEFT TO "
             "RIGHT as they appear in that image, each by the same epithet the "
             "motion_prompt uses — fill these in by LOOKING at the two images "
@@ -2247,6 +2421,25 @@ class OpenAIClient:
             duration = default_duration or (
                 max(VALID_DURATIONS) if i in long_indices else min(VALID_DURATIONS)
             )
+            sound = str(item.get("sound_prompt") or "").strip()
+            # Some pairs cannot be staged through the people AT ALL — more
+            # movers than the beat budget can name, or a crowd whose roster
+            # changes. The planner's choreography for them is noise however
+            # well it is worded (verified on real renders: ghost dissolves,
+            # mushed bodies, vanished people), so it is not repaired, it is
+            # REPLACED with the deterministic camera transition, and the
+            # repair machinery below is skipped — a template cannot end
+            # offscreen or bust the word cap.
+            if is_unstageable_pair(
+                *orders(i), item.get("start_heads"), item.get("end_heads"),
+            ):
+                logger.info(
+                    "Pair %d cannot be staged through its people (too many "
+                    "movers or too crowded); using a camera transition.",
+                    i + 1,
+                )
+                plans.append((camera_shift_prompt(*orders(i)), duration, sound))
+                continue
             # Restage BEFORE the word cap: the rewrite adds the crossing the
             # prompt was missing, and may come back over budget.
             if i in swaps and not stages_a_crossing(motion):
@@ -2304,7 +2497,6 @@ class OpenAIClient:
                     f"{heads} people" if heads else "people not reported",
                 )
                 motion = CAMERA_SHIFT_MOTION_PROMPT
-            sound = str(item.get("sound_prompt") or "").strip()
             plans.append((motion, duration, sound))
         return plans
 
