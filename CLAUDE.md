@@ -158,9 +158,18 @@ Core design rules:
   gate takes the max of census and roster. `_tagged_people_block` stops
   prescribing exit-and-entrance on gated pairs, and `_MODE_A_SYSTEM` has a
   matching "TOO MANY PEOPLE TO CHOREOGRAPH" block (hint only; the code is
-  the guarantee). Pinned by TestUnstageablePairs /
-  TestCameraShiftPromptFamily / TestUnstageablePairsAreReplacedInCoercion /
-  TestThePlannerIsTaughtTheSameGate.
+  the guarantee). The gate acts at PLAN time, so saved storyboards keep
+  their many-mover prompts until re-planned — surfaced (tags-only, no
+  census on disk; untagged projects stay silent) as
+  `snapshot()["storyboard"]["unstageable_pairs"]` + status line + a red
+  "needs camera transition" clip badge, skipping prompts already
+  camera-family (`is_camera_transition`, strict-family on purpose). On
+  am-130826-pcfd the gate flags 24 of 44 pairs — that movie really is
+  unstageable nearly everywhere, which is the user's own diagnosis of it.
+  Pinned by TestUnstageablePairs / TestCameraShiftPromptFamily /
+  TestUnstageablePairsAreReplacedInCoercion /
+  TestThePlannerIsTaughtTheSameGate / TestUnstageablePairsAreVisible /
+  TestCameraTransitionRecognition.
 - EVERY PERSON WHO MOVES GETS A CONCRETE PHYSICAL VERB (user call,
   2026-07-28, same thread). Kling animates BODIES, so the prompt must name
   a movement you could act out — walk, step, turn, crouch, kneel, climb,

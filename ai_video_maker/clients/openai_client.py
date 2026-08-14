@@ -1651,6 +1651,22 @@ def camera_shift_prompt(start_order: Any = None, end_order: Any = None) -> str:
     return CAMERA_SHIFT_MOTION_PROMPT
 
 
+# The openings of every deterministic camera prompt this file can write.
+# Recognition is deliberately strict-family: a hand-written camera wording
+# still gets flagged as unstageable, which is a nudge to re-plan into the
+# known-good deterministic wording, not a false alarm.
+_CAMERA_PROMPT_OPENINGS = (
+    "The camera moves smoothly and steadily across",
+    "Everyone stays where they are as the camera",
+)
+
+
+def is_camera_transition(motion_prompt: str) -> bool:
+    """Is this one of the deterministic camera-family prompts?"""
+    text = (motion_prompt or "").strip()
+    return any(text.startswith(o) for o in _CAMERA_PROMPT_OPENINGS)
+
+
 def _last_index(text: str, markers: tuple[str, ...]) -> int:
     """Where the last of these markers appears, or -1."""
     return max((text.rfind(m) for m in markers), default=-1)

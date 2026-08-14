@@ -645,6 +645,14 @@ so a crowded frame with only two people tagged still gates correctly. Small
 pairs keep subject staging — this is the only other place camera language is
 allowed, alongside the offscreen last resort below.
 
+The gate acts when a pair is planned, so storyboards written before it keep
+their many-mover choreography until re-planned. Those pairs are surfaced —
+`snapshot()["storyboard"]["unstageable_pairs"]`, a `status` warning, and a
+red **needs camera transition** badge on the clip card — wherever the saved
+tags say the staging can't exist and the prompt isn't already a camera one.
+Re-planning the pair (its badge's re-plan button, or `--replan-all`) yields
+the camera transition.
+
 **Per-project overrides:** drop a `config.json` inside a project
 (`projects/<name>/config.json`) with just the keys you want to change for that
 movie — e.g. its own `style_prompt` or a different `fal_model_id`. It is merged

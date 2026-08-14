@@ -1687,3 +1687,67 @@ class TestIndistinctEpithetsAreVisible:
         ]
         sb.save(workspace.default_storyboard_json)
         assert p.snapshot()["storyboard"]["indistinct_epithets"] == []
+
+
+class TestUnstageablePairsAreVisible:
+    """A saved prompt staging people on an unstageable pair is surfaced.
+
+    The gate only acts when a pair is (re-)planned, so an existing
+    storyboard keeps its many-mover choreography until someone re-plans it —
+    this is what tells them where. Untagged frames have no opinion, keeping
+    every pre-existing untagged project silent.
+    """
+
+    SIX = ["mum", "aunt", "dad", "son", "daughter", "grandpa"]
+
+    def _tagged_storyboard(self, workspace, end_ids):
+        sb = _save_slug_storyboard(workspace, ["a", "b"])
+        sb.characters = [
+            Character(id=i, epithet=f"the {i} person") for i in self.SIX
+        ]
+        sb.frames[0].people = [
+            FramePerson(id=i, x=n / 10) for n, i in enumerate(self.SIX)
+        ]
+        sb.frames[1].people = [
+            FramePerson(id=i, x=n / 10) for n, i in enumerate(end_ids)
+        ]
+        return sb
+
+    def test_a_staged_prompt_on_an_unstageable_pair_is_listed(
+        self, make_pipeline, workspace
+    ):
+        p = make_pipeline(analyze_frames=False)
+        _make_frame_pairs(workspace, ["a", "b"])
+        sb = self._tagged_storyboard(workspace, ["mum"])
+        sb.save(workspace.default_storyboard_json)
+        assert p.snapshot()["storyboard"]["unstageable_pairs"] == ["a_to_b"]
+
+    def test_a_camera_prompt_is_already_the_answer(
+        self, make_pipeline, workspace
+    ):
+        from ai_video_maker.clients.openai_client import (
+            CAMERA_SHIFT_MOTION_PROMPT,
+        )
+        p = make_pipeline(analyze_frames=False)
+        _make_frame_pairs(workspace, ["a", "b"])
+        sb = self._tagged_storyboard(workspace, ["mum"])
+        sb.transitions[0].motion_prompt = CAMERA_SHIFT_MOTION_PROMPT
+        sb.save(workspace.default_storyboard_json)
+        assert p.snapshot()["storyboard"]["unstageable_pairs"] == []
+
+    def test_untagged_frames_have_no_opinion(self, make_pipeline, workspace):
+        p = make_pipeline(analyze_frames=False)
+        _make_frame_pairs(workspace, ["a", "b"])
+        sb = self._tagged_storyboard(workspace, ["mum"])
+        sb.frames[1].people = []  # one side untagged -> silent
+        sb.save(workspace.default_storyboard_json)
+        assert p.snapshot()["storyboard"]["unstageable_pairs"] == []
+
+    def test_a_small_stageable_pair_is_not_listed(
+        self, make_pipeline, workspace
+    ):
+        p = make_pipeline(analyze_frames=False)
+        _make_frame_pairs(workspace, ["a", "b"])
+        sb = self._tagged_storyboard(workspace, self.SIX)
+        sb.save(workspace.default_storyboard_json)
+        assert p.snapshot()["storyboard"]["unstageable_pairs"] == []

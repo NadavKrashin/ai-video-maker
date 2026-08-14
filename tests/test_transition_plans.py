@@ -1691,3 +1691,24 @@ class TestIndistinctEpithets:
     def test_planner_is_told_the_cast_wide_rule(self):
         assert "DISTINCT ACROSS THE WHOLE CAST" in _MODE_A_SYSTEM
         assert "ONE collective entry" in _MODE_A_SYSTEM
+
+
+class TestCameraTransitionRecognition:
+    """Strict-family recognition: hand-written camera wording still nudges."""
+
+    def test_every_family_member_is_recognised(self):
+        from ai_video_maker.clients.openai_client import is_camera_transition
+        group = TestCameraShiftPromptFamily.GROUP
+        for prompt in [
+            CAMERA_SHIFT_MOTION_PROMPT,
+            CAMERA_SHIFT_TO_SCENE_PROMPT,
+            camera_shift_prompt(group, ["the tall woman"]),
+        ]:
+            assert is_camera_transition(prompt)
+
+    def test_staged_prompts_are_not(self):
+        from ai_video_maker.clients.openai_client import is_camera_transition
+        assert not is_camera_transition(
+            "the bald man walks forward past the camera and steps back in"
+        )
+        assert not is_camera_transition("")

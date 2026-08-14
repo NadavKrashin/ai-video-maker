@@ -390,7 +390,7 @@ function SpendCard({ project, cost }) {
   );
 }
 
-function TransitionCard({ project, tr, framesById, clip, edited, placeholder, verdict, planBehind, endsOffscreen, onEdit, onRegenerate, onReplan, onRedoAudio, onFeedback, busy, replanBusy, audioBusy, mediaV }) {
+function TransitionCard({ project, tr, framesById, clip, edited, placeholder, verdict, planBehind, endsOffscreen, unstageable, onEdit, onRegenerate, onReplan, onRedoAudio, onFeedback, busy, replanBusy, audioBusy, mediaV }) {
   const startImg = frameName(framesById, tr.start_frame);
   const endImg = frameName(framesById, tr.end_frame);
   const clipFile = tr.output_path.split('/').pop();
@@ -425,6 +425,12 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, ve
           <Badge variant="light" color="yellow"
             title="This prompt was written before the current photo tags or cast names. Re-plan it to use them — the clip itself is untouched until you regenerate it.">
             prompt predates your tags
+          </Badge>
+        )}
+        {unstageable && (
+          <Badge variant="light" color="red"
+            title="Your tags say too many people change between these frames to stage person by person — rendered, that choreography mushes or dissolves. Re-plan this pair: it will get the smooth camera transition instead.">
+            needs camera transition
           </Badge>
         )}
         {verdict && (
@@ -1217,6 +1223,10 @@ export default function ProjectDetail({ name, onBack }) {
   // Prompts that finish with someone out of frame — impossible for a clip
   // pinned to an end frame those people are standing in.
   const offscreenEndings = new Set(snap.storyboard?.ends_offscreen || []);
+  // Pairs whose saved prompt stages people though the tags say the
+  // choreography can't exist (too many movers / too crowded). Re-planning
+  // them yields the deterministic camera transition.
+  const unstageablePairs = new Set(snap.storyboard?.unstageable_pairs || []);
   const chip = stepChip(snap.next_step);
   const activeJob = (snap.jobs || []).find((j) => ['running', 'queued', 'cancelling'].includes(j.state));
   const locked = Boolean(activeJob);
@@ -2194,6 +2204,7 @@ export default function ProjectDetail({ name, onBack }) {
               verdict={(snap.feedback?.by_transition || {})[tr.id]}
               planBehind={outdatedPlans.has(tr.id)}
               endsOffscreen={offscreenEndings.has(tr.id)}
+              unstageable={unstageablePairs.has(tr.id)}
               onEdit={editTransition}
               onRegenerate={regenerate} onReplan={replanPrompt} onRedoAudio={redoAudio}
               onFeedback={openFeedback}
