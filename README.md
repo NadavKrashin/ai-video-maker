@@ -114,6 +114,17 @@ created by `ingest` can be published — a hand-made project has no order folder
 to publish into. The basename is `cloudinary_publish_basename` in
 `config.json` (default `final`).
 
+The upload is sent in 20 MB chunks, and a failure quotes Cloudinary's own
+explanation rather than a bare `400 Bad Request`. One rejection is worth
+knowing about in advance: **chunking gets around Cloudinary's per-request
+limit, not the account's maximum video file size** (100 MB on the free plan,
+higher on paid ones). A movie over that limit is refused while the *first*
+chunk is being sent — Cloudinary reads the total from the `Content-Range`
+header — so the error names the whole movie's size and says so explicitly
+instead of looking like a problem with one chunk. The fixes are a bigger
+limit on the Cloudinary plan or a smaller file (the final video is encoded at
+`-crf 18`, which is deliberately near-lossless and runs 100–500 MB).
+
 ### The admin server (`serve`) — run the whole flow from a browser
 
 ```bash

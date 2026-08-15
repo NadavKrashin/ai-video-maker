@@ -27,6 +27,7 @@ public (it appears in the frontend's config) and lives in config.json
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -48,6 +49,9 @@ _PAGE_SIZE = 500  # Admin API max per page
 # on most plans) and a finished movie can be bigger, plus a chunked upload
 # survives a wobbly connection far better than one long POST.
 _CHUNK_BYTES = 20 * 1024 * 1024
+
+# How much of a non-JSON error body (a proxy's HTML page) is worth quoting.
+_ERROR_EXCERPT_CHARS = 400
 
 
 @dataclass(frozen=True)
@@ -196,6 +200,65 @@ def chunk_ranges(total: int, chunk_size: int = _CHUNK_BYTES) -> list[tuple[int, 
     ]
 
 
+def cloudinary_error_detail(body: str) -> str:
+    """Cloudinary's own explanation for a failed request, from the response body.
+
+    Every Cloudinary API error answers with ``{"error": {"message": "..."}}``,
+    and that message is the only place the actual reason appears — ``requests``
+    turns the response into a bare "400 Client Error: Bad Request for url: ..."
+    and throws the body away. A real publish failed exactly that way and the
+    log said nothing about WHY, so the sentence is extracted here and carried
+    into the raised error. Returns "" when there is nothing useful to add.
+    """
+    try:
+        data = json.loads(body or "")
+    except (ValueError, TypeError):
+        data = None
+    message = ""
+    if isinstance(data, dict):
+        error = data.get("error")
+        if isinstance(error, dict):
+            message = str(error.get("message") or "")
+        elif isinstance(error, str):
+            message = error
+        if not message:
+            message = str(data.get("message") or "")
+    if not message:
+        # Not JSON (a proxy/CDN error page): keep a short, single-line excerpt
+        # rather than dumping a whole HTML document into the log.
+        message = " ".join((body or "").split())[:_ERROR_EXCERPT_CHARS]
+    return message.strip()
+
+
+def is_size_rejection(message: str) -> bool:
+    """True when Cloudinary refused the upload for being too big.
+
+    Its wording is "File size too large. Got 523239424. Maximum is 104857600."
+    """
+    text = message.lower()
+    return "file size too large" in text or ("too large" in text and "maximum" in text)
+
+
+def size_rejection_hint(message: str, total_bytes: int) -> str:
+    """Guidance for a size rejection, else "" — chunking is not the fix.
+
+    The misleading part of this failure is WHERE it shows up: Cloudinary
+    validates the total from the ``Content-Range`` header, so a movie over the
+    account's limit is rejected while sending chunk 1 of 25 and reads like a
+    problem with that one chunk. Chunking only works around the per-request
+    cap; the account's maximum video file size still applies to the whole file.
+    """
+    if not is_size_rejection(message):
+        return ""
+    return (
+        f"Cloudinary refused the whole {total_bytes / (1024 * 1024):.0f} MB movie "
+        "on size, not the individual chunk: uploading in chunks gets around the "
+        "per-request limit but NOT the account's maximum video file size (100 MB "
+        "on the free plan). Either raise that limit on the Cloudinary plan, or "
+        "deliver a smaller file."
+    )
+
+
 def ingest_filename(sequence: int, total: int, fmt: str) -> str:
     """Local filename for the photo at 1-based `sequence` of `total`.
 
@@ -205,6 +268,25 @@ def ingest_filename(sequence: int, total: int, fmt: str) -> str:
     width = max(2, len(str(total)))
     ext = (fmt or "jpg").strip().lower().lstrip(".")
     return f"{sequence:0{width}d}.{ext}"
+
+
+def _raise_for_status(resp: Any) -> None:
+    """``resp.raise_for_status()``, with Cloudinary's own message attached.
+
+    The re-raised error keeps ``.response``, so ``is_retryable_error`` still
+    classifies it by status code — a 400 must stay permanent and not be
+    retried, which for a chunked upload would mean re-sending 20 MB five times
+    to be refused five times.
+    """
+    try:
+        resp.raise_for_status()
+    except requests.HTTPError as exc:
+        detail = cloudinary_error_detail(getattr(resp, "text", "") or "")
+        if not detail:
+            raise
+        raise requests.HTTPError(
+            f"{exc} — Cloudinary says: {detail}", response=resp
+        ) from exc
 
 
 # --------------------------------- client ----------------------------------- #
@@ -270,7 +352,7 @@ class CloudinaryClient:
 
         def _call() -> dict[str, Any]:
             resp = requests.get(url, params=params, auth=self._auth, timeout=60)
-            resp.raise_for_status()  # HTTPError carries .response -> 4xx won't be retried
+            _raise_for_status(resp)  # HTTPError carries .response -> 4xx won't be retried
             return resp.json()
 
         return with_retries(
@@ -482,6 +564,11 @@ class CloudinaryClient:
         ``X-Unique-Upload-Id``; Cloudinary assembles them and answers the last
         chunk with the finished asset. Each chunk is retried on its own, which
         is the point of chunking a movie-sized upload at all.
+
+        A rejection of the file as a WHOLE (over the account's maximum video
+        size) arrives while sending the first chunk, because Cloudinary reads
+        the total from ``Content-Range`` — so it is translated here rather than
+        reported as a mysterious failure of chunk 1 of 25.
         """
         url = f"{_API_BASE}/{self.cloud_name}/video/upload"
         total = path.stat().st_size
@@ -505,7 +592,7 @@ class CloudinaryClient:
                         },
                         timeout=600,
                     )
-                    resp.raise_for_status()
+                    _raise_for_status(resp)
                     return resp.json()
 
                 if len(ranges) > 1:
@@ -513,12 +600,18 @@ class CloudinaryClient:
                         "Uploading chunk %d/%d (%.1f MB)…",
                         index, len(ranges), len(blob) / (1024 * 1024),
                     )
-                result = with_retries(
-                    _call,
-                    max_retries=self._max_retries,
-                    base_delay=self._base_delay,
-                    description=f"upload {path.name} to Cloudinary",
-                )
+                try:
+                    result = with_retries(
+                        _call,
+                        max_retries=self._max_retries,
+                        base_delay=self._base_delay,
+                        description=f"upload {path.name} to Cloudinary",
+                    )
+                except requests.HTTPError as exc:
+                    hint = size_rejection_hint(str(exc), total)
+                    if not hint:
+                        raise
+                    raise PipelineError(f"{exc}\n\n{hint}") from exc
         if not isinstance(result, dict) or not (
             result.get("secure_url") or result.get("url")
         ):

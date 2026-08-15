@@ -722,6 +722,24 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   published.json, never an exception — and an existing archive file is left
   untouched, never overwritten. Served to the panel through the media route
   as its own kind (`published`), since that route refuses path separators.
+- A FAILED CLOUDINARY CALL MUST QUOTE CLOUDINARY (2026-08-15). The first
+  real publish of am-130826-pcfd (499 MB) died as `400 Client Error: Bad
+  Request for url: .../video/upload` on "chunk 1/25" and NOTHING said why:
+  `resp.raise_for_status()` builds its message from the status line and
+  discards the body, which is the only place Cloudinary's actual sentence
+  lives. `_raise_for_status` (cloudinary_client.py) now re-raises with
+  `cloudinary_error_detail(resp.text)` appended, KEEPING `.response` so
+  `is_retryable_error` still reads the status — a 400 must stay permanent or
+  every chunk gets re-sent 20 MB at a time to be refused again. Used on the
+  Admin GETs too. The specific trap it uncovered: **chunking beats the
+  per-request cap, NOT the account's max video file size** (100 MB free,
+  2 GB on Plus). Cloudinary reads the total from `Content-Range`, so an
+  over-limit movie is refused while the FIRST chunk uploads and reads like a
+  chunk bug; `size_rejection_hint` translates it, naming the whole movie's
+  size. Note the deliverable is `-crf 18` (near-lossless, 100–500 MB) — if
+  files keep hitting the ceiling the real fix is the encode or the plan, not
+  the uploader. Pinned by TestUploadFailuresExplainThemselves /
+  TestSizeRejectionsAreTranslated.
 - The **Firestore order ledger** (`clients/firebase_client.py`, REST +
   google-auth, NOT the heavy firebase-admin SDK) is the watcher's order
   source when a service-account key exists (FIREBASE_SERVICE_ACCOUNT in

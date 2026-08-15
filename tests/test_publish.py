@@ -13,17 +13,22 @@ import json
 from pathlib import Path
 
 import pytest
+import requests
 
 from ai_video_maker.clients.cloudinary_client import (
     CloudinaryClient,
     PublishedVideo,
+    _raise_for_status,
     chunk_ranges,
+    cloudinary_error_detail,
     next_publish_version,
     publish_public_id,
     publish_version,
+    size_rejection_hint,
     upload_signature,
 )
 from ai_video_maker.errors import PipelineError
+from ai_video_maker.retry import is_retryable_error
 from ai_video_maker.intake import write_order_record
 from ai_video_maker.publish import (
     latest_publication,
@@ -142,6 +147,109 @@ class TestPublicationRecord:
         assert state == {
             "count": 0, "latest": None, "versions": [], "changed_since": False,
         }
+
+
+class _FakeResponse:
+    """Just enough of requests.Response for raise_for_status()."""
+
+    def __init__(self, status_code: int, text: str, payload=None) -> None:
+        self.status_code = status_code
+        self.text = text
+        self.reason = "Bad Request" if status_code >= 400 else "OK"
+        self.url = "https://api.cloudinary.com/v1_1/test/video/upload"
+        self._payload = payload or {}
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(
+                f"{self.status_code} Client Error: {self.reason} for url: {self.url}",
+                response=self,
+            )
+
+
+def _cloudinary_error(message: str) -> _FakeResponse:
+    return _FakeResponse(400, json.dumps({"error": {"message": message}}))
+
+
+_TOO_LARGE = "File size too large. Got 523239424. Maximum is 104857600."
+
+
+class TestUploadFailuresExplainThemselves:
+    """A failed publish must say WHY, in Cloudinary's own words.
+
+    A real 499 MB delivery died as a bare "400 Client Error: Bad Request for
+    url: …/video/upload" on chunk 1 of 25 — requests' default message, with
+    Cloudinary's actual sentence dropped on the floor along with the body.
+    """
+
+    def test_the_message_is_pulled_out_of_the_error_body(self):
+        assert cloudinary_error_detail(
+            json.dumps({"error": {"message": _TOO_LARGE}})
+        ) == _TOO_LARGE
+
+    def test_a_non_json_body_survives_as_a_one_line_excerpt(self):
+        detail = cloudinary_error_detail("<html>\n  <body>Gateway  Timeout</body>\n")
+        assert "Gateway Timeout" in detail and "\n" not in detail
+
+    def test_nothing_to_add_stays_empty(self):
+        assert cloudinary_error_detail("") == ""
+        assert cloudinary_error_detail("{not json") != ""  # excerpt, not a crash
+
+    def test_the_reraised_error_keeps_its_status_so_it_is_not_retried(self):
+        with pytest.raises(requests.HTTPError) as caught:
+            _raise_for_status(_cloudinary_error(_TOO_LARGE))
+        exc = caught.value
+        assert _TOO_LARGE in str(exc)
+        assert exc.response.status_code == 400
+        # The point of keeping .response: a 400 must stay permanent, or every
+        # chunk would be re-sent (20 MB a time) to be refused again.
+        assert is_retryable_error(exc) is False
+
+    def test_a_body_free_failure_is_left_exactly_as_requests_raised_it(self):
+        with pytest.raises(requests.HTTPError) as caught:
+            _raise_for_status(_FakeResponse(500, ""))
+        assert "500 Client Error" in str(caught.value) or "500" in str(caught.value)
+
+
+class TestSizeRejectionsAreTranslated:
+    """Chunking beats the per-request cap, not the account's file-size limit."""
+
+    def test_only_a_size_rejection_gets_the_hint(self):
+        assert size_rejection_hint(_TOO_LARGE, 523239424)
+        assert size_rejection_hint("Invalid signature", 523239424) == ""
+
+    def test_the_hint_names_the_whole_movie_not_the_chunk(self):
+        hint = size_rejection_hint(_TOO_LARGE, 499 * 1024 * 1024)
+        assert "499 MB" in hint
+        assert "chunk" in hint.lower()
+
+    def test_the_upload_reports_it_instead_of_a_bare_400(self, tmp_path, monkeypatch):
+        movie = tmp_path / "final_video.mp4"
+        movie.write_bytes(b"x" * 1024)
+        calls: list[int] = []
+
+        def _refuse(*args, **kwargs):
+            calls.append(1)
+            return _cloudinary_error(_TOO_LARGE)
+
+        monkeypatch.setattr(requests, "post", _refuse)
+        # Keep the run offline: publishing reads the cloud's folder mode first.
+        monkeypatch.setattr(
+            requests, "get",
+            lambda *a, **k: _FakeResponse(200, "{}", {"settings": {"folder_mode": "fixed"}}),
+        )
+        client = CloudinaryClient("cloud", "key", "secret", max_retries=5, base_delay=0)
+
+        with pytest.raises(PipelineError) as caught:
+            client.publish_final_video(FOLDER, movie, 1)
+
+        message = str(caught.value)
+        assert _TOO_LARGE in message          # Cloudinary's own sentence
+        assert "maximum video file size" in message  # ...and what to do about it
+        assert calls == [1]                   # a 400 is permanent: uploaded once
 
 
 class _FakeCloudinary:
