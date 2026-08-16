@@ -410,11 +410,29 @@ class CloudinaryClient:
 
     # ------------------------------ HTTP core ------------------------------ #
 
-    def _get(self, path: str, params: dict[str, Any], description: str) -> dict[str, Any]:
+    def _get(
+        self,
+        path: str,
+        params: dict[str, Any],
+        description: str,
+        *,
+        allow_404: bool = False,
+    ) -> dict[str, Any]:
+        """One Admin-API GET, with retries.
+
+        ``allow_404`` turns "no such tag/prefix/folder" into an empty answer
+        BEFORE any exception exists. That distinction matters for the log, not
+        just the result: raising and catching it made `with_retries` announce
+        "failed with a permanent error (no retry)" for every order whose
+        folder has not been created yet, which is a completely ordinary state
+        (photos upload after payment) dressed up as a failure.
+        """
         url = f"{_API_BASE}/{self.cloud_name}/{path}"
 
         def _call() -> dict[str, Any]:
             resp = requests.get(url, params=params, auth=self._auth, timeout=60)
+            if allow_404 and resp.status_code == 404:
+                return {}
             _raise_for_status(resp)  # HTTPError carries .response -> 4xx won't be retried
             return resp.json()
 
@@ -426,7 +444,13 @@ class CloudinaryClient:
         )
 
     def _paged(
-        self, path: str, params: dict[str, Any], list_key: str, description: str
+        self,
+        path: str,
+        params: dict[str, Any],
+        list_key: str,
+        description: str,
+        *,
+        allow_404: bool = False,
     ) -> list[dict[str, Any]]:
         """Collect every page of an Admin-API listing (next_cursor pagination)."""
         items: list[dict[str, Any]] = []
@@ -435,7 +459,7 @@ class CloudinaryClient:
             page_params = dict(params, max_results=_PAGE_SIZE)
             if cursor:
                 page_params["next_cursor"] = cursor
-            data = self._get(path, page_params, description)
+            data = self._get(path, page_params, description, allow_404=allow_404)
             items.extend(data.get(list_key, []))
             cursor = data.get("next_cursor")
             if not cursor:
@@ -522,13 +546,15 @@ class CloudinaryClient:
         does not exist answers the same way. Any other failure still
         propagates: publishing derives the next version number from these
         listings, so a silent error must not look like "nothing there".
+
+        The 404 is absorbed inside the request (``allow_404``) rather than
+        caught out here, so it never reaches the retry loop's "failed with a
+        permanent error" warning. An order whose photos have not been
+        uploaded yet is the normal state of a fresh order, and the panel
+        re-asks on every refresh — logging each one as a failure buried the
+        real errors.
         """
-        try:
-            return self._paged(path, params, "resources", description)
-        except requests.HTTPError as exc:
-            if exc.response is not None and exc.response.status_code == 404:
-                return []
-            raise
+        return self._paged(path, params, "resources", description, allow_404=True)
 
     def list_published_videos(self, folder_leaf: str) -> list[PublishedVideo]:
         """Movie versions already published into one order folder, oldest first.
