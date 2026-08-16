@@ -1080,6 +1080,21 @@ still blocked, the clip is tried one final time with a generic safe fallback
 prompt — the start/end frames still drive the motion, so you get a usable
 (if less directed) clip instead of a failed render.
 
+**…except an OUTPUT-stage block, which rewording cannot fix.** OpenAI's
+rejection says which stage fired. `moderation_stage: output` means the
+*generated image* was refused rather than the request, so another prompt just
+re-rolls the same source photo past the same classifier — a real order spent
+~7 minutes per photo proving it. Those skip the generic rewording and get ONE
+targeted retry instead, with an instruction to redraw every licensed character,
+logo and brand mark as a plain generic equivalent (same object, same place,
+same colours) while leaving the real people's likeness untouched. If that is
+refused too, the photo itself has to change: crop the offending part out, swap
+in another shot, or accept that the frame is bridged over and that photo will
+not appear in the movie. Two things trip it on ordinary customer photos:
+**copyrighted characters in shot** (theme-park merchandise, plush toys,
+printed cups — styling asks for a cartoon, and a cartoon of Mickey Mouse is
+exactly what an image model refuses to draw) and full-body shots of children.
+
 ---
 
 ## Output layout

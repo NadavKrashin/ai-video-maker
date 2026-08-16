@@ -922,6 +922,37 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   — don't add temperature params to chat calls.
 - Per-project overrides: a `projects/<name>/config.json` is merged key-over-key
   on top of the shared config.
+- AN OUTPUT-STAGE MODERATION BLOCK IS NOT A PROMPT PROBLEM (2026-08-16).
+  OpenAI's payload says which stage fired. `'moderation_stage': 'output'`
+  means the GENERATED image was refused, not the request — so rewording
+  re-rolls the same source photo against the same classifier and just costs
+  time. Real order am-160826-vkxq-7: frames 18 and 19 (a Disney shop photo
+  of three kids with popcorn buckets, and one of two of them by a shelf)
+  were refused on all 6 attempts across two runs, ~7 minutes per photo.
+  `is_output_moderation` ends the GENERIC reword loop after the first
+  failure and skips the `last_resort` too; fal/Kling rejections never match
+  it, so clip rewording — where the WORDS really are the problem — is
+  untouched. But the prompt is NOT powerless here (user's question, and a
+  fair one): it decides what gets DRAWN, and the drawing is what is judged.
+  So an output-stage block gets exactly ONE targeted retry with
+  `_DEBRAND_INSTRUCTION` appended — redraw every licensed character, logo
+  and brand mark as a plain generic equivalent, same object, same place,
+  same colours. It ring-fences the PEOPLE explicitly (faces, hair, build,
+  glasses, clothing, "same likeness"): a "make it safe" rewrite that
+  quietly generalised faces would trade one silent failure for a worse one.
+  Two attempts total, ~2 min, versus four attempts and ~7 min of generic
+  paraphrasing that never addressed the cause.
+  `moderation_failure_hint` turns the 400 into the lever that actually
+  moves it, and `_style_images` records THAT on the failure so the panel
+  shows it instead of a raw payload. On the CAUSE: both failing frames
+  were shot inside Disney gift shops — Mickey/Minnie popcorn buckets
+  held at chest height, a Donald Duck plush, shelves of character
+  merchandise. Styling asks for a CARTOON, so the model is being told to
+  draw Mickey Mouse, which image models refuse on copyright grounds; the
+  other 28 photos of the same trip styled fine. Copyrighted characters
+  are therefore listed FIRST in the hint, ahead of the full-body-child
+  theory I guessed at before actually looking at the photos. Pinned by
+  TestOutputStageModeration.
 - Content filters false-positive on family content: OpenAI during styling,
   and fal/Kling on clip motion prompts (`content_policy_violation`). Kling's
   worst trigger is a baby/child being physically handled (lifted, bounced,

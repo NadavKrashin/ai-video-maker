@@ -25,7 +25,7 @@ from ..media.images import (
 )
 from ..logging_setup import logger
 from ..models import Character, Frame, Storyboard, Transition
-from ..retry import with_retries, with_reword_recovery
+from ..retry import is_output_moderation, with_retries, with_reword_recovery
 
 T = TypeVar("T")
 
@@ -177,6 +177,32 @@ _COMPLETE_ENDING_SYSTEM = (
 # satisfy. Reached two ways: the offscreen last resort at the bottom of
 # _coerce_transition_plans, and the unstageable-pair gate at its top
 # (is_unstageable_pair / camera_shift_prompt).
+# Appended to the style prompt for ONE retry after an output-stage safety
+# rejection (see _image_with_moderation_recovery). Ordinary customer photos
+# get refused when they were taken among licensed merchandise: styling asks
+# for a CARTOON of the whole scene, so a Mickey-printed popcorn bucket held
+# at chest height is a request to DRAW Mickey Mouse — which image models
+# refuse on copyright grounds, reported as an unhelpful 'other' category.
+# Real case: two frames of order am-160826-vkxq-7, shot inside Disney gift
+# shops, while the other 28 photos of the same children styled fine.
+#
+# It targets the OBJECTS only. The people are explicitly ring-fenced: the
+# whole point of styling is likeness, and a "make it safe" rewrite that
+# quietly generalises faces would trade one silent failure for a worse one.
+_DEBRAND_INSTRUCTION = (
+    "IMPORTANT — NO LICENSED CHARACTERS OR BRAND MARKS IN THE OUTPUT. Any "
+    "copyrighted or trademarked character, mascot, logo or branded artwork "
+    "visible in this photo — printed on cups, buckets, packaging, clothing, "
+    "plush toys, signage, posters or shop displays — must be redrawn as a "
+    "PLAIN, GENERIC equivalent: the same object in the same place, at the "
+    "same size and in the same colours, but decorated with simple unbranded "
+    "shapes, stripes or blank surfaces instead. Do not draw any recognisable "
+    "licensed character anywhere in the frame, in the foreground or the "
+    "background. This changes objects ONLY: the real people are untouched — "
+    "their faces, hair, build, glasses and clothing stay exactly as "
+    "described above, with the same likeness."
+)
+
 CAMERA_SHIFT_MOTION_PROMPT = (
     "The camera moves smoothly and steadily across to the new setting and "
     "settles there, holding on the people standing together exactly as the "
@@ -1859,14 +1885,39 @@ class OpenAIClient:
         """Run `call(prompt)` with the usual backoff, rewording the prompt and
         re-entering when OpenAI's safety filter rejects it (transient errors
         are still handled by ``with_retries`` inside each attempt).
+
+        An OUTPUT-stage rejection gets ONE targeted retry instead of the
+        generic rewording loop. Generic rewording is the wrong tool there — it
+        paraphrases and drops "risky detail" from wording the filter never
+        objected to, which is why a real order burned four attempts and seven
+        minutes per photo achieving nothing. But the prompt is not powerless
+        either: it decides what gets DRAWN, and the classifier judges the
+        drawing. The one prompt change that can move an output-stage block is
+        therefore an instruction about the picture's CONTENT — see
+        `_DEBRAND_INSTRUCTION`.
         """
-        return with_reword_recovery(
-            lambda p: self._retry(lambda: call(p), description),
-            prompt,
-            reword=self._reword_prompt_for_safety,
-            attempts=self.config.moderation_reword_attempts,
-            description=description,
-        )
+        try:
+            return with_reword_recovery(
+                lambda p: self._retry(lambda: call(p), description),
+                prompt,
+                reword=self._reword_prompt_for_safety,
+                attempts=self.config.moderation_reword_attempts,
+                description=description,
+            )
+        except Exception as exc:  # noqa: BLE001 - classified here
+            if not is_output_moderation(exc):
+                raise
+            logger.warning(
+                "%s: the generated image was refused. Trying once more with "
+                "licensed characters and brand marks explicitly excluded — "
+                "styling asks for a CARTOON of the whole scene, so a photo "
+                "taken among character merchandise is asking the model to "
+                "draw that character.",
+                description,
+            )
+            return self._retry(
+                lambda: call(f"{prompt}\n\n{_DEBRAND_INSTRUCTION}"), description
+            )
 
     def reword_motion_prompt(self, prompt: str) -> str:
         """Rewrite a clip motion prompt that a video content filter rejected.

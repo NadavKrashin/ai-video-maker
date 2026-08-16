@@ -2,6 +2,8 @@
 pair_index re-alignment, and motion-prompt word budgets."""
 from __future__ import annotations
 
+import pytest
+
 from ai_video_maker.clients.openai_client import (
     _MODE_A_SYSTEM,
     _TRANSITIONS_SCHEMA,
@@ -1641,3 +1643,77 @@ class TestTheStatedCauseMatchesTheRuleThatFired:
         # And end to end: a single mover is only ever reported by the crowd
         # branch, which counts the frame, so "1 person" reads correctly.
         assert "1 people" not in self._verdict(self.SIX, self.SIX[:5])
+
+
+class TestOutputModerationGetsADebrandedRetry:
+    """A refused OUTPUT deserves one prompt change that targets the picture.
+
+    Generic rewording paraphrases wording the filter never objected to, which
+    is why a real order burned four attempts and ~7 minutes per photo for
+    nothing. But the prompt is not powerless: it decides what gets DRAWN, and
+    the drawing is what is judged. Both frames that failed on order
+    am-160826-vkxq-7 were shot inside Disney gift shops — styling asks for a
+    CARTOON of the scene, so a Mickey-printed popcorn bucket is a request to
+    draw Mickey Mouse.
+    """
+
+    OUTPUT_BLOCK = (
+        "Error code: 400 - {'error': {'code': 'moderation_blocked', "
+        "'moderation_details': {'moderation_stage': 'output', "
+        "'categories': ['other']}}}"
+    )
+
+    def _client(self, config):
+        client = OpenAIClient(config)
+        client._reword_prompt_for_safety = lambda p: pytest.fail(
+            "generic rewording must not run for an output-stage block"
+        )
+        return client
+
+    def test_the_second_attempt_forbids_licensed_characters(self, config):
+        prompts: list[str] = []
+
+        def call(prompt: str) -> bytes:
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                raise RuntimeError(self.OUTPUT_BLOCK)
+            return b"styled"
+
+        result = self._client(config)._image_with_moderation_recovery(
+            call, "make it a pixar cartoon", "style(18.jpg)"
+        )
+        assert result == b"styled"
+        assert len(prompts) == 2                       # not four
+        assert prompts[0] == "make it a pixar cartoon"  # original tried first
+        assert prompts[1].startswith("make it a pixar cartoon")
+        assert "NO LICENSED CHARACTERS" in prompts[1]
+
+    def test_the_people_are_ring_fenced_in_that_retry(self, config):
+        # A "make it safe" rewrite that quietly generalises faces would trade
+        # one silent failure for a worse one — likeness is the whole product.
+        prompts: list[str] = []
+
+        def call(prompt: str) -> bytes:
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                raise RuntimeError(self.OUTPUT_BLOCK)
+            return b"styled"
+
+        self._client(config)._image_with_moderation_recovery(
+            call, "style", "style(18.jpg)"
+        )
+        assert "the real people are untouched" in prompts[1]
+        assert "same likeness" in prompts[1]
+
+    def test_a_still_refused_photo_raises_rather_than_looping(self, config):
+        attempts: list[str] = []
+
+        def call(prompt: str) -> bytes:
+            attempts.append(prompt)
+            raise RuntimeError(self.OUTPUT_BLOCK)
+
+        with pytest.raises(RuntimeError, match="moderation_blocked"):
+            self._client(config)._image_with_moderation_recovery(
+                call, "style", "style(18.jpg)"
+            )
+        assert len(attempts) == 2  # original + de-branded, then stop

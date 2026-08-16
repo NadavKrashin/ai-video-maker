@@ -105,6 +105,7 @@ from .publish import (
     published_versions,
     record_publication,
 )
+from .retry import moderation_failure_hint
 from .state import FailedJobStore, StateStore
 from .storyboard_html import write_storyboard_preview
 from .storyboard_md import write_storyboard_markdown
@@ -792,10 +793,19 @@ class Pipeline:
                     self.summary.styled_created += 1
                 logger.info("Styled: %s", dst.name)
             except Exception as exc:  # noqa: BLE001
+                # A raw 400 payload says nothing about what to DO, and these
+                # are ordinary customer photos — a safety rejection is nearly
+                # always a false positive, so the failure carries the lever
+                # that actually moves it.
+                hint = moderation_failure_hint(exc)
                 with self._lock:
                     self.summary.styled_failed += 1
                     self.state.set(job_id, "failed")
-                    self.failed.record(job_id, "style", str(exc), source=str(src))
+                    self.failed.record(
+                        job_id, "style",
+                        f"{hint}\n\nProvider said: {exc}" if hint else str(exc),
+                        source=str(src),
+                    )
 
         self._map_parallel(jobs, work, "Styling images", "img")
         if self.dry_run:
