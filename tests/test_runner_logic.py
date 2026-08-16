@@ -1064,7 +1064,7 @@ class TestPerFrameStyleNote:
         calls = []
 
         class _FakeOpenAI:
-            def style_image(self, src, prompt, dst):
+            def style_image(self, src, prompt, dst, references=None):
                 calls.append((src.name, prompt))
                 dst.write_bytes(b"styled")
 

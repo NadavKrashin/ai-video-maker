@@ -191,6 +191,16 @@ class Workspace:
         return self.storyboard_dir / "storyboard.json"
 
     @property
+    def face_audit_file(self) -> Path:
+        """The last face-consistency audit's findings (see cmd_faces).
+
+        Persisted because the audit is the one part of the cast-faces feature
+        that costs money: the panel must be able to show yesterday's answer
+        without buying it again. Derived and disposable — deleting it loses
+        nothing but the report."""
+        return self.storyboard_dir / "face_audit.json"
+
+    @property
     def storyboard_md(self) -> Path:
         return self.storyboard_dir / "storyboard.md"
 

@@ -705,6 +705,54 @@ prompt has nobody crossing or leaving frame, a targeted rewrite restages it
 as an exit past the camera plus a walk back in. Prompt-side instructions
 alone kept missing these.
 
+<a id="keeping-a-face-the-same-face"></a>
+
+**The cast's canonical faces (`faces`).** Every frame used to be styled on
+its own: one photo, one prompt, no knowledge that frame 3 and frame 17 show
+the same person. The style prompt says *preserve the likeness*, and it does —
+but that anchors each output to **that photograph**, not to the other styled
+frames. A family album spans years, so faithfully honouring a 2019 photo and
+a 2024 photo of the same person legitimately produces two different-looking
+cartoons. Correct per image, wrong per movie.
+
+`python pipeline.py faces <project>` fixes the anchor. It cuts one canonical
+portrait per cast member into `cast_refs/<cast id>.png`, using the face
+positions the panel's tagger already records (`FramePerson.x`/`y` is the
+centre of that person's face). It is **free** — the faces come out of frames
+you already paid to style — so it runs itself whenever tags change, and the
+frame it cuts from is the one with the fewest people in it, where the face is
+largest. Set `reference_frame` on a cast member (in `storyboard.json` or the
+panel's Cast editor) to override that pick.
+
+From then on, styling a tagged frame sends those faces along with the
+photograph, and the model is told plainly that they are **identity only**:
+match the face, never copy a reference's clothing, pose, background or
+scenery, never add a person who is only in a reference, and where the
+photograph and a reference disagree about what someone is wearing or doing,
+the photograph wins.
+
+Because references come from the *saved* storyboard, the first styling of a
+project has none (nothing is tagged yet) and behaves exactly as it always
+has. They take effect on the next deliberate re-style of a frame
+(`--restyle-frame`), which is how every credit-spending redo in this pipeline
+works.
+
+**Finding the frames that already drifted (`faces --audit`).** One paid vision
+call compares every tagged appearance of each cast member and reports the
+frames where somebody is drawn as a different person — a bald man who grew
+hair, a child who became a different child. It is deliberately conservative:
+a different expression, angle, haircut or outfit is never a finding, and a
+character flagged in *every* frame is reported as "inconsistent throughout"
+rather than as a list of frames to redo, because that list would just be a
+bill. Findings are saved to `storyboard/face_audit.json`, shown by `status`
+and in the panel, and **nothing is ever re-styled for you** — you get the
+exact `--restyle-frame` command to run.
+
+Frames styled against references that have since moved are flagged as
+`outdated_styling`. A frame styled *before* any references existed is never
+flagged: that stamp is empty, which is the truth, and a project that was fine
+yesterday must not wake up demanding money today.
+
 <a id="when-the-camera-takes-over"></a>
 
 **Unstageable pairs become camera transitions.** Exit-and-entrance staging
@@ -1008,6 +1056,7 @@ which are project-less).
 | `publish` | `--dry-run` (print the name only), `-y/--yes` |
 | `status` | — |
 | `tag` | `--retag`, `--dry-run`, `-y/--yes` |
+| `faces` | `--audit` (paid: find frames drawing someone as a different person), `--dry-run`, `-y/--yes` |
 | `feedback` | `"<note>"` (optional with `--clip`), `--clip ID`, `--good`, `--no-watch`, `--no-learn`, `--dry-run` |
 | `lessons` | — (no project argument) `--add TEXT`, `--scope motion\|style`, `--disable ID`, `--enable ID`, `--forget ID` |
 | `costs` | — (no project argument; per-project + total spend) |
@@ -1119,6 +1168,7 @@ Everything below lives inside the project workspace, `projects/<name>/`:
 |--------|----------|
 | `input_images/` | Your source images (image-based projects) |
 | `styled_images/` | Styled frames (`001_styled.png`, …) |
+| `cast_refs/` | One canonical styled face per cast member (`<cast id>.png`), cut for free from the frames they appear in — see [Keeping a face the same face](#keeping-a-face-the-same-face). Derived: safe to delete, rebuilt by `faces` |
 | `generated_frames/` | Idea-based generated frames (`001.png`, …) |
 | `clips/` | Rendered clips (`001_to_002.mp4`, …) |
 | `output/` | `final_video.mp4` + `music_custom.mp3` (the music track you uploaded, when you supplied one) |
@@ -1230,6 +1280,9 @@ bed costs nothing — it is your own file). Requires `ffmpeg`/`ffprobe` on your
 | `clip_review_frames` | How many stills are sampled across a clip when the reviewer watches it (default `8`). |
 | `unstageable_mover_budget` | How many people may leave or arrive between two frames and still be choreographed individually (default `2`). Above it, the pair gets a deterministic camera transition instead — see [When the camera takes over](#when-the-camera-takes-over). |
 | `unstageable_crowd_limit` | Above this many visible people in either frame, ANY roster change hands the pair to the camera (default `3`). A group that is the same on both sides is never gated by this. |
+| `cast_references_enabled` | `true` (default): styling a tagged frame is anchored to the cast's canonical faces. `false` restores the old per-photo behaviour. Untagged projects are unaffected either way. |
+| `face_reference_crop` | Side of the face crop for a frame with one tagged person, as a fraction of the frame height (default `0.5`); a fuller frame divides it down. |
+| `max_style_references` | How many cast faces may ride along with one styling call (default `4`). When a frame has more tagged people, the ones who appear in the most frames win. |
 
 All spending figures are **estimates** derived from these prices — see
 [What it costs](#what-it-costs-spending).

@@ -73,7 +73,11 @@ from .media.ffmpeg import (
     render_photo_still,
     sample_clip_frames,
 )
-from .media.faces import pick_reference_frame, write_face_reference
+from .media.faces import (
+    pick_reference_frame,
+    references_for_frame,
+    write_face_reference,
+)
 from .media.letter import (
     find_emoji_font,
     find_letter_font,
@@ -98,6 +102,8 @@ from .models import (
     Transition,
     identity_fingerprint,
     outdated_identity_plans,
+    outdated_reference_frames,
+    reference_fingerprint,
     tagged_people,
 )
 from .options import RunOptions
@@ -267,6 +273,12 @@ class Pipeline:
         # Guards summary counters when workers run in parallel (StateStore and
         # FailedJobStore guard themselves).
         self._lock = threading.Lock()
+        # Frames styled in THIS run that were drawn against cast references,
+        # and the fingerprint of the references used. Collected by
+        # _style_images and stamped onto the frames by _reconcile_storyboard,
+        # which rebuilds them from disk and would otherwise lose it — the same
+        # carry-over every other per-frame field needs.
+        self._styled_ref_stamps: dict[str, str] = {}
 
     # ------------------------------ dispatch ----------------------------- #
     def execute(self, command: str) -> None:
@@ -284,13 +296,14 @@ class Pipeline:
             "publish": self.cmd_publish,
             "status": self.cmd_status,
             "tag": self.cmd_tag,
+            "faces": self.cmd_faces,
             "feedback": self.cmd_feedback,
             "run": self.cmd_run,
         }
         handler = handlers.get(command)
         if handler is None:
             raise PipelineError(f"Unknown command: {command}")
-        if command in ("status", "feedback"):
+        if command in ("status", "feedback", "faces"):
             # Neither produces pipeline outputs, so neither gets a summary —
             # and crucially neither flushes the failure report, which would
             # delete the record of the last run that actually had problems.
@@ -599,7 +612,14 @@ class Pipeline:
             for f in (saved.frames if saved else [])
             if f.style_note
         }
-        frame_pairs = self._style_images(images, recorded_sources, style_notes)
+        # References come from the SAVED storyboard: the first styling of a
+        # project has no tags and so no references, and the tags added
+        # afterwards anchor the next styling of those people — which is a
+        # deliberate --restyle-frame, never a surprise re-spend.
+        frame_pairs = self._style_images(
+            images, recorded_sources, style_notes,
+            self.style_reference_plan(saved),
+        )
         if len(frame_pairs) < 2:
             logger.warning(
                 "Need at least 2 styled images to make a clip; have %d.",
@@ -689,6 +709,7 @@ class Pipeline:
         images: list[Path],
         recorded_sources: dict[str, str],
         style_notes: Optional[dict[str, str]] = None,
+        references: Optional[dict[str, tuple[list[Path], str]]] = None,
     ) -> list[tuple[Path, Path]]:
         """Style every input; return ordered (source, styled) pairs on disk.
 
@@ -764,6 +785,8 @@ class Pipeline:
             ):
                 redo.clear()
 
+        references = references or {}
+
         def prompt_for(dst: Path) -> str:
             rel = dst.relative_to(self.workspace.root).as_posix()
             note = style_notes.get(rel, "").strip()
@@ -787,8 +810,12 @@ class Pipeline:
                     self.summary.styled_created += 1
                 return
 
+            rel = dst.relative_to(self.workspace.root).as_posix()
+            ref_paths, ref_stamp = references.get(rel, ([], ""))
             try:
-                self.openai.style_image(src, prompt_for(dst), dst)
+                self.openai.style_image(
+                    src, prompt_for(dst), dst, references=ref_paths or None
+                )
                 if not verify_dimensions(dst, self.config.target_width, self.config.target_height):
                     # Remove the bad file: leaving it would make the next run
                     # skip this image as "done" (resume is existence-based).
@@ -797,7 +824,15 @@ class Pipeline:
                 with self._lock:
                     self.state.set(job_id, "done", output=str(dst))
                     self.summary.styled_created += 1
-                logger.info("Styled: %s", dst.name)
+                    # Only a frame that really was drawn against references
+                    # gets a stamp; the empty default is what keeps every
+                    # pre-existing frame quiet (see Frame.styled_refs).
+                    if ref_stamp:
+                        self._styled_ref_stamps[rel] = ref_stamp
+                logger.info(
+                    "Styled: %s%s", dst.name,
+                    f" (matched to {len(ref_paths)} cast face(s))" if ref_paths else "",
+                )
             except Exception as exc:  # noqa: BLE001
                 # A raw 400 payload says nothing about what to DO, and these
                 # are ordinary customer photos — a safety rejection is nearly
@@ -860,6 +895,15 @@ class Pipeline:
             for f in (saved.frames if saved else [])
             if f.style_note
         }
+        # Which cast references each frame was styled against. Carried over
+        # like the rest, then overridden for the frames THIS run re-styled —
+        # they were just drawn against a possibly different set.
+        saved_stamps = {
+            f.output_path: f.styled_refs
+            for f in (saved.frames if saved else [])
+            if f.styled_refs
+        }
+        saved_stamps.update(self._styled_ref_stamps)
         frames = [
             Frame(
                 id=self._frame_id(dst),
@@ -870,6 +914,7 @@ class Pipeline:
                 styled_hash=hashes[dst],
                 people=tagged.get(dst.relative_to(root).as_posix(), []),
                 style_note=saved_notes.get(dst.relative_to(root).as_posix(), ""),
+                styled_refs=saved_stamps.get(dst.relative_to(root).as_posix(), ""),
             )
             for src, dst in frame_pairs
         ]
@@ -2508,6 +2553,10 @@ class Pipeline:
                     c.id for c in storyboard.characters
                     if is_clothing_anchored(c.epithet)
                 ],
+                # id -> epithet, so anything reporting per-character findings
+                # (the face audit below, the panel's badges) can name a
+                # person instead of printing a cast id at them.
+                "cast": {c.id: c.epithet for c in storyboard.characters},
                 # Cast members whose epithets cannot be told apart — one a
                 # word-subset of the other ("woman with dark hair bun" /
                 # "young woman with dark hair bun"). The video model has no
@@ -2544,6 +2593,26 @@ class Pipeline:
                 # carrying a camera-family prompt is not listed, and
                 # untagged frames have no opinion — so pre-existing
                 # untagged projects stay silent.
+                # Frames drawn against cast faces that have since changed —
+                # a reference re-cut from a different frame, or a person
+                # tagged into/out of this photo. Only frames that really
+                # were styled WITH references speak up (an empty stamp is
+                # "styled from none", which is true of every project that
+                # predates this and stays silent). Never fixed for you:
+                # re-styling spends image credits, so it is a badge and an
+                # explicit --restyle-frame.
+                # The last face audit's findings (see cmd_faces --audit),
+                # read from disk so the panel can show yesterday's answer
+                # without buying it again. Empty until somebody runs one.
+                "face_audit": self.read_face_audit(),
+                "outdated_styling": outdated_reference_frames(
+                    storyboard,
+                    {
+                        path: stamp
+                        for path, (_, stamp) in
+                        self.style_reference_plan(storyboard).items()
+                    },
+                ),
                 "unstageable_pairs": [
                     t.id for t in storyboard.transitions
                     if is_unstageable_pair(
@@ -2680,6 +2749,49 @@ class Pipeline:
                 refs[path.stem] = path
         return refs
 
+    def style_reference_plan(
+        self, storyboard: Optional[Storyboard]
+    ) -> dict[str, tuple[list[Path], str]]:
+        """Frame output_path -> (reference files to attach, their fingerprint).
+
+        Computed from the SAVED storyboard, which is the whole reason this
+        works without reordering the pipeline: the first styling of a project
+        has no tags and therefore no references, and the tags that arrive
+        afterwards anchor the NEXT styling of those people — a re-style of a
+        drifted frame, which is a named, deliberate action already.
+
+        Frames nobody is tagged in are simply absent, so they style exactly as
+        they always have.
+        """
+        if storyboard is None or not self.config.cast_references_enabled:
+            return {}
+        refs = self.cast_reference_paths(storyboard)
+        if not refs:
+            return {}
+        digests = {cid: _file_sha1(path) for cid, path in refs.items()}
+        appearances: dict[str, int] = {}
+        for frame in storyboard.frames:
+            for person in frame.people:
+                appearances[person.id] = appearances.get(person.id, 0) + 1
+
+        plan: dict[str, tuple[list[Path], str]] = {}
+        for frame in storyboard.frames:
+            if not frame.people:
+                continue
+            chosen = references_for_frame(
+                [(p.id, p.x) for p in frame.people],
+                set(refs),
+                appearances,
+                self.config.max_style_references,
+            )
+            if not chosen:
+                continue
+            plan[frame.output_path] = (
+                [refs[cid] for cid in chosen],
+                reference_fingerprint([(cid, digests[cid]) for cid in chosen]),
+            )
+        return plan
+
     def build_cast_references(self, storyboard: Storyboard) -> dict[str, str]:
         """Cut one canonical face per cast member out of the styled frames.
 
@@ -2738,6 +2850,194 @@ class Pipeline:
                 len(written),
             )
         return written
+
+    def read_face_audit(self) -> dict[str, Any]:
+        """The last face-consistency audit, or an empty report. Never raises."""
+        path = self.workspace.face_audit_file
+        if not path.exists():
+            return {"checked": 0, "characters": {}, "ran_at": ""}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Could not read the face audit (%s); ignoring.", exc)
+        return {"checked": 0, "characters": {}, "ran_at": ""}
+
+    def _face_audit_groups(
+        self, storyboard: Storyboard, temp: Path
+    ) -> list[tuple[str, str, list[tuple[str, Path]]]]:
+        """Cut every tagged appearance of every cast member into ``temp``.
+
+        Local, free and thrown away with the temp directory — the same shape
+        as the clip reviewer's frame sampling. Only people who appear at
+        least twice are worth asking about: consistency is a comparison, and
+        a single appearance cannot disagree with anything.
+        """
+        root = self.workspace.root
+        people_per_frame = {
+            f.output_path: len(f.people) for f in storyboard.frames
+        }
+        epithets = {c.id: c.epithet for c in storyboard.characters}
+        by_character: dict[str, list[tuple[str, Path]]] = {}
+        for frame in storyboard.frames:
+            src = root / frame.output_path
+            if not src.exists():
+                continue
+            label = Path(frame.output_path).name
+            for person in frame.people:
+                if person.id not in epithets:
+                    continue
+                crop = temp / f"{person.id}__{label}"
+                if write_face_reference(
+                    src, crop, person.x, person.y,
+                    people_per_frame.get(frame.output_path, 1),
+                    self.config.face_reference_crop,
+                ):
+                    by_character.setdefault(person.id, []).append((label, crop))
+        return [
+            (cid, epithets[cid], crops)
+            for cid, crops in by_character.items()
+            if len(crops) >= 2
+        ]
+
+    def cmd_faces(self) -> None:
+        """Rebuild the cast's face references, and optionally audit them.
+
+        Two halves with very different costs, which is why the expensive one
+        is opt-in:
+
+        * rebuilding the reference sheet is free — the faces are cut out of
+          frames already styled — so it just happens;
+        * ``--audit`` additionally asks the vision model which frames draw
+          someone as a different person. That is one paid call, and it is
+          what turns "the faces drift a bit" into a list of frames worth
+          re-styling.
+
+        Nothing is ever re-styled here. Redoing a frame spends image credits,
+        so it stays what it has always been: a named, deliberate
+        ``storyboard --restyle-frame <name>``.
+        """
+        storyboard = self._require_storyboard("faces")
+        if not self.config.cast_references_enabled:
+            raise PipelineError(
+                "Cast face references are switched off for this project "
+                "(`cast_references_enabled: false` in config.json)."
+            )
+        if not storyboard.characters:
+            raise PipelineError(
+                "This project has no cast yet, so there are no faces to cut. "
+                f"Run `{self._next_command('storyboard')}` first."
+            )
+        if self.dry_run:
+            groups = sum(
+                1 for c in storyboard.characters
+                if any(
+                    p.id == c.id for f in storyboard.frames for p in f.people
+                )
+            )
+            logger.info(
+                "[dry-run] would cut %d cast face reference(s)%s",
+                groups, " and audit them" if self.options.audit_faces else "",
+            )
+            return
+
+        written = self.build_cast_references(storyboard)
+        epithets = {c.id: c.epithet for c in storyboard.characters}
+        print(f"\nCast face references ({len(written)}):")
+        for cid, frame_path in sorted(written.items()):
+            print(
+                f"  {epithets.get(cid, cid):<34} from "
+                f"{Path(frame_path).name}"
+            )
+        untagged = [c for c in storyboard.characters if c.id not in written]
+        if untagged:
+            print(
+                f"  ({len(untagged)} cast member(s) are tagged in no frame "
+                "yet, so they have no reference.)"
+            )
+        if not self.options.audit_faces:
+            print(
+                "\nThese anchor the next styling of these people. To find "
+                "frames where someone is already drawn as a different person, "
+                f"run `{self._next_command('faces', '--audit')}` (one paid "
+                "vision call)."
+            )
+            return
+
+        self._audit_faces(storyboard)
+
+    def _audit_faces(self, storyboard: Storyboard) -> None:
+        """The paid half of `faces`: which frames draw someone else."""
+        with tempfile.TemporaryDirectory(prefix="face-audit-") as tmp:
+            groups = self._face_audit_groups(storyboard, Path(tmp))
+            if not groups:
+                print(
+                    "\nNobody is tagged in two or more frames yet, so there is "
+                    "nothing to compare. Tag more photos first."
+                )
+                return
+            crops = sum(len(c) for _, _, c in groups)
+            if not self._ask(
+                [
+                    f"Compare {crops} face crop(s) of {len(groups)} cast "
+                    "member(s) and report where someone is drawn as a "
+                    "different person.",
+                    "One OpenAI vision call. Nothing is re-styled, re-planned "
+                    "or re-rendered — you get a list to act on.",
+                ],
+                f"Audit {len(groups)} character(s)? [y/N] ",
+                "Nothing audited.",
+            ):
+                return
+            try:
+                findings = self.openai.review_face_consistency(groups)
+            except Exception as exc:  # noqa: BLE001 - a report is not the movie
+                raise PipelineError(
+                    f"The face audit could not be completed: {exc}"
+                ) from exc
+
+        report = {
+            "ran_at": datetime.now().isoformat(timespec="seconds"),
+            "checked": len(groups),
+            "characters": findings,
+        }
+        try:
+            self.workspace.face_audit_file.parent.mkdir(parents=True, exist_ok=True)
+            self.workspace.face_audit_file.write_text(
+                json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        except OSError as exc:
+            logger.warning("Could not save the face audit: %s", exc)
+
+        epithets = {c.id: c.epithet for c in storyboard.characters}
+        flagged = {
+            cid: data for cid, data in findings.items() if data.get("odd_frames")
+        }
+        if not flagged:
+            print(
+                f"\nChecked {len(groups)} character(s): every one of them is "
+                "drawn consistently. Nothing to redo."
+            )
+            return
+        print("\nFrames where someone is drawn as a different person:")
+        for cid, data in sorted(flagged.items()):
+            print(f"  {epithets.get(cid, cid)}")
+            for label in data["odd_frames"]:
+                print(f"    {label}")
+            if data.get("note"):
+                print(f"    ({data['note']})")
+        names = sorted({
+            label for data in flagged.values() for label in data["odd_frames"]
+        })
+        print(
+            "\nRe-style them with the cast faces as anchors (spends image "
+            "credits, one per frame):\n  "
+            + self._next_command(
+                "storyboard",
+                " ".join(f"--restyle-frame {n}" for n in names),
+            )
+        )
 
     def cmd_tag(self) -> None:
         """Propose who is in each frame, for a human to correct.
@@ -3342,6 +3642,46 @@ class Pipeline:
                 "     Apply them with:\n     "
                 + self._next_command("storyboard", "--replan-all")
             )
+
+        # Frames drawn before the cast faces they should have matched.
+        # Re-styling costs a credit each, so this names the frames and the
+        # exact command, and stops there.
+        outdated_styling = (
+            (snap["storyboard"] or {}).get("outdated_styling") or []
+        )
+        if outdated_styling:
+            names = [Path(p).name for p in outdated_styling]
+            print(
+                f"  !! {len(names)} frame(s) were styled before the current "
+                "cast face references: "
+                f"{', '.join(names[:6])}{' …' if len(names) > 6 else ''}\n"
+                "     Redraw them against the references (one image credit "
+                "each):\n     "
+                + self._next_command(
+                    "storyboard",
+                    " ".join(f"--restyle-frame {n}" for n in names[:6]),
+                )
+            )
+
+        # Where the last audit found a cast member drawn as somebody else.
+        audit = (snap["storyboard"] or {}).get("face_audit") or {}
+        drifted = {
+            cid: data
+            for cid, data in (audit.get("characters") or {}).items()
+            if data.get("odd_frames")
+        }
+        if drifted:
+            epithets = (snap["storyboard"] or {}).get("cast") or {}
+            total = sum(len(d["odd_frames"]) for d in drifted.values())
+            print(
+                f"  !! the face audit flagged {total} frame(s) across "
+                f"{len(drifted)} cast member(s):"
+            )
+            for cid, data in sorted(drifted.items()):
+                print(
+                    f"       {epithets.get(cid, cid)}: "
+                    + ", ".join(data["odd_frames"])
+                )
 
         # Saved prompts still choreographing people on pairs whose tags say
         # the choreography cannot exist (too many movers / too crowded).

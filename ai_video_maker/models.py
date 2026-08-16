@@ -61,6 +61,19 @@ class Frame(BaseModel):
     # is existence-based, so spend the credit deliberately with
     # `storyboard --restyle-frame <name>`.
     style_note: str = ""
+    # Fingerprint of the cast face references this frame was STYLED with
+    # (see reference_fingerprint). Comparing it against the references that
+    # apply now is what makes "this frame predates your cast faces" visible
+    # instead of something you have to remember.
+    #
+    # An EMPTY stamp means "styled from no references at all", which is true
+    # of every frame styled before this existed and of every untagged
+    # project — and it is deliberately NOT reported as outdated. Re-styling
+    # spends image credits, so a project that was fine yesterday must not
+    # wake up demanding money today; the stamp only speaks once a frame has
+    # actually been styled WITH references and those references have since
+    # moved.
+    styled_refs: str = ""
 
 
 class Character(BaseModel):
@@ -193,6 +206,44 @@ def identity_fingerprint(
 # a project that has never been tagged from reporting every prompt as stale.
 def _untagged_fingerprint() -> str:
     return hashlib.sha1("?|?".encode("utf-8")).hexdigest()[:12]
+
+
+def reference_fingerprint(used: list[tuple[str, str]]) -> str:
+    """Identity of one styling's reference set: ``(cast id, content hash)``.
+
+    Content hashes, never mtimes — the same rule the styled frames follow,
+    and for the same reason: a cloud-sync client once bumped every mtime and
+    the old heuristic wiped a project's clips. Here the cost of a lying mtime
+    would be quieter but just as unwelcome, a whole album reporting itself
+    stale and inviting the user to re-buy it.
+
+    Order-independent, because which references were attached is what shapes
+    the output; the order they were listed in is not.
+    """
+    material = "|".join(f"{cid}={digest}" for cid, digest in sorted(used))
+    return hashlib.sha1(material.encode("utf-8")).hexdigest()[:12]
+
+
+def outdated_reference_frames(
+    storyboard: "Storyboard", applicable: dict[str, str]
+) -> list[str]:
+    """Styled frames whose cast references have moved since they were styled.
+
+    ``applicable`` maps a frame's output_path to the fingerprint its
+    references would produce TODAY. A frame is listed only when it carries a
+    non-empty stamp that disagrees — see ``Frame.styled_refs`` for why an
+    empty stamp stays silent.
+
+    Nothing is fixed automatically: re-styling costs image credits, so this
+    is a badge and a named ``--restyle-frame`` away, exactly like every other
+    staleness in this pipeline.
+    """
+    return [
+        frame.output_path
+        for frame in storyboard.frames
+        if frame.styled_refs
+        and applicable.get(frame.output_path, frame.styled_refs) != frame.styled_refs
+    ]
 
 
 def outdated_identity_plans(storyboard: "Storyboard") -> list[str]:

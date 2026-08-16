@@ -66,6 +66,10 @@ class RunOptions:
     # a prompt when its pair is planned again. Hand-written prompts are
     # replaced, so it is never implicit.
     replan_all: bool = False
+    # faces: also ask the vision model which frames draw a cast member as a
+    # different person. Off by default because rebuilding the reference sheet
+    # is free and this is the one part of it that costs a call.
+    audit_faces: bool = False
     # feedback: one human judgement of a rendered clip (see feedback.py).
     # `feedback_clip` is the transition id it is about ("003_to_004"); empty
     # means feedback about the movie in general. `feedback_learn` off records
@@ -126,6 +130,7 @@ class RunOptions:
             retag=bool(get("retag")),
             tag_frames=not get("no_tag", False),
             replan_all=bool(get("replan_all")),
+            audit_faces=bool(get("audit")),
             feedback_clip=get("clip_id"),
             feedback_note=get("note"),
             # --good flips the verdict; the default is that feedback is a

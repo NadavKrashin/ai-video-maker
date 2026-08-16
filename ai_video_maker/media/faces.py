@@ -115,6 +115,37 @@ def write_face_reference(
         return False
 
 
+def references_for_frame(
+    people: list[tuple[str, float]],
+    available: set[str],
+    appearances: dict[str, int],
+    limit: int,
+) -> list[str]:
+    """Which cast members' faces ride along when this frame is styled.
+
+    ``people`` is ``(cast id, x)`` for everyone tagged in the frame,
+    ``available`` the ids that actually have a reference on disk, and
+    ``appearances`` how many frames of the whole movie each id appears in.
+
+    The cap matters: references compete with the photograph for the model's
+    attention and add real weight to the request, so a nine-person frame must
+    not attach nine portraits. When there are more candidates than the cap,
+    the ones kept are those who appear in the MOST frames — consistency is
+    worth most for the people the audience sees again and again, and least
+    for someone who passes through once. Ties break left-to-right, then by
+    id, so the choice is stable across runs (an unstable choice would make
+    every frame look perpetually out of date).
+
+    This is deliberately the ONE place that decides, called both when styling
+    a frame and when asking whether a styled frame is out of date. Two
+    implementations of "which references apply here" would drift, and every
+    frame would then be reported stale forever.
+    """
+    candidates = [(cid, x) for cid, x in people if cid in available]
+    candidates.sort(key=lambda item: (-appearances.get(item[0], 0), item[1], item[0]))
+    return [cid for cid, _ in candidates[: max(0, limit)]]
+
+
 def pick_reference_frame(
     appearances: list[tuple[str, int]],
     preferred: str = "",

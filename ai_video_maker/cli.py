@@ -329,6 +329,24 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("-y", "--yes", action="store_true",
                     help="Skip the confirmation prompt.")
 
+    sp = command("faces",
+                 "Cut one canonical styled face per cast member out of the "
+                 "frames they appear in, using the positions from `tag`. "
+                 "These references are what later stylings of those people "
+                 "are matched against, so the same person stays the same "
+                 "character from frame to frame. Free — the faces come from "
+                 "images already styled. With --audit it also asks the vision "
+                 "model which frames draw someone as a DIFFERENT person "
+                 "(one paid call); nothing is ever re-styled for you.")
+    sp.add_argument("--audit", action="store_true",
+                    help="Also compare every tagged appearance of each cast "
+                         "member and report the frames where they are drawn "
+                         "as somebody else. One OpenAI vision call.")
+    sp.add_argument("--dry-run", action="store_true",
+                    help="Say what would be cut and compared, spending nothing.")
+    sp.add_argument("-y", "--yes", action="store_true",
+                    help="Skip the confirmation prompt for --audit.")
+
     sp = command("feedback",
                  "Tell the planner what a rendered clip got wrong (or right). "
                  "Two things then happen: a vision call WATCHES the clip "

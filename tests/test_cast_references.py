@@ -12,13 +12,22 @@ from pathlib import Path
 
 from PIL import Image
 
+from ai_video_maker.clients.openai_client import _coerce_face_audit
 from ai_video_maker.media.faces import (
     DEFAULT_CROP_FRACTION,
     pick_reference_frame,
     reference_crop_box,
+    references_for_frame,
     write_face_reference,
 )
-from ai_video_maker.models import Character, Frame, FramePerson, Storyboard
+from ai_video_maker.models import (
+    Character,
+    Frame,
+    FramePerson,
+    Storyboard,
+    outdated_reference_frames,
+    reference_fingerprint,
+)
 
 
 def _styled(workspace, name: str, size=(1920, 1080)) -> Path:
@@ -238,6 +247,317 @@ class TestBuildingTheSheet:
 
     def test_reading_a_sheet_that_was_never_built_is_empty(self, pipeline):
         assert pipeline.cast_reference_paths() == {}
+
+
+class TestWhichReferencesRideAlong:
+    """references_for_frame: the one place that decides, called twice.
+
+    Styling asks it what to attach; the staleness check asks it what SHOULD
+    be attached. Two implementations would drift and every frame would report
+    itself out of date forever, which is why this is a single function.
+    """
+
+    def test_only_people_with_a_reference_are_offered(self):
+        assert references_for_frame(
+            [("c1", 0.2), ("ghost", 0.8)], {"c1"}, {"c1": 3}, 4
+        ) == ["c1"]
+
+    def test_the_most_recurring_people_win_the_cap(self):
+        # Consistency is worth most for the face the audience keeps seeing.
+        people = [("rare", 0.1), ("often", 0.5), ("sometimes", 0.9)]
+        assert references_for_frame(
+            people, {"rare", "often", "sometimes"},
+            {"rare": 1, "often": 20, "sometimes": 7}, 2,
+        ) == ["often", "sometimes"]
+
+    def test_ties_break_left_to_right_then_by_id(self):
+        people = [("b", 0.9), ("a", 0.1)]
+        assert references_for_frame(
+            people, {"a", "b"}, {"a": 5, "b": 5}, 4
+        ) == ["a", "b"]
+
+    def test_the_cap_is_honoured(self):
+        people = [(f"c{i}", i / 10) for i in range(9)]
+        chosen = references_for_frame(
+            people, {p for p, _ in people}, {}, 3
+        )
+        assert len(chosen) == 3
+
+    def test_a_zero_cap_attaches_nothing(self):
+        assert references_for_frame([("c1", 0.5)], {"c1"}, {"c1": 2}, 0) == []
+
+
+class TestStylingIsAnchoredToTheCastFaces:
+    def _tagged_project(self, pipeline, workspace):
+        _styled(workspace, "a.png")
+        storyboard = _storyboard(
+            [_frame("a.png", [FramePerson(id="c1", x=0.4, y=0.4)])],
+            [Character(id="c1", epithet="the bald man")],
+        )
+        pipeline.build_cast_references(storyboard)
+        return storyboard
+
+    def test_a_tagged_frame_plans_its_references(self, pipeline, workspace):
+        storyboard = self._tagged_project(pipeline, workspace)
+        plan = pipeline.style_reference_plan(storyboard)
+        paths, stamp = plan["styled_images/a.png"]
+        assert [p.name for p in paths] == ["c1.png"]
+        assert stamp
+
+    def test_an_untagged_project_plans_nothing(self, pipeline, workspace):
+        _styled(workspace, "a.png")
+        storyboard = _storyboard([_frame("a.png", [])], [])
+        assert pipeline.style_reference_plan(storyboard) == {}
+
+    def test_no_saved_storyboard_means_no_references(self, pipeline):
+        # The first styling of a project: nothing is tagged yet, so this must
+        # behave exactly as it did before the feature existed.
+        assert pipeline.style_reference_plan(None) == {}
+
+    def test_the_feature_switch_reaches_the_plan(self, pipeline, workspace):
+        storyboard = self._tagged_project(pipeline, workspace)
+        pipeline.config.cast_references_enabled = False
+        assert pipeline.style_reference_plan(storyboard) == {}
+
+    def test_the_references_are_handed_to_the_image_call(
+        self, make_pipeline, workspace, monkeypatch
+    ):
+        pipeline = make_pipeline()
+        storyboard = self._tagged_project(pipeline, workspace)
+        seen: dict = {}
+
+        def _fake(src, prompt, dst, references=None):
+            seen["references"] = references
+            dst.write_bytes(b"styled")
+
+        pipeline.__dict__["openai"] = type(
+            "F", (), {"style_image": staticmethod(_fake)}
+        )()
+        monkeypatch.setattr(
+            "ai_video_maker.runner.verify_dimensions", lambda *a, **kw: True
+        )
+        source = workspace.input_images_dir / "a.jpg"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b"x")
+        (workspace.styled_images_dir / "a.png").unlink()
+
+        pipeline._style_images(
+            [source], {}, None, pipeline.style_reference_plan(storyboard)
+        )
+        assert seen["references"] and seen["references"][0].name == "c1.png"
+
+    def test_a_frame_styled_without_references_is_never_stamped(
+        self, make_pipeline, workspace, monkeypatch
+    ):
+        pipeline = make_pipeline()
+        monkeypatch.setattr(
+            "ai_video_maker.runner.verify_dimensions", lambda *a, **kw: True
+        )
+        pipeline.__dict__["openai"] = type("F", (), {
+            "style_image": staticmethod(
+                lambda src, prompt, dst, references=None: dst.write_bytes(b"s")
+            )
+        })()
+        source = workspace.input_images_dir / "z.jpg"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b"x")
+        pipeline._style_images([source], {})
+        assert pipeline._styled_ref_stamps == {}
+
+
+class TestOutdatedStylingIsVisibleButNeverFixed:
+    """Re-styling costs image credits, so drift is a badge, not an action."""
+
+    def _frame_with_stamp(self, stamp: str) -> Frame:
+        frame = _frame("a.png", [FramePerson(id="c1", x=0.4, y=0.4)])
+        frame.styled_refs = stamp
+        return frame
+
+    def test_a_frame_whose_references_moved_is_listed(self):
+        sb = _storyboard([self._frame_with_stamp("old")], [])
+        assert outdated_reference_frames(
+            sb, {"styled_images/a.png": "new"}
+        ) == ["styled_images/a.png"]
+
+    def test_a_frame_whose_references_match_is_quiet(self):
+        sb = _storyboard([self._frame_with_stamp("same")], [])
+        assert outdated_reference_frames(sb, {"styled_images/a.png": "same"}) == []
+
+    def test_a_frame_styled_before_references_existed_stays_quiet(self):
+        # THE silence rule. Every frame of every project that predates this
+        # carries an empty stamp, and an empty stamp is the truth ("styled
+        # from no references"), not a demand to spend money re-styling.
+        sb = _storyboard([self._frame_with_stamp("")], [])
+        assert outdated_reference_frames(sb, {"styled_images/a.png": "new"}) == []
+
+    def test_a_frame_the_plan_says_nothing_about_stays_quiet(self):
+        # Everyone in it was untagged since, so there is no reference set to
+        # disagree with — that is a tagging question, not a styling one.
+        sb = _storyboard([self._frame_with_stamp("old")], [])
+        assert outdated_reference_frames(sb, {}) == []
+
+    def test_the_fingerprint_ignores_ordering(self):
+        a = reference_fingerprint([("c1", "aaa"), ("c2", "bbb")])
+        b = reference_fingerprint([("c2", "bbb"), ("c1", "aaa")])
+        assert a == b
+
+    def test_the_fingerprint_notices_a_recut_reference(self):
+        before = reference_fingerprint([("c1", "aaa")])
+        after = reference_fingerprint([("c1", "zzz")])
+        assert before != after
+
+    def test_the_fingerprint_notices_a_person_joining_the_frame(self):
+        alone = reference_fingerprint([("c1", "aaa")])
+        pair = reference_fingerprint([("c1", "aaa"), ("c2", "bbb")])
+        assert alone != pair
+
+
+class TestTheReferenceInstructionProtectsTheScene:
+    """A reference must lend a FACE and nothing else.
+
+    The references are frames of this same movie, full of plausible scenery,
+    clothing and poses belonging to a different moment — and the edit
+    endpoint will happily blend them in. These photographs are also taken
+    years apart, so a reference that overruled the photograph on clothing
+    would dress someone in an outfit they are not wearing in this scene.
+    """
+
+    def test_the_photograph_stays_the_authority(self):
+        from ai_video_maker.clients.openai_client import (
+            _STYLE_REFERENCE_INSTRUCTION as text,
+        )
+        assert "the photograph always" in text and "wins" in text
+        assert "Never copy a reference's clothing" in text
+        assert "never add a person who appears only in a reference" in text
+
+    def test_identity_features_are_named(self):
+        from ai_video_maker.clients.openai_client import (
+            _STYLE_REFERENCE_INSTRUCTION as text,
+        )
+        for feature in ("hairline", "eyewear", "facial hair", "age band"):
+            assert feature in text
+
+
+class TestTheFaceAuditIsConservative:
+    """_coerce_face_audit: what survives a model's answer.
+
+    The list this produces invites somebody to spend an image credit per
+    frame on it, so an unverifiable answer is dropped rather than repaired.
+    """
+
+    ALLOWED = {"c1": {"a.png", "b.png", "c.png"}, "c2": {"d.png", "e.png"}}
+
+    def test_a_clean_finding_survives(self):
+        out = _coerce_face_audit(
+            {"characters": [
+                {"id": "c1", "odd_labels": ["b.png"], "note": "hair added"}
+            ]},
+            self.ALLOWED,
+        )
+        assert out == {"c1": {"odd_frames": ["b.png"], "note": "hair added"}}
+
+    def test_a_character_nobody_asked_about_is_dropped(self):
+        assert _coerce_face_audit(
+            {"characters": [{"id": "ghost", "odd_labels": ["x"], "note": "n"}]},
+            self.ALLOWED,
+        ) == {}
+
+    def test_a_label_from_another_character_is_dropped(self):
+        out = _coerce_face_audit(
+            {"characters": [
+                {"id": "c1", "odd_labels": ["d.png", "b.png"], "note": ""}
+            ]},
+            self.ALLOWED,
+        )
+        assert out["c1"]["odd_frames"] == ["b.png"]
+
+    def test_duplicate_labels_collapse(self):
+        out = _coerce_face_audit(
+            {"characters": [
+                {"id": "c1", "odd_labels": ["b.png", "b.png"], "note": ""}
+            ]},
+            self.ALLOWED,
+        )
+        assert out["c1"]["odd_frames"] == ["b.png"]
+
+    def test_flagging_everything_is_not_a_finding(self):
+        # "All three crops are the odd one out" says nothing about which
+        # frame to redo — it means the character never looked consistent,
+        # and the note is the useful half of that.
+        out = _coerce_face_audit(
+            {"characters": [{
+                "id": "c1",
+                "odd_labels": ["a.png", "b.png", "c.png"],
+                "note": "inconsistent throughout",
+            }]},
+            self.ALLOWED,
+        )
+        assert out["c1"]["odd_frames"] == []
+        assert out["c1"]["note"] == "inconsistent throughout"
+
+    def test_a_clean_character_is_simply_absent(self):
+        assert _coerce_face_audit(
+            {"characters": [{"id": "c1", "odd_labels": [], "note": ""}]},
+            self.ALLOWED,
+        ) == {}
+
+    def test_junk_is_survivable(self):
+        assert _coerce_face_audit({}, self.ALLOWED) == {}
+        assert _coerce_face_audit({"characters": ["nonsense"]}, self.ALLOWED) == {}
+        assert _coerce_face_audit({"characters": None}, self.ALLOWED) == {}
+
+
+class TestAuditPlumbing:
+    def test_only_people_seen_twice_are_worth_comparing(
+        self, pipeline, workspace, tmp_path
+    ):
+        # Consistency is a comparison; one appearance cannot disagree.
+        _styled(workspace, "a.png")
+        _styled(workspace, "b.png")
+        storyboard = _storyboard(
+            [
+                _frame("a.png", [FramePerson(id="c1", x=0.3, y=0.4),
+                                 FramePerson(id="c2", x=0.7, y=0.4)]),
+                _frame("b.png", [FramePerson(id="c1", x=0.5, y=0.4)]),
+            ],
+            [Character(id="c1", epithet="the bald man"),
+             Character(id="c2", epithet="the taller boy")],
+        )
+        groups = pipeline._face_audit_groups(storyboard, tmp_path)
+        assert [cid for cid, _, _ in groups] == ["c1"]
+        assert len(groups[0][2]) == 2
+
+    def test_an_unstyled_frame_contributes_nothing(
+        self, pipeline, workspace, tmp_path
+    ):
+        _styled(workspace, "a.png")
+        storyboard = _storyboard(
+            [
+                _frame("a.png", [FramePerson(id="c1", x=0.3, y=0.4)]),
+                _frame("gone.png", [FramePerson(id="c1", x=0.3, y=0.4)]),
+            ],
+            [Character(id="c1", epithet="the bald man")],
+        )
+        assert pipeline._face_audit_groups(storyboard, tmp_path) == []
+
+    def test_a_missing_report_reads_as_empty(self, pipeline):
+        assert pipeline.read_face_audit()["characters"] == {}
+
+    def test_a_corrupt_report_reads_as_empty(self, pipeline, workspace):
+        workspace.face_audit_file.parent.mkdir(parents=True, exist_ok=True)
+        workspace.face_audit_file.write_text("{not json", encoding="utf-8")
+        assert pipeline.read_face_audit()["characters"] == {}
+
+    def test_a_saved_report_round_trips(self, pipeline, workspace):
+        workspace.face_audit_file.parent.mkdir(parents=True, exist_ok=True)
+        workspace.face_audit_file.write_text(
+            '{"checked": 2, "characters": {"c1": {"odd_frames": ["b.png"], '
+            '"note": "n"}}, "ran_at": "now"}',
+            encoding="utf-8",
+        )
+        report = pipeline.read_face_audit()
+        assert report["checked"] == 2
+        assert report["characters"]["c1"]["odd_frames"] == ["b.png"]
 
 
 def test_the_default_crop_is_a_sane_fraction():

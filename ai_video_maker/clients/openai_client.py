@@ -349,6 +349,90 @@ _IDENTIFY_PEOPLE_SCHEMA = {
 }
 
 
+_FACE_AUDIT_SYSTEM = (
+    "You check whether one animated character is drawn as the SAME PERSON "
+    "across a film. You are given several face crops of one character, each "
+    "labelled, all cut from frames of the same movie and all rendered in the "
+    "same cartoon style. Decide which of them, if any, do not look like the "
+    "same individual as the majority of the others.\n\n"
+    "Judge IDENTITY, not photography. These crops come from photographs "
+    "taken over months or years and then stylised, so the following are "
+    "NORMAL and are never on their own a reason to flag a crop: a different "
+    "expression, a different angle or head tilt, different lighting or "
+    "colour grading, different clothing, a different background, a haircut "
+    "or a beard trimmed, being older or younger, softer or sharper "
+    "rendering, and a smaller or blurrier crop.\n\n"
+    "Flag a crop only when the underlying PERSON looks wrong — the face "
+    "shape, the spacing and set of the eyes, the nose, the jaw or chin, the "
+    "hairline (including hair appearing on a bald head, which is a known "
+    "failure of the image model), the shape or colour of glasses, or an age "
+    "band that cannot be the same person at all. When in doubt, DO NOT "
+    "FLAG: this list is shown to a human who pays real money to redraw each "
+    "frame on it, so a false alarm costs them, while a missed one costs "
+    "nothing they were not already living with. Flagging everything is the "
+    "worst possible answer, and so is flagging the majority — if most crops "
+    "disagree with each other the honest answer is an empty list and a note "
+    "saying the character is inconsistent throughout."
+)
+
+_FACE_AUDIT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "characters": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "odd_labels": {"type": "array", "items": {"type": "string"}},
+                    "note": {"type": "string"},
+                },
+                "required": ["id", "odd_labels", "note"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["characters"],
+    "additionalProperties": False,
+}
+
+
+def _coerce_face_audit(
+    data: dict[str, Any], allowed: dict[str, set[str]]
+) -> dict[str, dict[str, Any]]:
+    """Normalise a face-audit response, dropping anything unverifiable.
+
+    ``allowed`` maps a cast id to the labels that were actually SENT for it.
+    Everything else is discarded: an id nobody asked about, a label from a
+    different character, a repeated label. The output drives a badge that
+    invites someone to spend image credits, so an answer about a frame that
+    was never shown is worse than no answer.
+
+    A character the model flags ENTIRELY is dropped back to "no odd frames,
+    keep the note". Naming every crop as the odd one out is not a finding
+    about which frame to redo — it means the character never looked
+    consistent, and the note is the useful part of that.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for entry in (data.get("characters") or []):
+        if not isinstance(entry, dict):
+            continue
+        cid = str(entry.get("id") or "")
+        if cid not in allowed:
+            continue
+        seen: list[str] = []
+        for label in (entry.get("odd_labels") or []):
+            text = str(label)
+            if text in allowed[cid] and text not in seen:
+                seen.append(text)
+        if len(seen) >= len(allowed[cid]):
+            seen = []
+        note = str(entry.get("note") or "").strip()
+        if seen or note:
+            out[cid] = {"odd_frames": seen, "note": note}
+    return out
+
+
 def _coerce_frame_people(
     data: dict[str, Any], count: int, known_ids: set[str]
 ) -> list[list[dict[str, Any]]]:
@@ -956,6 +1040,41 @@ _MODE_A_SYSTEM = (
     "ambient sound and sound effects for that clip (e.g. 'waves lapping, gulls "
     "calling, soft wind'). Real on-screen/world sounds only — no music, no "
     "speech, no narration."
+)
+
+# Appended to the style prompt when canonical cast faces ride along with the
+# photo (see media/faces.py and OpenAIClient.style_image).
+#
+# Every sentence here exists to stop a reference from leaking CONTENT. The
+# references are frames of this same movie, so they are full of plausible
+# scenery, clothing and poses that belong to a DIFFERENT moment — and the
+# edit endpoint is perfectly willing to blend them in. What is being borrowed
+# is a face and nothing else; the photograph remains the only authority on
+# what is happening, who is present, and what they are wearing. The last
+# clause matters most: a person's outfit changes between photos taken years
+# apart, and a reference that overruled the photograph there would dress
+# someone in clothes they are not wearing in this scene.
+_STYLE_REFERENCE_INSTRUCTION = (
+    " CHARACTER REFERENCES: the FIRST image is the photograph to convert, and "
+    "it alone decides the scene, the people present, their poses, their "
+    "clothing and the composition. Every image AFTER the first is a reference "
+    "portrait — the established cartoon face of one person in this film, "
+    "already drawn in this exact style. They are NOT part of this scene. "
+    "Where someone in the photograph is one of the people shown in a "
+    "reference, draw that person's face to MATCH their reference: the same "
+    "facial structure and proportions, the same hairline and hair (including "
+    "its absence), the same facial hair, the same eyewear shape and colour, "
+    "the same apparent age band — so this person is recognisably the SAME "
+    "character they are in every other frame of the film, not a fresh "
+    "interpretation of them. Never copy a reference's clothing, background, "
+    "pose, expression, lighting or framing into this frame; never add a "
+    "person who appears only in a reference and not in the photograph; never "
+    "drop or move a person who IS in the photograph because no reference "
+    "shows them. Where the photograph and a reference disagree about what "
+    "someone is WEARING, DOING or WHERE THEY ARE, the photograph always "
+    "wins — these photographs were taken years apart and the same person "
+    "changes clothes, hairstyle and age between them. Match the person, not "
+    "the picture."
 )
 
 # Small numbers as words, for prompts. The thresholds are config now, so the
@@ -1903,20 +2022,53 @@ class OpenAIClient:
         )
 
     # --- Mode A: edit an existing image into the target style --------------- #
-    def style_image(self, src: Path, style_prompt: str, dst: Path) -> None:
-        """Edit `src` into the styled look and write a normalised PNG to `dst`."""
+    def style_image(
+        self,
+        src: Path,
+        style_prompt: str,
+        dst: Path,
+        references: Optional[list[Path]] = None,
+    ) -> None:
+        """Edit `src` into the styled look and write a normalised PNG to `dst`.
+
+        ``references`` are canonical styled faces of people who appear in this
+        photo (see media/faces.py). Without them each frame is an independent
+        draw from "cartoon this person": the prompt anchors the output to the
+        SOURCE PHOTO, and since a family album spans years — different age,
+        hair, light, angle — faithfully honouring each photo yields a
+        different-looking cartoon each time. That is correct per image and
+        wrong per movie. Passing the faces already drawn for these people
+        gives every frame the same target to hit.
+        """
         client = self._ensure_client()
         # Never upload the customer's file as-is: phone originals (iPhone MPO
         # HDR containers, unbaked EXIF rotation, 24MP frames) get rejected by
         # the image API as invalid_image_file. Decode once, send clean PNG.
         upload = prepare_image_for_upload(src)
+        reference_uploads = [
+            (f"reference_{i}.png", prepare_image_for_upload(path))
+            for i, path in enumerate(references or [], start=1)
+        ]
+        if reference_uploads:
+            style_prompt += _STYLE_REFERENCE_INSTRUCTION
 
         def _call(prompt: str) -> bytes:
             image = io.BytesIO(upload)
             image.name = f"{src.stem}.png"  # the SDK infers the mime type from this
+            # A single image stays a single image: the edit endpoint accepts
+            # either, and keeping the un-referenced call byte-identical to
+            # what it has always been means this feature cannot change how an
+            # untagged project styles.
+            payload: Any = image
+            if reference_uploads:
+                payload = [image]
+                for name, data in reference_uploads:
+                    ref = io.BytesIO(data)
+                    ref.name = name
+                    payload.append(ref)
             resp = client.images.edit(
                 model=self.config.openai_image_model,
-                image=image,
+                image=payload,
                 prompt=prompt,
                 size=self._IMAGE_API_SIZE,
             )
@@ -1990,6 +2142,75 @@ class OpenAIClient:
             return self._retry(
                 lambda: call(f"{prompt}\n\n{_DEBRAND_INSTRUCTION}"), description
             )
+
+    def review_face_consistency(
+        self, groups: list[tuple[str, str, list[tuple[str, Path]]]]
+    ) -> dict[str, dict[str, Any]]:
+        """Find frames where a cast member is drawn as somebody else.
+
+        ``groups`` is ``(cast id, epithet, [(frame label, face crop)])`` — the
+        crops are cut locally and for free from frames already styled, so the
+        only cost here is the one vision call.
+
+        Returns ``{cast id: {"odd_frames": [label], "note": str}}`` for the
+        characters with something to report. Everyone else is absent, which is
+        the answer this is usually hoping for.
+
+        ONE call for the whole cast rather than one per person: the crops are
+        sent at low detail and a per-character call would multiply the fixed
+        cost of the instructions by the size of the cast — and a 29-entry
+        cast is a real shape here, not a hypothetical.
+        """
+        groups = [g for g in groups if len(g[2]) >= 2]
+        if not groups:
+            return {}
+        client = self._ensure_client()
+
+        content: list[dict[str, Any]] = [{
+            "type": "text",
+            "text": (
+                "Here are face crops of "
+                f"{len(groups)} character(s) from one animated film. For each "
+                "character, list the labels of any crops that do not look "
+                "like the same person as the rest, and add a one-sentence "
+                "note. A character who is drawn consistently should come "
+                "back with an empty list — that is the expected answer, not "
+                "a failure to find anything."
+            ),
+        }]
+        allowed: dict[str, set[str]] = {}
+        for cid, epithet, crops in groups:
+            allowed[cid] = {label for label, _ in crops}
+            content.append({
+                "type": "text",
+                "text": f"\nCharacter id \"{cid}\" — {epithet}:",
+            })
+            for label, path in crops:
+                content.append({"type": "text", "text": f"Label \"{label}\":"})
+                content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": encode_image_data_url(path, max_edge=_VISION_MAX_EDGE),
+                        "detail": "low",
+                    },
+                })
+
+        def _call() -> str:
+            resp = client.chat.completions.create(
+                model=self.config.openai_text_model,
+                messages=[
+                    {"role": "system", "content": _FACE_AUDIT_SYSTEM},
+                    {"role": "user", "content": content},
+                ],
+                response_format=_json_schema_format(
+                    "face_audit", _FACE_AUDIT_SCHEMA
+                ),
+            )
+            self._note_text_usage(resp, "review_face_consistency")
+            return resp.choices[0].message.content or "{}"
+
+        raw = self._retry(_call, "OpenAI review_face_consistency")
+        return _coerce_face_audit(json.loads(raw), allowed)
 
     def reword_motion_prompt(self, prompt: str) -> str:
         """Rewrite a clip motion prompt that a video content filter rejected.
