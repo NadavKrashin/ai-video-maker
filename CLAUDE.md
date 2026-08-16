@@ -656,6 +656,26 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   `v=` cache-buster (`fileUrl`'s 4th argument, bumped by the panel's poll
   and once more when a job settles); without it a regenerated frame kept
   showing its previous version and looked like the button did nothing.
+- DELETING A PROJECT IS THE ONE IRREVERSIBLE PANEL ACTION (user request,
+  2026-08-16). `DELETE /api/projects/<n>?confirm=<n>` + a red button at the
+  BOTTOM of the project page (deliberately far from the step tiles).
+  Everything else in the panel can be redone by spending credits again; this
+  destroys paid styled frames and clips, `projects/` has no backup, and the
+  local archive of a delivered movie lives in there too. Four server guards,
+  all of which must stay: `confirm` must repeat the project name (same "an
+  approval is for one exact name" rule as `publish_as`); a SYMLINK is
+  refused rather than followed (the dev tree symlinks `projects/` at the
+  production checkout — deleting through one is how 606 MB went missing);
+  reserved names (`_learning`) are refused via `is_project_dir`; and a
+  project with a queued/running/cancelling job is a 409. `_project_contents`
+  counts what is inside BEFORE the rmtree, for the response and a warning
+  log — the only record left of work nothing can recover. The panel's
+  confirm modal lists those counts, warns separately when the order was
+  already DELIVERED, and requires the name to be TYPED (`typeToConfirm` in
+  ui.jsx's shared ConfirmModal) — reading a list is the right friction for
+  spending money, not for destroying a workspace full of it. Pinned by
+  tests/test_server_delete.py, which asserts what SURVIVES each refusal
+  rather than just the status code.
 - INGEST ONLY INGESTS (user call, 2026-08-14). The panel's order button was
   "Ingest + storyboard" and sent `storyboard: true`, so one click both
   downloaded the photos AND spent OpenAI credits styling/planning the whole

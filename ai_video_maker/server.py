@@ -33,6 +33,7 @@ import logging
 import os
 import queue
 import secrets
+import shutil
 import threading
 import time
 import uuid
@@ -221,6 +222,31 @@ def _outcome(pipeline: Pipeline) -> tuple[str, str, int]:
         f"{len(failures)} failed ({breakdown}). First error: {first}",
         len(failures),
     )
+
+
+def _project_contents(ws: Workspace) -> dict[str, int]:
+    """What a project holds, counted for a deletion's confirmation and log.
+
+    Deliberately counts the things that cost money or cannot be rebuilt —
+    styled frames and clips are paid API output, and a delivered movie's
+    local archive is the only copy of bytes a customer already has. Cheap
+    (a few directory listings), because it runs on the way to `rmtree` and
+    is the last chance to say what is about to be destroyed.
+    """
+    def _count(directory: Path, suffixes: tuple[str, ...]) -> int:
+        if not directory.is_dir():
+            return 0
+        return sum(1 for p in directory.iterdir()
+                   if p.is_file() and p.suffix.lower() in suffixes)
+
+    return {
+        "photos": _count(ws.input_images_dir, (".jpg", ".jpeg", ".png", ".webp",
+                                               ".heic", ".heif", ".gif", ".bmp")),
+        "styled frames": _count(ws.styled_images_dir, (".png", ".jpg", ".jpeg")),
+        "rendered clips": _count(ws.clips_dir, (".mp4",)),
+        "final movies": int(ws.final_video.is_file()),
+        "delivered copies": _count(ws.published_dir, (".mp4",)),
+    }
 
 
 def apply_in_flight(
@@ -892,6 +918,68 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
             )
         ws.mkdirs()
         return {"ok": True, "project": ws.root.name}
+
+    @app.delete("/api/projects/{name}", dependencies=guarded)
+    async def delete_project(name: str, confirm: str = "") -> dict[str, Any]:
+        """Delete a whole project workspace — photos, frames, clips, movie.
+
+        The most destructive thing this API can do, and unlike everything
+        else here it cannot be undone or re-earned cheaply: the styled frames
+        and rendered clips inside cost real API credits, `projects/` has no
+        backup, and a delivered movie's local archive lives in there too.
+        So it is guarded four ways:
+
+        * the name must be a valid, non-reserved project that exists;
+        * ``confirm`` must repeat that name exactly — the same "an approval
+          is for one exact name" rule publishing uses, so a stray DELETE
+          cannot take a workspace with it;
+        * a symlink is refused rather than followed (the dev tree symlinks
+          `projects/` at the production checkout — deleting THROUGH one is
+          how 606 MB went missing once already);
+        * a project with a queued or running job is refused, because
+          deleting the files under a running pipeline would leave a job
+          writing into a directory that no longer exists.
+
+        What was destroyed is counted first and logged, so the server log
+        keeps a record of a deletion nothing else can recover.
+        """
+        ws = _workspace(name)
+        project = ws.root.name
+        if confirm != project:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Deleting '{project}' needs confirm={project} — the "
+                    "request did not repeat the project name, so nothing was "
+                    "deleted."
+                ),
+            )
+        if ws.root.is_symlink() or not is_project_dir(ws.root):
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{project}' is not a deletable project directory.",
+            )
+        busy = [
+            j for j in jobs.list(project=project)
+            if j.state in ("queued", "running", "cancelling")
+        ]
+        if busy:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"'{project}' has a {busy[0].command} job {busy[0].state} "
+                    "— cancel it and wait for it to stop before deleting."
+                ),
+            )
+        contents = _project_contents(ws)
+        shutil.rmtree(ws.root)
+        logger.warning(
+            "DELETED project '%s' and everything in it: %s. This is not "
+            "recoverable — projects/ has no backup.",
+            project,
+            ", ".join(f"{n} {kind}" for kind, n in contents.items() if n) or "nothing",
+        )
+        return {"deleted": project, "contents": contents}
 
     @app.post("/api/projects/{name}/photos", dependencies=guarded)
     async def upload_photos(
