@@ -328,6 +328,21 @@ class TestOrderPhotosAreFoundHoweverTheyWereFiled:
         )
         assert client.list_order_assets(self.LEAF) == []
 
+    def test_that_404_is_not_logged_as_a_failure(self, monkeypatch, caplog):
+        """An order with no photos yet is normal, and must read as normal.
+
+        Absorbing the 404 by raising and catching it made the retry loop
+        announce "failed with a permanent error (no retry)" for every order
+        whose folder does not exist — on every panel refresh, for every such
+        order, burying the errors that matter.
+        """
+        client, _ = self._client(
+            monkeypatch, {}, not_found={"resources/by_asset_folder"}
+        )
+        with caplog.at_level("WARNING"):
+            assert client.list_order_assets(self.LEAF) == []
+        assert not [r for r in caplog.records if "permanent error" in r.message]
+
 
 class _FakeCloudinary:
     """A CloudinaryClient stand-in: records the upload, invents no network."""

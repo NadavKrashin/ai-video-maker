@@ -187,9 +187,27 @@ the `ADMIN_API_TOKEN` from `.env`:
   is in before anything is spent; the same button lives in the Render step.
   While a storyboard job runs, the Photos panel opens itself and fills in
   live — styled frames appear one by one as they come back, instead of only
-  once the whole run finishes.
-- **API**: order list, per-project status, storyboard read/edit, photos, a
-  music-bed upload (`POST`/`DELETE /api/projects/<name>/music` — the track is
+  once the whole run finishes. Each photo shows the **original beside its
+  styled frame**, because judging a likeness slip, a cropped head or an
+  invented face means comparing the two, not looking at the styled one alone.
+  **Jobs sit directly under the step tiles** — clicking a step is what creates
+  one, and its log is where you look when a run misbehaves.
+  **Photos that will be skipped** get their own alert: a storyboard frame
+  with no styled image on disk is BRIDGED over at render time — the movie
+  plays continuously and simply does not contain that photo, which is
+  invisible in the finished file. `missing_frames` in the snapshot, a
+  `status` line, and a panel alert naming each one.
+  **Deleting a project** (the red button at the bottom of a project page)
+  removes `projects/<name>/` and everything in it. It is the one action here
+  that destroys paid work with no way back, so the confirmation lists what is
+  inside by count and the project name has to be typed out; the API refuses
+  unless the request repeats the name as `?confirm=<name>`, refuses a symlink
+  rather than following it, and refuses while any job for that project is
+  queued or running.
+- **API**: order list, per-project status, storyboard read/edit, photos,
+  project deletion (`DELETE /api/projects/<name>?confirm=<name>` — the
+  `confirm` must repeat the name, and the response reports what was
+  destroyed), a music-bed upload (`POST`/`DELETE /api/projects/<name>/music` — the track is
   recognised by its CONTENT, so a file whose name has lost its `.mp3`, as
   phone uploads often have, is still accepted), the closing
   letter (`PUT /api/projects/<name>/letter` with `{"text": "…"}`; the text

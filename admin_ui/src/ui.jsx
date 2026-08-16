@@ -1,7 +1,7 @@
 // Shared pieces: toasts, status colors, cost badges, and the confirmation
 // modal every mutating action goes through.
-import React from 'react';
-import { Badge, Button, Group, List, Modal } from '@mantine/core';
+import React, { useEffect, useState } from 'react';
+import { Badge, Button, Group, List, Modal, TextInput } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 
 export const notify = (message, color = 'gray') =>
@@ -39,6 +39,14 @@ export const COST = {
 // says exactly what will happen and what it costs, then asks.
 export function ConfirmModal({ confirm, onConfirm, onCancel }) {
   const cost = COST[confirm?.cost || 'free'];
+  // `typeToConfirm` is for the handful of actions that destroy something no
+  // amount of money can bring back. Reading a list and clicking a red button
+  // is the right amount of friction for spending credits; it is not enough
+  // for deleting a workspace full of them, so the name has to be typed.
+  const [typed, setTyped] = useState('');
+  const needsTyping = Boolean(confirm?.typeToConfirm);
+  useEffect(() => { setTyped(''); }, [confirm?.typeToConfirm, confirm?.title]);
+  const ready = !needsTyping || typed.trim() === confirm.typeToConfirm;
   return (
     <Modal opened={Boolean(confirm)} onClose={onCancel} centered
       title={confirm?.title} size="lg">
@@ -48,9 +56,17 @@ export function ConfirmModal({ confirm, onConfirm, onCancel }) {
             {confirm.lines.map((line, i) => <List.Item key={i}>{line}</List.Item>)}
           </List>
           <Badge variant="light" color={cost.color} mb="lg">{cost.text}</Badge>
+          {needsTyping && (
+            <TextInput mb="md" value={typed} data-autofocus
+              onChange={(e) => setTyped(e.currentTarget.value)}
+              label={`Type ${confirm.typeToConfirm} to confirm`}
+              description="This cannot be undone, so it has to be typed out."
+              placeholder={confirm.typeToConfirm} />
+          )}
           <Group justify="flex-end">
             <Button variant="default" onClick={onCancel}>Cancel</Button>
-            <Button color={confirm.danger ? 'red' : 'orange'} onClick={onConfirm}>
+            <Button color={confirm.danger ? 'red' : 'orange'} disabled={!ready}
+              onClick={onConfirm}>
               {confirm.label || 'Confirm'}
             </Button>
           </Group>

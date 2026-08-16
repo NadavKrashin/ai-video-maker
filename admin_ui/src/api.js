@@ -39,6 +39,12 @@ export const api = {
   createProject: (name) =>
     request('/api/projects', { method: 'POST', body: JSON.stringify({ name }) }),
   project: (name) => request(`/api/projects/${encodeURIComponent(name)}`),
+  // The name is repeated as `confirm` on purpose: the server refuses a
+  // delete that does not name its target, so a stray call cannot take a
+  // whole workspace (photos, paid frames and clips) with it.
+  deleteProject: (name) =>
+    request(`/api/projects/${encodeURIComponent(name)}`
+      + `?confirm=${encodeURIComponent(name)}`, { method: 'DELETE' }),
   uploadPhotos: (name, files) => {
     const fd = new FormData();
     for (const f of files) fd.append('files', f, f.name);

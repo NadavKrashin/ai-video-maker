@@ -81,6 +81,41 @@ class TestBridgePairs:
         assert len(p._bridge_pairs(frames)) == 1
 
 
+class TestBridgingIsAttributedAndVisible:
+    """A bridged frame means a photo the customer paid for is not in the movie.
+
+    The warning used to name neither the project nor the frames, and it fired
+    from `snapshot()` — which runs for EVERY project on every panel poll. One
+    landed in the middle of an unrelated project's styling run and read as if
+    it belonged to it.
+    """
+
+    def _frames(self, workspace, ids):
+        return [workspace.styled_images_dir / f"{i:03d}_styled.png" for i in ids]
+
+    def test_the_warning_names_the_project_and_the_frames(
+        self, pipeline, workspace, caplog
+    ):
+        _write_frames(workspace, [1, 3])
+        with caplog.at_level("WARNING"):
+            pipeline._bridge_pairs(self._frames(workspace, (1, 2, 3)))
+        logged = "\n".join(r.getMessage() for r in caplog.records)
+        assert workspace.root.name in logged
+        assert "002_styled.png" in logged
+
+    def test_reading_status_says_nothing(self, pipeline, workspace, caplog):
+        _write_frames(workspace, [1, 3])
+        with caplog.at_level("WARNING"):
+            pipeline._bridge_pairs(self._frames(workspace, (1, 2, 3)), quiet=True)
+        assert not caplog.records
+
+    def test_nothing_missing_is_silent(self, pipeline, workspace, caplog):
+        _write_frames(workspace, [1, 2])
+        with caplog.at_level("WARNING"):
+            pipeline._bridge_pairs(self._frames(workspace, (1, 2)))
+        assert not caplog.records
+
+
 class TestCancellation:
     """Cooperative cancel: finish the in-flight item, skip the rest, raise."""
 
@@ -1132,6 +1167,28 @@ class TestResolveMusicFile:
         # Nothing to generate from any more: the movie is simply built silent.
         p = make_pipeline()
         assert p._resolve_music_file() is None
+
+
+class TestSnapshotMissingFrames:
+    """A skipped photo is a photo the customer paid for and will not see.
+
+    Render bridges over a frame with no styled image, so the movie plays
+    continuously and simply does not contain it — invisible in the finished
+    file, and previously invisible everywhere except one log line.
+    """
+
+    def test_a_frame_with_no_styled_image_is_reported(self, pipeline, workspace):
+        _write_frames(workspace, [1, 3])  # frame 2 never styled
+        _storyboard(workspace, 3).save(workspace.default_storyboard_json)
+        assert pipeline.snapshot()["missing_frames"] == ["002_styled.png"]
+
+    def test_a_complete_storyboard_reports_none(self, pipeline, workspace):
+        _write_frames(workspace, [1, 2, 3])
+        _storyboard(workspace, 3).save(workspace.default_storyboard_json)
+        assert pipeline.snapshot()["missing_frames"] == []
+
+    def test_no_storyboard_is_not_a_pile_of_missing_frames(self, pipeline):
+        assert pipeline.snapshot()["missing_frames"] == []
 
 
 class TestSnapshotMusic:

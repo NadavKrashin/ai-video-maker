@@ -1799,6 +1799,51 @@ export default function ProjectDetail({ name, onBack }) {
     catch (e) { notify(`Log failed: ${e.message}`, 'red'); }
   };
 
+  // Deleting the whole workspace. Everything else in this panel can be
+  // redone by spending money again; this cannot be undone at all, so the
+  // modal lists what is inside by count and makes the name be typed out.
+  const askDelete = () => {
+    const counts = [
+      [inputImages.length, 'photo'],
+      [styledImages.length, 'styled frame'],
+      [(snap.clips || []).filter((c) => c.rendered).length, 'rendered clip'],
+      [snap.final_video ? 1 : 0, 'finished movie'],
+      [info.published.count || 0, 'delivered copy']
+    ].filter(([n]) => n > 0)
+      .map(([n, word]) => `${n} ${word}${n === 1 ? '' : 's'}`);
+    ask({
+      title: `Delete the project “${name}” for good?`,
+      danger: true,
+      label: 'Delete this project',
+      typeToConfirm: name,
+      lines: [
+        `Deletes projects/${name}/ and everything in it: `
+          + `${counts.join(', ') || 'an empty workspace'}.`,
+        'The styled frames and clips in there were paid for — deleting them '
+          + 'means paying again to get them back.',
+        ...(info.published.count
+          ? ['This order has already been DELIVERED. The movie stays in the '
+             + "customer's Cloudinary folder, but the local copy of exactly "
+             + 'what they received is destroyed.']
+          : []),
+        'There is no backup and no undo.'
+      ],
+      action: deleteProject
+    });
+  };
+
+  const deleteProject = async () => {
+    setBusyAction('delete');
+    try {
+      const res = await api.deleteProject(name);
+      notify(`Project "${res.deleted}" deleted.`, 'green');
+      onBack();
+    } catch (e) {
+      notify(`Delete failed: ${e.message}`, 'red');
+      setBusyAction('');
+    }
+  };
+
   const cancelJob = async (jobId) => {
     setBusyAction(`cancel ${jobId}`);
     try {
@@ -1906,7 +1951,44 @@ export default function ProjectDetail({ name, onBack }) {
         )}
       </Card>
 
+      {/* Jobs sit directly under the step tiles: clicking a step is what
+          creates one, and its log is where you look when a run misbehaves.
+          Down at the bottom of the page it meant scrolling past everything
+          to find out what the thing you just started is doing. */}
+      {(snap.jobs || []).length > 0 && (
+        <Card withBorder padding="md">
+          <Text fw={600} mb={4}>Jobs</Text>
+          {(snap.jobs || []).map((j) => (
+            <JobRow key={j.id} job={j} onShowLog={showLog} onCancel={cancelJob}
+              cancelBusy={busyAction === `cancel ${j.id}`} />
+          ))}
+        </Card>
+      )}
+
       <SpendCard project={name} cost={snap.cost} />
+
+      {/* Photos the storyboard plans for that have no styled frame. Render
+          BRIDGES over them — the movie stays continuous and simply does not
+          contain them, which is invisible in the finished file. A customer
+          paid for those photos, so this cannot be a log line. */}
+      {(snap.missing_frames || []).length > 0 && (
+        <Alert color="orange" variant="light"
+          title={`${snap.missing_frames.length} photo(s) will be skipped — they have no styled frame`}>
+          <Text size="sm">
+            {snap.missing_frames.slice(0, 12).join(', ')}
+            {snap.missing_frames.length > 12
+              ? ` …and ${snap.missing_frames.length - 12} more` : ''}
+          </Text>
+          <Text size="xs" c="dimmed" mt={4}>
+            The clips around each one are joined directly, so the movie plays
+            continuously — but these photos do not appear in it at all. Usually
+            the styler failed on them (the content filter blocks the odd family
+            photo); “Regenerate image” on the photo retries just that one. If a
+            name here is not one of your photos, the storyboard is out of step
+            with the styled frames on disk — re-run Storyboard to reconcile it.
+          </Text>
+        </Alert>
+      )}
 
       {/* The last run's failures. The pipeline survives individual failures
           on purpose, so a command can finish having produced nothing — this
@@ -2040,7 +2122,8 @@ export default function ProjectDetail({ name, onBack }) {
           <Text size="xs" c="dimmed" style={{ flex: 1 }}>
             {styling
               ? 'Frames appear here as they come back from the styler.'
-              : 'Movie order follows the filenames (sorted). Styled versions shown when available.'}
+              : 'Movie order follows the filenames (sorted). Each photo shows '
+                + 'the original beside its styled frame.'}
           </Text>
           <input ref={fileInputRef} type="file" accept="image/*" multiple
             style={{ display: 'none' }} onChange={(e) => upload(e.target.files)} />
@@ -2056,11 +2139,29 @@ export default function ProjectDetail({ name, onBack }) {
               const styledName = img.replace(/\.[^.]+$/, '.png');
               const styled = styledImages.includes(styledName);
               return (
-                <Stack key={img} gap={2} w={120}>
-                  <Image w={120} radius="sm" alt={img}
-                    style={styling && !styled ? { opacity: 0.45 } : undefined}
-                    src={fileUrl(name, styled ? 'styled' : 'input',
-                      styled ? styledName : img, styled ? mediaV : 0)} />
+                <Stack key={img} gap={2} w={styled ? 244 : 120}>
+                  {/* Original AND styled, side by side. The styled frame used
+                      to REPLACE the original here, which is what the video
+                      model sees but not what you need to judge it: telling a
+                      likeness slip, a cropped head or an invented face apart
+                      from the source needs both in one glance. */}
+                  <Group gap={4} wrap="nowrap" align="flex-start">
+                    <Stack gap={0}>
+                      <Image w={120} radius="sm" alt={`${img} (original)`}
+                        style={styling && !styled ? { opacity: 0.45 } : undefined}
+                        src={fileUrl(name, 'input', img, 0)} />
+                      {styled && (
+                        <Text size="10px" c="dimmed" ta="center">original</Text>
+                      )}
+                    </Stack>
+                    {styled && (
+                      <Stack gap={0}>
+                        <Image w={120} radius="sm" alt={`${styledName} (styled)`}
+                          src={fileUrl(name, 'styled', styledName, mediaV)} />
+                        <Text size="10px" c="dimmed" ta="center">styled</Text>
+                      </Stack>
+                    )}
+                  </Group>
                   <Group justify="space-between" gap={4} wrap="nowrap">
                     <Text size="xs" c="dimmed" truncate title={img}>
                       {styling && !styled ? 'styling…' : img}
@@ -2089,16 +2190,6 @@ export default function ProjectDetail({ name, onBack }) {
           </Group>
         )}
       </Card>
-
-      {(snap.jobs || []).length > 0 && (
-        <Card withBorder padding="md">
-          <Text fw={600} mb={4}>Jobs</Text>
-          {(snap.jobs || []).map((j) => (
-            <JobRow key={j.id} job={j} onShowLog={showLog} onCancel={cancelJob}
-              cancelBusy={busyAction === `cancel ${j.id}`} />
-          ))}
-        </Card>
-      )}
 
       {storyboard && (
         <>
@@ -2310,6 +2401,29 @@ export default function ProjectDetail({ name, onBack }) {
       {snap.storyboard_error && (
         <Text c="red" size="sm">Storyboard unreadable: {snap.storyboard_error}</Text>
       )}
+
+      {/* Deliberately last and deliberately plain: the one action here that
+          destroys paid work with no way back. Kept away from the step tiles
+          so it is never a neighbour of a button someone is clicking fast. */}
+      <Card withBorder padding="md" mt="xl">
+        <Group justify="space-between" align="center">
+          <div>
+            <Text fw={600} size="sm">Delete this project</Text>
+            <Text size="xs" c="dimmed">
+              Removes projects/{name}/ and everything in it — photos, styled
+              frames, rendered clips and the finished movie. Permanent, and
+              the paid work inside cannot be recovered.
+            </Text>
+          </div>
+          <Button color="red" variant="light" disabled={locked}
+            loading={busyAction === 'delete'} onClick={askDelete}
+            title={locked
+              ? 'A job is running — wait for it to finish or cancel it first'
+              : 'Delete this whole project workspace'}>
+            Delete project…
+          </Button>
+        </Group>
+      </Card>
     </Stack>
   );
 }
