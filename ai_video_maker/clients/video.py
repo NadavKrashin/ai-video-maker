@@ -89,7 +89,12 @@ class VideoClient:
         return self._hash_cache[path]
 
     def fingerprint(
-        self, start: Path, end: Path, motion_prompt: str, duration: int
+        self,
+        start: Path,
+        end: Path,
+        motion_prompt: str,
+        duration: int,
+        elements: Optional[list[Path]] = None,
     ) -> str:
         """Identity of one render job, from everything that shapes its output.
 
@@ -120,6 +125,15 @@ class VideoClient:
             parts.append(
                 "extra=" + json.dumps(self.config.fal_extra_arguments,
                                       sort_keys=True)
+            )
+        # Character elements shape the output as much as the frames do, but
+        # like every knob above they only join the identity WHEN PRESENT: a
+        # project that sends none keeps the fingerprints it already has, so
+        # renders submitted (and paid for) before this existed stay
+        # resumable.
+        if elements:
+            parts.append(
+                "elements=" + ",".join(self._file_hash(p) for p in elements)
             )
         material = "|".join(parts)
         return hashlib.sha1(material.encode("utf-8")).hexdigest()
@@ -175,6 +189,7 @@ class VideoClient:
         end_url: Optional[str],
         motion_prompt: str,
         duration: int,
+        element_urls: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         c = self.config
         args: dict[str, Any] = {
@@ -185,6 +200,15 @@ class VideoClient:
         # End frame is only sent when the model documents a field for it.
         if end_url and c.fal_end_frame_field:
             args[c.fal_end_frame_field] = end_url
+        # Character elements, when the model documents a field for them AND
+        # the caller found faces worth pinning. Fully config-shaped for the
+        # same reason as the frame fields: different models name this
+        # differently, and the endpoint's exact schema is the one thing that
+        # cannot be checked from here.
+        if element_urls and c.fal_elements_field:
+            args[c.fal_elements_field] = [
+                {c.fal_element_image_field: url} for url in element_urls
+            ]
         if c.fal_resolution:
             args["resolution"] = c.fal_resolution
         if c.fal_aspect_ratio:
@@ -205,8 +229,15 @@ class VideoClient:
         duration: int,
         dst: Path,
         reword: Optional[Callable[[str], str]] = None,
+        elements: Optional[list[Path]] = None,
     ) -> None:
         """Render the start->end clip and download it to `dst`.
+
+        ``elements`` are canonical cast faces (see media/faces.py) for people
+        who must survive the transit between the two frames. They are only
+        sent when the configured model documents a field for them
+        (``fal_elements_field``); otherwise they are ignored, so passing them
+        to a model that cannot use them is harmless rather than a 400.
 
         When `reword` is given and fal's content checker rejects the motion
         prompt (content_policy_violation — usually a false positive on
@@ -224,7 +255,13 @@ class VideoClient:
         (moderation) or no longer matches the storyboard (fingerprint).
         """
         job_key = f"falreq:{dst.name}"
-        fingerprint = self.fingerprint(start_frame, end_frame, motion_prompt, duration)
+        # Elements the configured model cannot accept are dropped HERE rather
+        # than at the call site, so they never reach the fingerprint either —
+        # switching a model that ignores them must not orphan a paid render.
+        elements = list(elements or []) if self.config.fal_elements_field else []
+        fingerprint = self.fingerprint(
+            start_frame, end_frame, motion_prompt, duration, elements
+        )
 
         result = self._try_resume(job_key, fingerprint, dst)
         if result is None:
@@ -232,16 +269,20 @@ class VideoClient:
             end_url = (
                 self._upload(end_frame) if self.config.fal_end_frame_field else None
             )
+            element_urls = [self._upload(p) for p in elements]
             logger.info(
-                "fal job: %s (model=%s, start=%s%s)",
+                "fal job: %s (model=%s, start=%s%s%s)",
                 dst.name,
                 self.config.fal_model_id,
                 start_frame.name,
                 f", end={end_frame.name}" if end_url else "",
+                f", {len(element_urls)} face element(s)" if element_urls else "",
             )
 
             def run(prompt: str) -> dict[str, Any]:
-                arguments = self._build_arguments(start_url, end_url, prompt, duration)
+                arguments = self._build_arguments(
+                    start_url, end_url, prompt, duration, element_urls
+                )
                 request_id = self.fal.submit(
                     self.config.fal_model_id, arguments,
                     description=f"fal generate {dst.name}",

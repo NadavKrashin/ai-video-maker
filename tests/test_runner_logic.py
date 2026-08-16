@@ -648,8 +648,9 @@ class TestStaleMarking:
 
         rendered = []
         p.video_client = type("Stub", (), {
-            "generate_clip": lambda self, s, e, m, d, dst, reword=None:
-                rendered.append(dst.name) or _touch(dst)
+            "generate_clip":
+                lambda self, s, e, m, d, dst, reword=None, elements=None:
+                    rendered.append(dst.name) or _touch(dst)
         })()
         start = _touch(workspace.styled_images_dir / "a.png")
         end = _touch(workspace.styled_images_dir / "b.png")

@@ -15,6 +15,8 @@ from PIL import Image
 from ai_video_maker.clients.openai_client import _coerce_face_audit
 from ai_video_maker.media.faces import (
     DEFAULT_CROP_FRACTION,
+    annotate_prompt_with_elements,
+    elements_for_clip,
     pick_reference_frame,
     reference_crop_box,
     references_for_frame,
@@ -558,6 +560,127 @@ class TestAuditPlumbing:
         report = pipeline.read_face_audit()
         assert report["checked"] == 2
         assert report["characters"]["c1"]["odd_frames"] == ["b.png"]
+
+
+class TestWhichFacesArePinnedThroughAClip:
+    """elements_for_clip: only people who must SURVIVE the transit."""
+
+    APPEARANCES = {"a": 12, "b": 8, "c": 3, "d": 1}
+
+    def test_only_people_in_both_frames_qualify(self):
+        # Someone who leaves or arrives has no continuous identity to hold —
+        # they are exactly who the pipeline stages an exit for, precisely so
+        # the model does NOT try to carry them across.
+        assert elements_for_clip(
+            [("a", 0.2), ("c", 0.8)], [("a", 0.5)],
+            {"a", "c"}, self.APPEARANCES, limit=3,
+        ) == ["a"]
+
+    def test_people_without_a_reference_are_skipped(self):
+        assert elements_for_clip(
+            [("a", 0.2)], [("a", 0.5)], set(), self.APPEARANCES, limit=3
+        ) == []
+
+    def test_a_zero_limit_switches_the_feature_off(self):
+        assert elements_for_clip(
+            [("a", 0.2)], [("a", 0.5)], {"a"}, self.APPEARANCES, limit=0
+        ) == []
+
+    def test_too_many_shared_people_sends_none_by_default(self):
+        # One crisp face among three drifting ones can read worse than four
+        # drifting together, so the conservative default declines.
+        shared = [("a", 0.1), ("b", 0.3), ("c", 0.6)]
+        assert elements_for_clip(
+            shared, shared, {"a", "b", "c"}, self.APPEARANCES, limit=1
+        ) == []
+
+    def test_partial_mode_rescues_the_most_recurring_face(self):
+        shared = [("a", 0.1), ("b", 0.3), ("c", 0.6)]
+        assert elements_for_clip(
+            shared, shared, {"a", "b", "c"}, self.APPEARANCES,
+            limit=1, allow_partial=True,
+        ) == ["a"]
+
+    def test_exactly_at_the_limit_is_fine(self):
+        shared = [("a", 0.1), ("b", 0.3)]
+        assert set(elements_for_clip(
+            shared, shared, {"a", "b"}, self.APPEARANCES, limit=2
+        )) == {"a", "b"}
+
+
+class TestTellingTheModelWhichPersonAnElementIs:
+    def test_the_token_lands_after_the_epithet(self):
+        out = annotate_prompt_with_elements(
+            "the bald man waves as the taller boy runs past",
+            ["the bald man", "the taller boy"],
+            "@Element{index}",
+        )
+        assert out == (
+            "the bald man (@Element1) waves as the taller boy (@Element2) runs past"
+        )
+
+    def test_only_the_first_mention_is_tagged(self):
+        out = annotate_prompt_with_elements(
+            "the bald man waves, then the bald man sits",
+            ["the bald man"], "@Element{index}",
+        )
+        assert out.count("@Element1") == 1
+
+    def test_an_epithet_the_prompt_never_uses_is_skipped(self):
+        # A token pointing at nobody is worse than no token — and the camera
+        # transitions deliberately name no one at all.
+        prompt = "The camera moves smoothly and steadily across to the terrace"
+        assert annotate_prompt_with_elements(
+            prompt, ["the bald man"], "@Element{index}"
+        ) == prompt
+
+    def test_no_template_means_no_change(self):
+        prompt = "the bald man waves"
+        assert annotate_prompt_with_elements(prompt, ["the bald man"], "") == prompt
+
+
+class TestElementsRideOnTheRequestOnlyWhenConfigured:
+    def _client(self, config, **overrides):
+        from ai_video_maker.clients.video import VideoClient
+        for key, value in overrides.items():
+            setattr(config, key, value)
+        return VideoClient(config)
+
+    def test_an_unconfigured_model_never_receives_elements(self, config):
+        client = self._client(config)
+        args = client._build_arguments("s", "e", "m", 5, ["http://face"])
+        assert not any("element" in k.lower() for k in args)
+
+    def test_a_configured_model_receives_them_in_its_own_shape(self, config):
+        client = self._client(
+            config,
+            fal_elements_field="elements",
+            fal_element_image_field="frontal_image_url",
+        )
+        args = client._build_arguments("s", "e", "m", 5, ["http://face"])
+        assert args["elements"] == [{"frontal_image_url": "http://face"}]
+
+    def test_the_end_frame_still_rides_alongside_elements(self, config):
+        # The contract this pipeline cannot give up: a clip lands exactly on
+        # the next styled photo. Elements must never displace that.
+        client = self._client(config, fal_elements_field="elements")
+        args = client._build_arguments("s", "e", "m", 5, ["http://face"])
+        assert args[config.fal_end_frame_field] == "e"
+
+    def test_elements_join_the_fingerprint_only_when_present(
+        self, config, workspace
+    ):
+        client = self._client(config, fal_elements_field="elements")
+        start = _styled(workspace, "s.png", size=(8, 8))
+        end = _styled(workspace, "e.png", size=(8, 8))
+        face = workspace.cast_refs_dir / "c1.png"
+        face.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (8, 8), (1, 2, 3)).save(face)
+
+        bare = client.fingerprint(start, end, "m", 5)
+        # A render submitted before elements existed must stay resumable.
+        assert client.fingerprint(start, end, "m", 5, []) == bare
+        assert client.fingerprint(start, end, "m", 5, [face]) != bare
 
 
 def test_the_default_crop_is_a_sane_fraction():

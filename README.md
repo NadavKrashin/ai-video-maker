@@ -753,6 +753,61 @@ Frames styled against references that have since moved are flagged as
 flagged: that stamp is empty, which is the truth, and a project that was fine
 yesterday must not wake up demanding money today.
 
+<a id="character-elements"></a>
+
+**Character elements at render time (off — needs a schema check first).**
+Newer Kling versions accept *elements*: reference portraits that pin a
+character's identity through the shot. That is precisely the failure the cast
+references exist for — a face distorting while people travel between the two
+frames — so the plumbing is in place and shaped exactly like the frame
+fields, meaning **turning it on is a config change, not a code change**.
+
+It ships **off** because the endpoint's schema has not been verified from
+here. Read fal's API page for the model you intend to use and check three
+things:
+
+1. **Does it accept elements AND an end frame in the same request?** This is
+   the one that decides everything. Every clip in this pipeline is pinned to
+   the next styled photo (`fal_end_frame_field`); an endpoint that makes you
+   choose between an end frame and a face reference is not a trade-off, it is
+   a different product — the clips would stop chaining and `combine` would
+   show visible jumps.
+2. **How many elements?** fal's docs describe *one* for the v3 image-to-video
+   endpoints; Kling's own docs describe up to three alongside start/end
+   frames.
+3. **The exact field names** — the array key, the key inside each element
+   holding the image URL, and how the prompt refers to an element.
+
+Then set:
+
+```jsonc
+{
+  "fal_elements_field": "elements",              // the array key; "" = off
+  "fal_element_image_field": "frontal_image_url",// image key inside an element
+  "fal_max_elements": 1,                         // 0 = off
+  "fal_element_prompt_template": "@Element{index}",
+  "fal_elements_partial": false
+}
+```
+
+Elements are attached only to people tagged in **both** of a clip's frames —
+someone who leaves or arrives has no continuous identity to hold, and is
+exactly who the pipeline stages an exit for so the model *won't* carry them
+across. Camera transitions never get elements: they name nobody by design,
+and they are already the best-looking clips in a movie.
+
+`fal_elements_partial` is the open question worth A/B-ing. When a clip shares
+more people than `fal_max_elements`, `false` (the default) sends **none**
+rather than pin an arbitrary subset — one crisp face among three drifting
+ones can read worse than four drifting together. Set it `true` to rescue the
+most-recurring face instead. Flip the boolean, render the same clip twice,
+and look.
+
+Try it on a per-project `config.json` before touching the shared one, and
+note that each clip now records **which model rendered it**: switch models
+mid-project and the changed clips are flagged (`model_changed`) so a movie
+never silently mixes two.
+
 <a id="when-the-camera-takes-over"></a>
 
 **Unstageable pairs become camera transitions.** Exit-and-entrance staging
@@ -838,10 +893,20 @@ clip interpolates from one styled frame to the next):
 - Add extra model-specific args via `fal_extra_arguments`; they are applied
   last, so they override the fields above (handy for per-project
   experiments).
-- Changing `fal_negative_prompt`, `fal_cfg_scale`, or `fal_extra_arguments`
-  changes the render **fingerprint**: a pending, not-yet-collected render
-  submitted under the old settings can no longer be resumed (the next render
-  buys a fresh clip). Collect pending renders before flipping these knobs.
+- `fal_elements_field` and friends attach the cast's face references to the
+  request on models that support character elements — **off by default**, see
+  [Character elements](#character-elements) for the schema check to do first.
+- Changing `fal_negative_prompt`, `fal_cfg_scale`, `fal_extra_arguments`, or
+  the face elements attached to a clip changes the render **fingerprint**: a
+  pending, not-yet-collected render submitted under the old settings can no
+  longer be resumed (the next render buys a fresh clip). Collect pending
+  renders before flipping these knobs. Sending *no* elements keeps the old
+  fingerprint exactly, so enabling the feature never orphans a paid render
+  for a clip that gets none.
+- Each rendered clip records **which model produced it**. Switch `fal_model_id`
+  mid-project and the clips rendered with the previous model are flagged
+  (`model_changed` in the snapshot, a note in `status`) — nothing is
+  re-rendered for you, but a movie can no longer silently mix two models.
 
 ---
 

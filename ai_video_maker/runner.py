@@ -74,6 +74,8 @@ from .media.ffmpeg import (
     sample_clip_frames,
 )
 from .media.faces import (
+    annotate_prompt_with_elements,
+    elements_for_clip,
     pick_reference_frame,
     references_for_frame,
     write_face_reference,
@@ -279,6 +281,12 @@ class Pipeline:
         # which rebuilds them from disk and would otherwise lose it — the same
         # carry-over every other per-frame field needs.
         self._styled_ref_stamps: dict[str, str] = {}
+        # Clip filename -> the cast face references to pin through that clip.
+        # Filled by _pairs_from_storyboard (which has the tags) and read by
+        # _generate_clips, so ClipPair keeps its shape and every other caller
+        # of it is untouched. Empty unless a model with an elements field is
+        # configured.
+        self._clip_elements: dict[str, list[Path]] = {}
 
     # ------------------------------ dispatch ----------------------------- #
     def execute(self, command: str) -> None:
@@ -1429,6 +1437,22 @@ class Pipeline:
                 len(global_motion.split()),
             )
 
+        # Face elements are decided here, where the storyboard (and so the
+        # tags) is in hand, and stashed for _generate_clips by clip filename
+        # — the same shape as the styling stamps. Nothing is added to
+        # ClipPair, so every caller of that tuple is untouched.
+        self._clip_elements = {}
+        refs = self.cast_reference_paths(storyboard)
+        by_name = {
+            (self.workspace.root / f.output_path).name: f
+            for f in storyboard.frames
+        }
+        appearances: dict[str, int] = {}
+        for frame in storyboard.frames:
+            for person in frame.people:
+                appearances[person.id] = appearances.get(person.id, 0) + 1
+        epithets = {c.id: c.epithet for c in storyboard.characters}
+
         pairs: list[ClipPair] = []
         for a, b in self._bridge_pairs(frames_ordered):
             tr = tr_by_start.get(a.name)
@@ -1439,6 +1463,28 @@ class Pipeline:
                 tr.duration if tr else storyboard.duration_per_clip
             )
             sound = tr.sound_prompt if tr else ""
+
+            # A camera transition names nobody on purpose — there is no
+            # epithet for an element to attach to, and these are already the
+            # best-looking clips in a movie. Leave them exactly as they are.
+            chosen: list[str] = []
+            if refs and self.config.fal_elements_field and not is_camera_transition(motion):
+                chosen = elements_for_clip(
+                    [(p.id, p.x) for p in getattr(by_name.get(a.name), "people", [])],
+                    [(p.id, p.x) for p in getattr(by_name.get(b.name), "people", [])],
+                    set(refs),
+                    appearances,
+                    self.config.fal_max_elements,
+                    self.config.fal_elements_partial,
+                )
+            if chosen:
+                clip_name = self._clip_name(a, b).name
+                self._clip_elements[clip_name] = [refs[cid] for cid in chosen]
+                motion = annotate_prompt_with_elements(
+                    motion,
+                    [epithets.get(cid, "") for cid in chosen],
+                    self.config.fal_element_prompt_template,
+                )
             pairs.append((a, b, _with_global_motion(global_motion, motion), duration, sound))
         return pairs
 
@@ -1536,6 +1582,7 @@ class Pipeline:
                     self.video_client.generate_clip(
                         start, end, motion, duration, dst,
                         reword=self.openai.reword_motion_prompt,
+                        elements=self._clip_elements.get(dst.name),
                     )
                     # Booked on the finished clip, not on submission: a job
                     # that was submitted and billed but never collected shows
@@ -1557,7 +1604,15 @@ class Pipeline:
                             f"sfx:{dst.name}", f"fade:{dst.name}",
                             f"stale:{dst.name}",
                         )
-                        self.state.set(job_id, "done", output=str(dst))
+                        # WHICH model rendered it, so switching models later
+                        # doesn't leave a movie silently mixing two of them
+                        # with nothing to say which clip is which. Everything
+                        # else about staleness in this pipeline is visible;
+                        # this was the one gap.
+                        self.state.set(
+                            job_id, "done", output=str(dst),
+                            model=self.config.fal_model_id,
+                        )
                         self.summary.videos_created += 1
                     logger.info("Clip ready: %s", dst.name)
                 except PipelineCancelled:
@@ -2485,6 +2540,14 @@ class Pipeline:
             for clip in expected:
                 exists = clip.exists()
                 missing += 0 if exists else 1
+                # Which video model produced this clip. Only clips rendered
+                # since this was recorded carry it; an unknown model is NOT
+                # reported as a mismatch, so switching models does not light
+                # up every clip of every existing project.
+                rendered_with = (
+                    (self.state.get(f"clip:{clip.name}") or {}).get("model", "")
+                    if exists else ""
+                )
                 clips.append({
                     "id": clip.stem,
                     "file": clip.name,
@@ -2494,6 +2557,14 @@ class Pipeline:
                     # as-is until someone regenerates it deliberately.
                     "stale": exists
                     and self.state.status(f"stale:{clip.name}") is not None,
+                    "model": rendered_with,
+                    # A movie that mixes two video models looks inconsistent
+                    # for a reason nothing else would explain. Never fixed
+                    # automatically — re-rendering is money.
+                    "model_changed": bool(
+                        rendered_with
+                        and rendered_with != self.config.fal_model_id
+                    ),
                 })
             found = (
                 find_generated_clips(ws.clips_dir)
@@ -3702,6 +3773,8 @@ class Pipeline:
                     "  !! OUTDATED (storyboard changed - redo with --clip)"
                     if clip.get("stale") else ""
                 )
+                if clip.get("model_changed"):
+                    outdated += "  !! rendered with a different video model"
                 print(f"    clip {clip['id']:<12} rendered  ({sfx}){outdated}")
             else:
                 print(f"    clip {clip['id']:<12} MISSING")

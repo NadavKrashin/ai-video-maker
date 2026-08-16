@@ -60,6 +60,45 @@ class Config(BaseModel):
     fal_cfg_scale: Optional[float] = None
     fal_extra_arguments: dict[str, Any] = Field(default_factory=dict)
 
+    # --- Character elements (face references sent WITH the clip request) --- #
+    # Newer Kling versions accept "elements": reference portraits that pin a
+    # character's identity through the shot, which is exactly the failure the
+    # cast references exist for — a face distorting while people travel
+    # between the two frames.
+    #
+    # OFF BY DEFAULT, and deliberately shaped like fal_start_frame_field /
+    # fal_end_frame_field: every part of the request is named here, so
+    # turning this on is a config change once the endpoint's schema has been
+    # read, not a code change. It is off because the schema has NOT been
+    # verified — see README "Character elements" for the three things to
+    # check first, the most important being whether the endpoint accepts
+    # elements AND an end frame in the same request. This pipeline's whole
+    # contract is that a clip lands exactly on the next styled photo; an
+    # endpoint that makes you choose is not a trade-off, it is a different
+    # product.
+    #
+    # The request key for the elements array, e.g. "elements". Empty = never
+    # send them.
+    fal_elements_field: str = ""
+    # The key inside each element object that carries the face image URL,
+    # e.g. "frontal_image_url" or "image_url".
+    fal_element_image_field: str = "frontal_image_url"
+    # How many elements the endpoint accepts. fal's docs describe ONE for the
+    # v3 image-to-video endpoints; Kling's own docs describe up to three with
+    # start/end frames. 0 keeps the feature off even if a field name is set.
+    fal_max_elements: int = 0
+    # What happens when a clip has more shared people than fal_max_elements.
+    # False (default): send NO elements rather than pin an arbitrary subset —
+    # one crisp face among three drifting ones can read worse than four that
+    # drift together. True: send as many as fit, most-recurring people first.
+    # This is the open question a real A/B on a few clips should settle.
+    fal_elements_partial: bool = False
+    # How the motion prompt refers to an element, e.g. "@Element{index}"
+    # (1-based). When set, each element's epithet in the prompt is annotated
+    # with its token, because a model that is not told which person an
+    # element IS can only guess. Empty sends the elements unreferenced.
+    fal_element_prompt_template: str = ""
+
     # --- Audio (post-generation sound), also fal (auth via FAL_KEY). ---
     # Two layers:
     #   * SFX/ambient: a video->audio model runs on each silent clip and returns

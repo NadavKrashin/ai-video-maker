@@ -181,7 +181,7 @@ class TestPipelineCostReport:
             frame.write_bytes(b"x")
         clip = workspace.clips_dir / "a_to_b.mp4"
 
-        def fake_generate(s, e, motion, duration, dst, reword=None):
+        def fake_generate(s, e, motion, duration, dst, reword=None, elements=None):
             dst.write_bytes(b"rendered")
 
         pipeline.video_client.generate_clip = fake_generate

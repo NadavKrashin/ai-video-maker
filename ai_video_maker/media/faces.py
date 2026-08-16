@@ -146,6 +146,75 @@ def references_for_frame(
     return [cid for cid, _ in candidates[: max(0, limit)]]
 
 
+def elements_for_clip(
+    start_people: list[tuple[str, float]],
+    end_people: list[tuple[str, float]],
+    available: set[str],
+    appearances: dict[str, int],
+    limit: int,
+    allow_partial: bool = False,
+) -> list[str]:
+    """Which cast members' faces to pin through one clip, as ids.
+
+    Only people tagged in BOTH frames are candidates: an element exists to
+    hold one identity steady across the transit, and somebody who leaves or
+    arrives has no continuous identity to hold. (They are also exactly the
+    people the pipeline stages an exit and an entrance for, precisely so the
+    model does NOT try to carry them across.)
+
+    ``limit`` is how many the endpoint accepts. When more people qualify than
+    fit, ``allow_partial`` decides between two honest answers, and this is a
+    genuinely open question that only a real A/B settles:
+
+    * False (the default) — send none. Pinning one face crisply while three
+      others drift can read worse than four drifting together, because the
+      eye is drawn to the mismatch.
+    * True — send as many as fit, the most-recurring people first, on the
+      grounds that a rescued protagonist is worth more than a uniform blur.
+    """
+    if limit <= 0:
+        return []
+    ends = {cid for cid, _ in end_people}
+    shared = [
+        (cid, x) for cid, x in start_people if cid in ends and cid in available
+    ]
+    if not shared:
+        return []
+    if len(shared) > limit and not allow_partial:
+        return []
+    shared.sort(key=lambda item: (-appearances.get(item[0], 0), item[1], item[0]))
+    return [cid for cid, _ in shared[:limit]]
+
+
+def annotate_prompt_with_elements(
+    prompt: str, epithets: list[str], template: str
+) -> str:
+    """Tag each element's epithet in the prompt with its reference token.
+
+    Kling refers to elements positionally ("@Element1"), so a prompt that
+    never mentions the token leaves the model to guess which person on screen
+    a reference portrait is. This inserts it after the FIRST mention of that
+    person's epithet — the prompts already name everyone by a consistent
+    appearance phrase, which is what makes the substitution reliable.
+
+    An epithet the prompt does not contain is skipped rather than appended
+    somewhere: a token pointing at nobody is worse than no token, and the
+    camera-transition prompts deliberately name no one at all.
+
+    ``template`` is a config string with ``{index}`` (1-based). An empty
+    template returns the prompt untouched.
+    """
+    if not template or not epithets:
+        return prompt
+    out = prompt
+    for i, epithet in enumerate(epithets, start=1):
+        token = template.format(index=i)
+        if not epithet or epithet not in out or token in out:
+            continue
+        out = out.replace(epithet, f"{epithet} ({token})", 1)
+    return out
+
+
 def pick_reference_frame(
     appearances: list[tuple[str, int]],
     preferred: str = "",
