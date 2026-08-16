@@ -692,6 +692,17 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         folder listing.
         """
         ingested = ingested_orders(PROJECTS_DIR)
+        # Also keyed by ORDER ID: ingest resolves an order-doc name that has
+        # drifted (a recreated folder, a stale timestamp) to the Cloudinary
+        # folder that really holds the photos, and order.json then records
+        # THAT name. Without this the ledger's row would still look
+        # un-ingested and offer a button that builds a second project for an
+        # order already done.
+        ingested_by_order_id: dict[str, str] = {}
+        for handled_folder, handled_project in ingested.items():
+            order_id = parse_order_folder(handled_folder)["order_id"]
+            if order_id:
+                ingested_by_order_id.setdefault(order_id, handled_project)
         pending_ingest = jobs.active_ingest_orders()
         # Each order's most recent ingest job — the panel's success/failure
         # feedback ("the button went back to normal like nothing happened"
@@ -768,7 +779,9 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         def row(folder: str) -> dict[str, Any]:
             parsed = parse_order_folder(folder)
             job = latest_ingest.get(folder)
-            project = ingested.get(folder, "")
+            project = ingested.get(folder, "") or ingested_by_order_id.get(
+                parsed["order_id"], ""
+            )
             return {
                 "folder": folder,
                 "order_id": parsed["order_id"],
@@ -785,11 +798,39 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
                 "cloudinary_photos": cloudinary_photos(folder, project),
             }
 
+        # The folders Cloudinary really has, read once: the rows below are
+        # keyed on them rather than on the name the order doc recorded.
+        cloudinary_folders = client.list_order_folders()
+        folders_by_order_id: dict[str, list[str]] = {}
+        for name in cloudinary_folders:
+            folders_by_order_id.setdefault(
+                parse_order_folder(name)["order_id"], []
+            ).append(name)
+        known_folders = set(cloudinary_folders)
+
+        def real_folder(leaf: str) -> str:
+            """Where this order's photos actually are, not where the doc says.
+
+            Both systems build the folder leaf from a timestamp of their own,
+            so the two can disagree (a real order was recorded as
+            ``..._00-45_מרגש`` while its photos sat in ``..._11-23_מרגש``) —
+            and then the panel counted photos in a folder that does not
+            exist, showed "nothing uploaded yet", and posted a name ingest
+            could not resolve. The order id is the stable half of the name,
+            so a single folder carrying it IS this order's folder.
+            """
+            if not leaf or leaf in known_folders:
+                return leaf
+            same_order = folders_by_order_id.get(
+                parse_order_folder(leaf)["order_id"], []
+            )
+            return same_order[0] if len(same_order) == 1 else leaf
+
         out: list[dict[str, Any]] = []
         seen_folders: set[str] = set()
         if FirebaseClient.configured(config):
             for order in FirebaseClient.from_config(config).list_orders():
-                leaf = order.folder_leaf
+                leaf = real_folder(order.folder_leaf)
                 seen_folders.add(leaf)
                 entry = row(leaf) if leaf else {
                     "folder": "", "order_id": order.order_id,
@@ -813,7 +854,7 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
                 })
                 out.append(entry)
 
-        for folder in client.list_order_folders():
+        for folder in cloudinary_folders:
             if folder in seen_folders:
                 continue
             out.append({**row(folder), "source": "cloudinary"})

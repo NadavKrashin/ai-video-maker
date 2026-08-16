@@ -7,6 +7,7 @@ from ai_video_maker.clients.cloudinary_client import (
     OrderAsset,
     asset_position,
     ingest_filename,
+    order_id_of,
     resolve_order_folder,
     sort_assets,
 )
@@ -76,6 +77,56 @@ class TestResolveOrderFolder:
     def test_no_match(self):
         with pytest.raises(PipelineError, match="No Cloudinary order folder"):
             resolve_order_folder("AM-19990101-ZZ99", self.FOLDERS)
+
+    def test_a_no_match_names_the_folders_that_do_exist(self):
+        # The panel is often the only place this is read, and it has no shell
+        # to go looking in — "run pipeline.py orders" is not an answer there.
+        with pytest.raises(PipelineError) as caught:
+            resolve_order_folder("AM-19990101-ZZ99", self.FOLDERS)
+        assert "Dana-Levi" in str(caught.value)
+
+    def test_no_folders_at_all_says_so(self):
+        with pytest.raises(PipelineError, match="no order folders"):
+            resolve_order_folder("AM-20260716-XY12_Dana", [])
+
+
+class TestOrderIdSurvivesNameDrift:
+    """The ledger's folder name and Cloudinary's can disagree mid-string.
+
+    A real order (AM-160826-VKXQ) was recorded as ``..._00-45_מרגש`` while
+    the photos sat in ``..._11-23_מרגש``: same order id, same customer, same
+    date — a different TIME. Exact/startswith/contains all need the real
+    folder to be at least as long as the query, so all three missed and the
+    order could not be ingested at all.
+    """
+
+    DOC = "AM-160826-VKXQ_Kfir-Daniel-16.08.2026_00-45_mood"
+    REAL = "AM-160826-VKXQ_Kfir-Daniel-16.08.2026_11-23_mood"
+    OTHER = "AM-130826-PCFD_Yaron-Litan-13.08.2026_14-36_mood"
+
+    def test_the_order_id_finds_the_folder_the_photos_are_in(self):
+        assert resolve_order_folder(self.DOC, [self.OTHER, self.REAL]) == self.REAL
+
+    def test_an_exact_name_still_wins_over_the_fallback(self):
+        # Two folders share the order id; the exact name must not be dragged
+        # into the ambiguity path.
+        also = "AM-160826-VKXQ_Kfir-Daniel-16.08.2026_09-00_mood"
+        assert resolve_order_folder(self.DOC, [self.DOC, also]) == self.DOC
+
+    def test_two_folders_for_one_order_is_a_question_not_a_guess(self):
+        also = "AM-160826-VKXQ_Kfir-Daniel-16.08.2026_09-00_mood"
+        with pytest.raises(PipelineError) as caught:
+            resolve_order_folder(self.DOC, [self.REAL, also])
+        message = str(caught.value)
+        assert self.REAL in message and also in message
+
+    def test_a_different_order_is_never_substituted(self):
+        with pytest.raises(PipelineError, match="No Cloudinary order folder"):
+            resolve_order_folder(self.DOC, [self.OTHER])
+
+    def test_order_id_is_the_head_of_the_leaf(self):
+        assert order_id_of(self.DOC) == "AM-160826-VKXQ"
+        assert order_id_of("no-underscores-here") == "no-underscores-here"
 
 
 class TestIngestFilename:

@@ -149,6 +149,94 @@ class TestPreIngestPhotoCount:
         assert fake.asset_calls == []
 
 
+class TestOrdersFollowTheOrderIdNotTheName:
+    """The order doc's folder name can drift from Cloudinary's.
+
+    A real order (AM-160826-VKXQ) was recorded as ``..._00-45_מרגש`` while
+    its photos sat in ``..._11-23_מרגש``. Keyed on the doc's name, the panel
+    counted photos in a folder that does not exist, reported "nothing
+    uploaded yet", and its Ingest button posted a name ingest could not
+    resolve — while the real folder showed up as a SECOND, anonymous row.
+    """
+
+    DOC_LEAF = "AM-160826-VKXQ_Kfir-Daniel-16.08.2026_00-45_mood"
+    REAL_LEAF = "AM-160826-VKXQ_Kfir-Daniel-16.08.2026_11-23_mood"
+
+    @pytest.fixture
+    def ledger(self, monkeypatch):
+        """A Firestore ledger holding one order, pointing at DOC_LEAF."""
+        from ai_video_maker.clients.firebase_client import FirestoreOrder
+
+        order = FirestoreOrder(
+            order_id="AM-160826-VKXQ", customer="דניאל",
+            folder=f"video-orders/{self.DOC_LEAF}", status="new",
+            photo_count=13,
+        )
+        monkeypatch.setattr(
+            "ai_video_maker.server.FirebaseClient.configured",
+            classmethod(lambda _cls, _config: True),
+        )
+        monkeypatch.setattr(
+            "ai_video_maker.server.FirebaseClient.from_config",
+            classmethod(lambda _cls, _config: SimpleNamespace(
+                list_orders=lambda: [order]
+            )),
+        )
+        return order
+
+    def test_the_row_points_at_the_folder_that_has_the_photos(
+        self, app_client, monkeypatch, ledger
+    ):
+        FakeCloudinary.install(monkeypatch, {self.REAL_LEAF: _assets(13)})
+        rows = _orders(app_client)
+        # One row, not two: the order keeps its customer/blessing metadata
+        # AND gains the folder its photos are really in.
+        assert len(rows) == 1
+        assert rows[0]["folder"] == self.REAL_LEAF
+        assert rows[0]["customer"] == "דניאל"
+        assert rows[0]["cloudinary_photos"] == 13
+
+    def test_an_unmatched_folder_is_still_its_own_row(
+        self, app_client, monkeypatch, ledger
+    ):
+        # Drift-healing must not swallow a folder belonging to no order.
+        stray = "AM-010126-ZZ99_Someone-01.01.2026_08-00_mood"
+        FakeCloudinary.install(
+            monkeypatch, {self.REAL_LEAF: _assets(2), stray: _assets(1)}
+        )
+        folders = {r["folder"] for r in _orders(app_client)}
+        assert folders == {self.REAL_LEAF, stray}
+
+    def test_two_folders_for_one_order_are_never_merged_by_guesswork(
+        self, app_client, monkeypatch, ledger
+    ):
+        other = "AM-160826-VKXQ_Kfir-Daniel-16.08.2026_09-00_mood"
+        FakeCloudinary.install(
+            monkeypatch, {self.REAL_LEAF: _assets(2), other: _assets(5)}
+        )
+        rows = _orders(app_client)
+        # Ambiguous: the doc's row keeps its own (nonexistent) name and both
+        # real folders stay visible, so a human picks.
+        assert {r["folder"] for r in rows} == {
+            self.DOC_LEAF, self.REAL_LEAF, other,
+        }
+
+    def test_an_order_ingested_under_either_name_reads_as_done(
+        self, app_client, monkeypatch, tmp_path, ledger
+    ):
+        # order.json records the RESOLVED folder, so the ledger row must not
+        # go on offering an Ingest button that builds a second project.
+        from ai_video_maker.intake import write_order_record
+        project = tmp_path / "projects" / "kfir-daniel"
+        (project / "logs").mkdir(parents=True)
+        write_order_record(project / "order.json",
+                           order_folder=self.REAL_LEAF, photo_count=13)
+        FakeCloudinary.install(monkeypatch, {self.REAL_LEAF: _assets(13)})
+        rows = _orders(app_client)
+        assert len(rows) == 1
+        assert rows[0]["project"] == "kfir-daniel"
+
+
 class TestIngestOnlyIngests:
     """Ingest creates the project and pulls the photos — nothing else.
 
