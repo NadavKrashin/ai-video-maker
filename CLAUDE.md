@@ -929,10 +929,19 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   time. Real order am-160826-vkxq-7: frames 18 and 19 (a Disney shop photo
   of three kids with popcorn buckets, and one of two of them by a shelf)
   were refused on all 6 attempts across two runs, ~7 minutes per photo.
-  `is_output_moderation` now ends the reword loop after the FIRST failure
-  and skips the generic `last_resort` too (another prompt changes nothing
-  being judged); fal/Kling rejections never match it, so clip rewording —
-  where the WORDS really are the problem — is untouched.
+  `is_output_moderation` ends the GENERIC reword loop after the first
+  failure and skips the `last_resort` too; fal/Kling rejections never match
+  it, so clip rewording — where the WORDS really are the problem — is
+  untouched. But the prompt is NOT powerless here (user's question, and a
+  fair one): it decides what gets DRAWN, and the drawing is what is judged.
+  So an output-stage block gets exactly ONE targeted retry with
+  `_DEBRAND_INSTRUCTION` appended — redraw every licensed character, logo
+  and brand mark as a plain generic equivalent, same object, same place,
+  same colours. It ring-fences the PEOPLE explicitly (faces, hair, build,
+  glasses, clothing, "same likeness"): a "make it safe" rewrite that
+  quietly generalised faces would trade one silent failure for a worse one.
+  Two attempts total, ~2 min, versus four attempts and ~7 min of generic
+  paraphrasing that never addressed the cause.
   `moderation_failure_hint` turns the 400 into the lever that actually
   moves it, and `_style_images` records THAT on the failure so the panel
   shows it instead of a raw payload. On the CAUSE: both failing frames

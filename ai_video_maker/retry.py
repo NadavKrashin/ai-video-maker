@@ -92,15 +92,17 @@ def moderation_failure_hint(exc: BaseException) -> str:
     if is_output_moderation(exc):
         return (
             "The safety filter rejected the GENERATED image, not the prompt "
-            "(moderation_stage: output). Rewording cannot fix that — what the "
-            "styler draws is driven by the source photo. Two things trip it "
-            "on ordinary customer photos: COPYRIGHTED CHARACTERS in shot "
-            "(theme-park merchandise, plush toys, printed cups — styling asks "
-            "for a cartoon, and a cartoon of Mickey Mouse is exactly what an "
-            "image model refuses to draw), and full-body shots of children. "
-            "Crop the offending part out, swap in another shot, or leave it "
-            "out: a frame with no styled image is bridged over, and that "
-            "photo simply does not appear in the movie."
+            "(moderation_stage: output) — and it did so AGAIN on a retry that "
+            "explicitly told the styler to draw no licensed characters or "
+            "brand marks, which is the one prompt change that can move an "
+            "output-stage block. The usual cause is copyrighted characters in "
+            "shot (theme-park merchandise, plush toys, printed cups: styling "
+            "asks for a cartoon, and a cartoon of Mickey Mouse is exactly "
+            "what an image model refuses to draw); full-body shots of "
+            "children are the other one. From here it is the PHOTO that has "
+            "to change: crop the offending part out, swap in another shot, or "
+            "leave it out — a frame with no styled image is bridged over, and "
+            "that photo simply does not appear in the movie."
         )
     return (
         "A content filter rejected this request. The prompt is reworded and "

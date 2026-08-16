@@ -49,13 +49,17 @@ class TestOutputStageModeration:
 
     def test_the_hint_says_which_lever_moves_it(self):
         hint = moderation_failure_hint(RuntimeError(_OUTPUT_MODERATION))
-        assert "Rewording cannot fix" in hint
-        assert "Crop" in hint  # what to actually do
+        assert "GENERATED image, not the prompt" in hint
+        assert "crop" in hint  # what to actually do
         # Both real causes, because they need different crops: the copyrighted
         # character came first on the order that prompted this (a Disney shop
         # full of Mickey merchandise), not the child-in-frame one.
-        assert "COPYRIGHTED CHARACTERS" in hint
+        assert "copyrighted characters" in hint
         assert "children" in hint
+        # And it must say the de-branded retry ALREADY ran, or the reader's
+        # first instinct is to go and suggest exactly that.
+        assert "AGAIN" in hint
+        assert "no licensed characters" in hint
 
     def test_a_non_moderation_error_gets_no_hint(self):
         assert moderation_failure_hint(RuntimeError("500 server error")) == ""
