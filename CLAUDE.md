@@ -922,6 +922,21 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   — don't add temperature params to chat calls.
 - Per-project overrides: a `projects/<name>/config.json` is merged key-over-key
   on top of the shared config.
+- AN OUTPUT-STAGE MODERATION BLOCK IS NOT A PROMPT PROBLEM (2026-08-16).
+  OpenAI's payload says which stage fired. `'moderation_stage': 'output'`
+  means the GENERATED image was refused, not the request — so rewording
+  re-rolls the same source photo against the same classifier and just costs
+  time. Real order am-160826-vkxq-7: frames 18 and 19 (a Disney shop photo
+  of three kids with popcorn buckets, and one of two of them by a shelf)
+  were refused on all 6 attempts across two runs, ~7 minutes per photo.
+  `is_output_moderation` now ends the reword loop after the FIRST failure
+  and skips the generic `last_resort` too (another prompt changes nothing
+  being judged); fal/Kling rejections never match it, so clip rewording —
+  where the WORDS really are the problem — is untouched.
+  `moderation_failure_hint` turns the 400 into the lever that actually
+  moves it (crop tighter, swap the shot, or accept the frame is bridged
+  over), and `_style_images` records THAT on the failure so the panel shows
+  it instead of a raw payload. Pinned by TestOutputStageModeration.
 - Content filters false-positive on family content: OpenAI during styling,
   and fal/Kling on clip motion prompts (`content_policy_violation`). Kling's
   worst trigger is a baby/child being physically handled (lifted, bounced,

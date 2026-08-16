@@ -6,9 +6,11 @@ import pytest
 from ai_video_maker import retry
 from ai_video_maker.retry import (
     is_moderation_error,
+    is_output_moderation,
     is_quota_exhausted_error,
     is_rate_limit_error,
     is_retryable_error,
+    moderation_failure_hint,
     with_retries,
     with_reword_recovery,
 )
@@ -20,6 +22,38 @@ _FAL_MODERATION = (
     "'type': 'content_policy_violation', "
     "'url': 'https://docs.fal.ai/errors#content_policy_violation'}]"
 )
+
+# The real OpenAI rejection recorded while styling frame 18 of a live order —
+# an ordinary photo of three kids holding popcorn buckets in a Disney store.
+_OUTPUT_MODERATION = (
+    "Error code: 400 - {'error': {'message': 'Your request was rejected by the "
+    "safety system.', 'type': 'image_generation_user_error', 'param': None, "
+    "'code': 'moderation_blocked', 'moderation_details': "
+    "{'moderation_stage': 'output', 'categories': ['other']}}}"
+)
+
+
+class TestOutputStageModeration:
+    """Which stage fired decides whether rewording is worth anything."""
+
+    def test_output_stage_is_recognised(self):
+        assert is_output_moderation(RuntimeError(_OUTPUT_MODERATION))
+
+    def test_a_prompt_stage_block_is_not_output_stage(self):
+        prompt_stage = _OUTPUT_MODERATION.replace("'output'", "'input'")
+        assert is_moderation_error(RuntimeError(prompt_stage))
+        assert not is_output_moderation(RuntimeError(prompt_stage))
+
+    def test_fal_rejections_are_never_output_stage(self):
+        assert not is_output_moderation(RuntimeError(_FAL_MODERATION))
+
+    def test_the_hint_says_which_lever_moves_it(self):
+        hint = moderation_failure_hint(RuntimeError(_OUTPUT_MODERATION))
+        assert "Rewording cannot fix" in hint
+        assert "Crop" in hint  # what to actually do
+
+    def test_a_non_moderation_error_gets_no_hint(self):
+        assert moderation_failure_hint(RuntimeError("500 server error")) == ""
 
 
 class TestIsModerationError:
@@ -191,6 +225,59 @@ class TestWithRewordRecovery:
                 attempts=2, description="t",
             )
         assert len(rewords) == 2  # exactly `attempts` rewords, then give up
+
+    def test_output_stage_moderation_stops_rewording_immediately(self):
+        """The picture was refused, not the words.
+
+        A real order spent ~7 minutes per photo learning this the slow way:
+        frames 18 and 19 were refused on all 6 attempts across two runs, each
+        carrying a differently reworded prompt. Rewording re-rolls the same
+        source image against the same classifier.
+        """
+        calls, rewords = [], []
+
+        def run(prompt):
+            calls.append(prompt)
+            raise RuntimeError(_OUTPUT_MODERATION)
+
+        with pytest.raises(RuntimeError, match="moderation_blocked"):
+            with_reword_recovery(
+                run, "p", reword=lambda p: rewords.append(p) or f"{p}+",
+                attempts=3, description="t",
+            )
+        assert calls == ["p"]  # one attempt, not four
+        assert rewords == []
+
+    def test_output_stage_skips_the_generic_fallback_too(self):
+        # The fallback is another prompt, so it changes nothing being judged.
+        calls = []
+
+        def run(prompt):
+            calls.append(prompt)
+            raise RuntimeError(_OUTPUT_MODERATION)
+
+        with pytest.raises(RuntimeError):
+            with_reword_recovery(
+                run, "p", reword=lambda p: "x", attempts=2, description="t",
+                last_resort="generic fallback",
+            )
+        assert calls == ["p"]
+
+    def test_prompt_stage_moderation_still_rewords(self):
+        # fal/Kling rejects on the WORDS, where rewording genuinely works —
+        # the early exit must not reach it.
+        calls = []
+
+        def run(prompt):
+            calls.append(prompt)
+            if prompt == "flagged":
+                raise RuntimeError(_FAL_MODERATION)
+            return "ok"
+
+        assert with_reword_recovery(
+            run, "flagged", reword=lambda p: "safe", attempts=2, description="t",
+        ) == "ok"
+        assert calls == ["flagged", "safe"]
 
     def test_last_resort_tried_after_rewords_exhausted(self):
         calls = []

@@ -65,6 +65,47 @@ def is_moderation_error(exc: BaseException) -> bool:
     )
 
 
+def is_output_moderation(exc: BaseException) -> bool:
+    """True when the safety filter rejected the GENERATED image, not the request.
+
+    OpenAI reports which stage fired (``'moderation_stage': 'output'``). The
+    distinction decides whether rewording is worth anything: a prompt-stage
+    block is about the words, an output-stage block is about the picture the
+    model just drew — and that is driven by the source photo, which rewording
+    does not touch. Measured on a real order: frames 18 and 19 were refused
+    6 times across two runs, every attempt carrying a differently reworded
+    prompt.
+    """
+    text = str(exc)
+    return "moderation_stage" in text and "'output'" in text.replace('"', "'")
+
+
+def moderation_failure_hint(exc: BaseException) -> str:
+    """Plain-English explanation of a safety rejection, or "" if not one.
+
+    A raw 400 payload tells whoever is looking at the panel nothing about what
+    to DO. These are ordinary customer photos, so a rejection is nearly always
+    a false positive, and the useful reply is which lever actually moves it.
+    """
+    if not is_moderation_error(exc):
+        return ""
+    if is_output_moderation(exc):
+        return (
+            "The safety filter rejected the GENERATED image, not the prompt "
+            "(moderation_stage: output). Rewording cannot fix that — what the "
+            "styler draws is driven by the source photo. Ordinary family "
+            "photos do trip this, most often full-body shots of children. "
+            "Crop the photo tighter (head and shoulders), swap in another "
+            "shot, or leave it out: a frame with no styled image is bridged "
+            "over, and that photo simply does not appear in the movie."
+        )
+    return (
+        "A content filter rejected this request. The prompt is reworded and "
+        "retried automatically; if every attempt is refused, it is the input "
+        "media being flagged rather than the wording."
+    )
+
+
 def is_quota_exhausted_error(exc: BaseException) -> bool:
     """True when the account is out of credits/budget (OpenAI insufficient_quota).
 
@@ -161,9 +202,14 @@ def with_reword_recovery(
     final try is made with that fixed prompt — a deliberately bland, generic
     text that carries no flagged wording at all — before the last moderation
     error is raised. This trades prompt fidelity for actually getting output.
+
+    An OUTPUT-stage rejection ends the loop at once: the generated picture was
+    refused rather than the wording, so neither a reword nor the generic
+    fallback changes the thing being judged.
     """
     attempt_prompt = prompt
     last_exc: Optional[BaseException] = None
+    return_early = False
     for round_ in range(attempts + 1):
         try:
             result = run(attempt_prompt)
@@ -178,6 +224,17 @@ def with_reword_recovery(
             if not is_moderation_error(exc):
                 raise
             last_exc = exc
+            if is_output_moderation(exc):
+                # The picture was refused, not the words. Rewording re-rolls
+                # the same source image against the same classifier, so the
+                # remaining attempts are minutes of waiting for an identical
+                # answer — a real order spent ~7 minutes per photo learning
+                # that twice. Stop and say what actually helps.
+                logger.error(
+                    "%s: %s", description, moderation_failure_hint(exc),
+                )
+                return_early = True
+                break
             if round_ >= attempts:
                 break
             logger.warning(
@@ -187,7 +244,7 @@ def with_reword_recovery(
             )
             attempt_prompt = reword(attempt_prompt)
     assert last_exc is not None
-    if last_resort and last_resort != attempt_prompt:
+    if last_resort and last_resort != attempt_prompt and not return_early:
         logger.warning(
             "%s still blocked after %d rewording attempts — trying one last "
             "time with a generic fallback prompt",
@@ -213,10 +270,11 @@ def with_reword_recovery(
                 "cannot fix this; regenerate the flagged input instead.",
                 description,
             )
-    logger.error(
-        "%s still blocked after %d rewording attempts; giving up",
-        description, attempts,
-    )
+    if not return_early:
+        logger.error(
+            "%s still blocked after %d rewording attempts; giving up",
+            description, attempts,
+        )
     raise last_exc
 
 

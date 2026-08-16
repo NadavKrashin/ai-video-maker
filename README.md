@@ -1080,6 +1080,16 @@ still blocked, the clip is tried one final time with a generic safe fallback
 prompt — the start/end frames still drive the motion, so you get a usable
 (if less directed) clip instead of a failed render.
 
+**…except an OUTPUT-stage block, which rewording cannot fix.** OpenAI's
+rejection says which stage fired. `moderation_stage: output` means the
+*generated image* was refused rather than the request, so another prompt just
+re-rolls the same source photo past the same classifier — a real order spent
+~7 minutes per photo proving it. Those stop after the first attempt and report
+what actually moves them: crop the photo tighter (head and shoulders), swap in
+another shot, or accept that the frame is bridged over and that photo will not
+appear in the movie. Ordinary family photos do trip this; full-body shots of
+children are the usual cause.
+
 ---
 
 ## Output layout
