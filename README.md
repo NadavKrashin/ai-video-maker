@@ -192,6 +192,11 @@ the `ADMIN_API_TOKEN` from `.env`:
   invented face means comparing the two, not looking at the styled one alone.
   **Jobs sit directly under the step tiles** — clicking a step is what creates
   one, and its log is where you look when a run misbehaves.
+  **Photos that will be skipped** get their own alert: a storyboard frame
+  with no styled image on disk is BRIDGED over at render time — the movie
+  plays continuously and simply does not contain that photo, which is
+  invisible in the finished file. `missing_frames` in the snapshot, a
+  `status` line, and a panel alert naming each one.
   **Deleting a project** (the red button at the bottom of a project page)
   removes `projects/<name>/` and everything in it. It is the one action here
   that destroys paid work with no way back, so the confirmation lists what is

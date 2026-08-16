@@ -1967,6 +1967,29 @@ export default function ProjectDetail({ name, onBack }) {
 
       <SpendCard project={name} cost={snap.cost} />
 
+      {/* Photos the storyboard plans for that have no styled frame. Render
+          BRIDGES over them — the movie stays continuous and simply does not
+          contain them, which is invisible in the finished file. A customer
+          paid for those photos, so this cannot be a log line. */}
+      {(snap.missing_frames || []).length > 0 && (
+        <Alert color="orange" variant="light"
+          title={`${snap.missing_frames.length} photo(s) will be skipped — they have no styled frame`}>
+          <Text size="sm">
+            {snap.missing_frames.slice(0, 12).join(', ')}
+            {snap.missing_frames.length > 12
+              ? ` …and ${snap.missing_frames.length - 12} more` : ''}
+          </Text>
+          <Text size="xs" c="dimmed" mt={4}>
+            The clips around each one are joined directly, so the movie plays
+            continuously — but these photos do not appear in it at all. Usually
+            the styler failed on them (the content filter blocks the odd family
+            photo); “Regenerate image” on the photo retries just that one. If a
+            name here is not one of your photos, the storyboard is out of step
+            with the styled frames on disk — re-run Storyboard to reconcile it.
+          </Text>
+        </Alert>
+      )}
+
       {/* The last run's failures. The pipeline survives individual failures
           on purpose, so a command can finish having produced nothing — this
           is what stops that from reading as success. */}

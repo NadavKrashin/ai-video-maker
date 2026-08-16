@@ -1402,7 +1402,9 @@ class Pipeline:
     def _motion_prompt(self) -> str:
         return self.options.motion_prompt or self.config.motion_prompt
 
-    def _bridge_pairs(self, ordered: list[Path]) -> list[tuple[Path, Path]]:
+    def _bridge_pairs(
+        self, ordered: list[Path], *, quiet: bool = False
+    ) -> list[tuple[Path, Path]]:
         """Pair consecutive frames, bridging over any that are missing on disk.
 
         If a frame failed to generate, it is skipped and its nearest existing
@@ -1410,17 +1412,26 @@ class Pipeline:
         the final video stays continuous instead of leaving a gap. During a
         dry-run the files don't exist yet, so the naive full pairing is used for
         the plan.
+
+        `quiet` is for `snapshot()`, which calls this purely to work out the
+        clip list. Status is read on every panel poll, for every project, so
+        warning from there filled the log with an alarming line that named
+        neither the project nor the frames — one landed in the middle of
+        another project's styling run and read as if it belonged to it. The
+        condition is reported as DATA instead (`missing_frames`).
         """
         if self.dry_run:
             existing = list(ordered)
         else:
             existing = [p for p in ordered if p.exists()]
-            missing = len(ordered) - len(existing)
-            if missing:
+            missing = [p.name for p in ordered if not p.exists()]
+            if missing and not quiet:
                 logger.warning(
-                    "%d frame(s) missing; bridging over them by pairing the "
-                    "nearest existing neighbours so the video stays continuous.",
-                    missing,
+                    "%s: %d frame(s) have no styled image (%s); bridging over "
+                    "them by pairing the nearest existing neighbours. Those "
+                    "photos will NOT appear in the movie.",
+                    self.workspace.root.name, len(missing), ", ".join(missing[:8])
+                    + (f", …+{len(missing) - 8} more" if len(missing) > 8 else ""),
                 )
         return [(existing[i], existing[i + 1]) for i in range(len(existing) - 1)]
 
@@ -2388,6 +2399,7 @@ class Pipeline:
                 storyboard_error = str(exc)
 
         changed_frames: list[str] = []
+        missing_frames: list[str] = []
         clips: list[dict[str, Any]] = []
         stray: list[str] = []
         missing = 0
@@ -2400,7 +2412,15 @@ class Pipeline:
                 and (ws.root / f.output_path).stat().st_mtime > sb_mtime
             ]
             frames = [ws.root / f.output_path for f in storyboard.frames]
-            expected = [self._clip_name(a, b) for a, b in self._bridge_pairs(frames)]
+            # Frames the storyboard plans for that have no styled image on
+            # disk. They are BRIDGED OVER at render time — the movie stays
+            # continuous, but those photos silently do not appear in it, so
+            # this has to be visible rather than a line in a log nobody reads.
+            missing_frames = [p.name for p in frames if not p.exists()]
+            expected = [
+                self._clip_name(a, b)
+                for a, b in self._bridge_pairs(frames, quiet=True)
+            ]
             for clip in expected:
                 exists = clip.exists()
                 missing += 0 if exists else 1
@@ -2519,6 +2539,9 @@ class Pipeline:
             },
             "storyboard_error": storyboard_error,
             "changed_frames": changed_frames,
+            # Storyboard frames with no styled image: bridged over at
+            # render time, so these photos are absent from the movie.
+            "missing_frames": missing_frames,
             "clips": clips,
             "stray_clips": stray,
             "pending_renders": self.pending_renders(),
@@ -3183,6 +3206,14 @@ class Pipeline:
                     "still have the generic fallback prompt (planning failed "
                     "- quota/rate limit?). Re-run storyboard to re-plan them."
                 )
+
+        if snap["missing_frames"]:
+            print(
+                f"  !! {len(snap['missing_frames'])} frame(s) have no styled "
+                "image: " + ", ".join(snap["missing_frames"][:8])
+                + "  (bridged over - these photos are NOT in the movie; "
+                "re-style them or remove the photos)"
+            )
 
         if snap["changed_frames"]:
             print(

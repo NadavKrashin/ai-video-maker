@@ -259,6 +259,21 @@ Core design rules:
   person, never a bare collective "they". Enforced in `_MODE_A_SYSTEM`,
   and `_REWORD_MOTION_SYSTEM` (identity anchors are not "risky
   detail" to drop); pinned by TestIdentityPromptRules.
+- A BRIDGED FRAME IS A PHOTO THE CUSTOMER PAID FOR AND WILL NEVER SEE
+  (2026-08-16). `_bridge_pairs` skips a storyboard frame whose styled image
+  is missing and joins its neighbours, so the movie stays continuous and
+  simply does not contain that photo — invisible in the finished file. It
+  announced this with a WARNING that named neither the project nor the
+  frames, and it fired from `snapshot()`, which runs for EVERY project on
+  every panel poll: one landed mid-way through an unrelated project's
+  styling run and was read (by the user AND by me) as belonging to it.
+  Now: the warning names the project and the frames, `snapshot()` passes
+  `quiet=True` (status is a read, not an event), and the condition is DATA
+  — `snapshot()["missing_frames"]` + a status line + an orange panel alert.
+  A name in there that is not one of the project's photos means the
+  storyboard is out of step with styled_images/ (re-run storyboard to
+  reconcile), which is a different fault from a frame the styler failed on.
+  Pinned by TestBridgingIsAttributedAndVisible / TestSnapshotMissingFrames.
 - EVERY STALENESS IS VISIBLE, NONE IS FIXED SILENTLY (user question,
   2026-08-02: "is there any way I can know if something is not in the most
   updated state?"). Plan-time inputs (photo tags, cast epithets) used to
