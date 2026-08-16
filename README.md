@@ -60,6 +60,18 @@ chosen order; re-running skips files that already exist (`--force`
 re-downloads, `--dry-run` just lists). Ingesting into a project that already
 holds a *different* order's images fails loudly — one project per order.
 
+When nothing matches by name, the **order id alone** is tried last. The order
+ledger and Cloudinary each build the folder leaf from their own timestamp, so
+the two can disagree in the middle of the name — a real order was recorded as
+`…_00-45_מרגש` while its photos sat in `…_11-23_מרגש`, and every name-based
+match needs the real folder to be at least as long as the query, so all of
+them missed. The order id is the one part assigned once and copied around, so
+a single folder carrying it *is* that order's folder; ingest takes it and logs
+a warning naming both names. Two folders sharing one order id is a question,
+not a guess: it fails with both listed. The panel resolves the same way, so an
+order whose name has drifted shows one row (with its customer details and the
+real photo count) rather than a dead row plus an anonymous one.
+
 Setup: `config.json` carries the (public) `cloudinary_cloud_name` and
 `cloudinary_orders_folder`; the Admin-API credentials go in `.env` as
 `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` (Cloudinary console →

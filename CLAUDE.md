@@ -755,6 +755,28 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   polling fallback, exactly the old behaviour.
 - Newer frontend versions append the music mood to the order folder leaf
   (`..._HH-MM_warm-piano`); `_FOLDER_RE` in intake.py tolerates the suffix.
+- THE ORDER ID IS THE KEY, THE FOLDER NAME IS NOT (2026-08-16). Order
+  AM-160826-VKXQ could not be ingested at all: the Firestore doc recorded
+  `..._16.08.2026_00-45_מרגש` while the photos sat in `..._11-23_מרגש` —
+  same id, same customer, same date, different TIME (each side builds that
+  stamp itself, so it drifts when a folder is recreated or the doc is
+  written at a different moment than the upload). All three matches in
+  `resolve_order_folder` (exact, startswith, contains) require the real
+  folder to be at least as long as the query, so a name differing in the
+  MIDDLE misses every one. `_resolve_by_order_id` is now the last resort:
+  one folder carrying the id wins (with a LOUD warning naming both names —
+  the drift is a frontend bug worth fixing at the source), several is a
+  PipelineError listing them, never a guess. `/api/orders` resolves the same
+  way (`real_folder`), so a drifted order is ONE row carrying both its
+  Firestore metadata and the real folder's photo count — before this the
+  panel counted photos in a folder that doesn't exist ("nothing uploaded
+  yet"), its button posted an unresolvable name, and the real folder
+  appeared as a second anonymous row that a click would have turned into a
+  duplicate project. Row lookup also falls back to order id
+  (`ingested_by_order_id`) because order.json records the RESOLVED name.
+  A no-match error now lists the folders that DO exist — the panel is
+  usually the only place it is read and it has no shell. Pinned by
+  TestOrderIdSurvivesNameDrift / TestOrdersFollowTheOrderIdNotTheName.
 - `Pipeline.snapshot()` is the single source of truth for project status
   (cmd_status prints it, the API returns it). `projects/<name>/order.json`
   (written by ingest) ties a project to its Cloudinary order folder; the

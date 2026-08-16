@@ -53,6 +53,11 @@ _CHUNK_BYTES = 20 * 1024 * 1024
 # How much of a non-JSON error body (a proxy's HTML page) is worth quoting.
 _ERROR_EXCERPT_CHARS = 400
 
+# A "nothing matched" error names the folders that DO exist — the panel is
+# often the only place this is read, and it has no shell to go looking in.
+_MAX_LISTED_FOLDERS = 10
+_ORDERS_FOLDER_HINT = "video-orders"
+
 
 @dataclass(frozen=True)
 class OrderAsset:
@@ -107,13 +112,23 @@ def sort_assets(assets: list[OrderAsset]) -> list[OrderAsset]:
     )
 
 
+def order_id_of(leaf: str) -> str:
+    """The order id at the head of a folder leaf (``AM-160826-VKXQ_...``).
+
+    The one part of the name neither side computes: the rest (customer,
+    timestamp, mood) is rebuilt from data that can drift.
+    """
+    return leaf.split("_", 1)[0].strip()
+
+
 def resolve_order_folder(query: str, folders: list[str]) -> str:
     """Match an order reference against the order folder leaf names.
 
     Accepts the exact folder name, a unique prefix (the natural case: the
-    order id ``AM-...`` from the confirmation email), or a unique
-    case-insensitive substring (e.g. the customer's name). Ambiguity and
-    no-match both fail loudly with the candidates listed.
+    order id ``AM-...`` from the confirmation email), a unique
+    case-insensitive substring (e.g. the customer's name), and — when none of
+    those land — the order id on its own (see :func:`_resolve_by_order_id`).
+    Ambiguity and no-match both fail loudly with the candidates listed.
     """
     if query in folders:
         return query
@@ -123,13 +138,61 @@ def resolve_order_folder(query: str, folders: list[str]) -> str:
     if len(matches) == 1:
         return matches[0]
     if not matches:
-        raise PipelineError(
-            f"No Cloudinary order folder matches '{query}'.\n"
-            "List the available orders with:  python pipeline.py orders"
-        )
+        return _resolve_by_order_id(query, folders)
     listing = "\n".join(f"  {name}" for name in matches)
     raise PipelineError(
         f"'{query}' matches {len(matches)} order folders — be more specific:\n{listing}"
+    )
+
+
+def _resolve_by_order_id(query: str, folders: list[str]) -> str:
+    """Last resort: match on the order id alone, ignoring the rest of the name.
+
+    Every match above needs the real folder to be at least as long as the
+    query (exact, startswith, contains), so a name that differs in the MIDDLE
+    fails all three — and a real order did exactly that: the ledger recorded
+    ``AM-160826-VKXQ_...16.08.2026_00-45_מרגש`` while the photos sat in
+    ``..._11-23_מרגש``. Both sides build that timestamp separately, so it
+    drifts whenever the folder is recreated or the doc is written at a
+    different moment than the upload; the order id is the only half of the
+    name that is assigned once and copied around.
+
+    Matching on it is therefore MORE reliable than matching the full leaf, not
+    less — but it is done loudly, because a mismatch means the order ledger
+    and Cloudinary disagree and that is worth fixing at the source.
+    """
+    order_id = order_id_of(query)
+    candidates = [f for f in folders if order_id_of(f) == order_id] if order_id else []
+    if len(candidates) == 1:
+        if candidates[0] != query:
+            logger.warning(
+                "Order %s is recorded as '%s' but Cloudinary holds '%s' — "
+                "ingesting the folder that actually has the photos. The names "
+                "disagree only outside the order id, which usually means the "
+                "folder was recreated or the order doc's timestamp is stale.",
+                order_id, query, candidates[0],
+            )
+        return candidates[0]
+    if candidates:
+        listing = "\n".join(f"  {name}" for name in candidates)
+        raise PipelineError(
+            f"No folder is named '{query}', and {len(candidates)} folders share "
+            f"the order id {order_id} — ingest one of these by name:\n{listing}"
+        )
+    if not folders:
+        raise PipelineError(
+            f"No Cloudinary order folder matches '{query}' — there are no order "
+            f"folders under {_ORDERS_FOLDER_HINT}/ at all. The customer's photos "
+            "upload after payment is confirmed, so an order can exist with "
+            "nothing behind it."
+        )
+    shown = folders[:_MAX_LISTED_FOLDERS]
+    listing = "\n".join(f"  {name}" for name in shown)
+    remainder = len(folders) - len(shown)
+    raise PipelineError(
+        f"No Cloudinary order folder matches '{query}' — nothing there carries "
+        f"the order id {order_id}. Cloudinary currently holds:\n{listing}"
+        + (f"\n  … and {remainder} more" if remainder > 0 else "")
     )
 
 
