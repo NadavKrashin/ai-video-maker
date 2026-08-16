@@ -261,8 +261,15 @@ class Config(BaseModel):
     # frame points at nobody), so ANY roster change mushes. A group that is
     # the SAME on both sides is never gated by this — holding steady works at
     # any size.
-    unstageable_mover_budget: int = 2
-    unstageable_crowd_limit: int = 3
+    #
+    # These are the long-standing 3/4. They were briefly tightened to 2/3 on
+    # the theory that the pairs sitting just under the line were the ones
+    # still mushing, and reverted the same day at the user's request: that
+    # was a guess, and no render had been watched to back it. Tightening is
+    # now a config edit away — try 2/3 on one project and look at the result
+    # before making it everyone's default.
+    unstageable_mover_budget: int = 3
+    unstageable_crowd_limit: int = 4
 
     # --- Character consistency (see media/faces.py) ------------------------ #
     # A canonical styled portrait per cast member, cut for free out of frames

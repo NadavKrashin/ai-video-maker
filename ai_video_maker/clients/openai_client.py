@@ -1722,14 +1722,8 @@ def is_arrangement_swap(start_order: Any, end_order: Any) -> bool:
 # The live numbers are `Config.unstageable_mover_budget` /
 # `unstageable_crowd_limit`, because where this line sits is a judgement
 # settled by watching renders, not a fact — see the config for why.
-# Lowered from 3/4 to 2/3 on 2026-08-16 after the user reported faces
-# distorting whenever people travel between frames: the camera-transition
-# clips were the best-looking output on the last real movie, so the pairs
-# just under the old line were the ones still being staged and still
-# mushing. This is a hypothesis about taste, which is exactly why it moved
-# into config where it can be tuned without a deploy.
-_MOVER_BUDGET = 2
-_CROWD_LIMIT = 3
+_MOVER_BUDGET = 3
+_CROWD_LIMIT = 4
 
 
 def _head_count(value: Any) -> int:

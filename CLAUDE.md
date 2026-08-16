@@ -181,23 +181,27 @@ Core design rules:
   camera-family (`is_camera_transition`, strict-family on purpose). On
   am-130826-pcfd the gate flags 24 of 44 pairs — that movie really is
   unstageable nearly everywhere, which is the user's own diagnosis of it.
-  ...AND THE THRESHOLDS ARE CONFIG NOW, TIGHTENED (user report,
-  2026-08-16: faces distort whenever characters travel between the two
-  frames, and clients are unhappy). The camera clips being the best in the
-  movie says the pairs sitting JUST UNDER the old line were the ones still
-  mushing, so 3/4 became `unstageable_mover_budget` 2 /
-  `unstageable_crowd_limit` 3. They are config, not constants, because
-  where that line belongs is taste settled by watching renders — raise to
-  choreograph more, lower to hand more to the camera, and a per-project
-  config.json can pin its own. `_MOVER_BUDGET`/`_CROWD_LIMIT` survive only
-  as the fallback for callers with no config (the pure functions take
-  optional `mover_budget`/`crowd_limit`). The prompt's TOO MANY PEOPLE
-  block had "more than three"/"five or more" hard-coded; it is now a
-  template rendered by `mode_a_system(budget, limit)` — a stale numeral
-  there teaches the model a rule the gate does not apply, which is the
-  same incoherence the `unstageable_reason` wording fix was about. Never
-  reintroduce a literal number in that block. Pinned by
-  TestTheGateThresholdsAreTunable.
+  ...AND THE THRESHOLDS ARE CONFIG NOW — BUT THE DEFAULTS ARE STILL 3/4
+  (2026-08-16). The user reported faces distorting whenever characters
+  travel between the two frames, and I tightened 3/4 to 2/3 reasoning that
+  the camera clips being the best in the movie meant the pairs sitting JUST
+  UNDER the line were the ones still mushing. The user reverted it the same
+  day. TAKE THE LESSON, not just the numbers: that was a hypothesis about
+  taste with no watched render behind it, applied to every project at once
+  — exactly the kind of change this file says to make visible and optional
+  rather than default. Don't re-tighten the defaults without renders to
+  point at. What SURVIVES the revert is the tunability:
+  `unstageable_mover_budget` (3) / `unstageable_crowd_limit` (4) are config,
+  so 2/3 can be tried on ONE project's config.json and looked at.
+  `_MOVER_BUDGET`/`_CROWD_LIMIT` survive only as the fallback for callers
+  with no config (the pure functions take optional
+  `mover_budget`/`crowd_limit`). The prompt's TOO MANY PEOPLE block had
+  "more than three"/"five or more" hard-coded; it is now a template rendered
+  by `mode_a_system(budget, limit)` — a stale numeral there teaches the
+  model a rule the gate does not apply, which is the same incoherence the
+  `unstageable_reason` wording fix was about, and it is what makes tuning
+  coherent at all. Never reintroduce a literal number in that block. Pinned
+  by TestTheGateThresholdsAreTunable.
   Pinned by TestUnstageablePairs / TestCameraShiftPromptFamily /
   TestUnstageablePairsAreReplacedInCoercion /
   TestThePlannerIsTaughtTheSameGate / TestUnstageablePairsAreVisible /
