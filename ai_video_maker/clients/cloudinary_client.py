@@ -456,9 +456,20 @@ class CloudinaryClient:
     def list_order_assets(self, folder_leaf: str) -> list[OrderAsset]:
         """Every photo in one order folder, in movie order.
 
-        Primary: list by tag (the frontend tags each upload with the folder
-        leaf; works in both folder modes). Fallback: list by public_id prefix
-        (legacy fixed-folder mode, for orders that predate tagging).
+        Asked three ways, because a photo can be filed in an order folder by
+        three different routes and each hides from the other two lookups:
+
+        1. by TAG — the frontend tags every upload with the folder leaf. The
+           normal path, and it works in both of Cloudinary's folder modes.
+        2. by PUBLIC_ID PREFIX — legacy fixed-folder mode, where the folder
+           is part of the public_id, for orders that predate tagging.
+        3. by ASSET FOLDER — dynamic-folder mode files an asset by
+           ``asset_folder`` and leaves the public_id a bare name, so photos
+           put there BY HAND (console upload, or dragging existing assets
+           into the folder) carry neither the tag nor the path and are
+           invisible to both lookups above. A real order was rescued this way
+           after its folder was recreated in the console: ingest reported
+           "contains no images" for a folder that was plainly full.
         """
         raw = self._paged(
             f"resources/image/tags/{requests.utils.quote(folder_leaf, safe='')}",
@@ -477,6 +488,16 @@ class CloudinaryClient:
                 "resources",
                 f"list Cloudinary assets under {self.orders_folder}/{folder_leaf}/",
             )
+        if not raw:
+            raw = self._paged_allowing_404(
+                "resources/by_asset_folder",
+                {
+                    "asset_folder": f"{self.orders_folder}/{folder_leaf}",
+                    "context": "true",
+                },
+                f"list Cloudinary assets filed under {self.orders_folder}/"
+                f"{folder_leaf}",
+            )
         assets = [
             OrderAsset(
                 public_id=r["public_id"],
@@ -494,12 +515,13 @@ class CloudinaryClient:
     def _paged_allowing_404(
         self, path: str, params: dict[str, Any], description: str
     ) -> list[dict[str, Any]]:
-        """Listing that treats "no such tag/prefix" as an empty result.
+        """Listing that treats "no such tag/prefix/folder" as an empty result.
 
         A folder nobody has published into yet has no video tag at all, and
-        Cloudinary answers 404 rather than an empty list. Any other failure
-        still propagates: publishing derives the next version number from
-        these listings, so a silent error must not look like "nothing there".
+        Cloudinary answers 404 rather than an empty list; an asset folder that
+        does not exist answers the same way. Any other failure still
+        propagates: publishing derives the next version number from these
+        listings, so a silent error must not look like "nothing there".
         """
         try:
             return self._paged(path, params, "resources", description)

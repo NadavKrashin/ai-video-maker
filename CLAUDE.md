@@ -755,6 +755,26 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   polling fallback, exactly the old behaviour.
 - Newer frontend versions append the music mood to the order folder leaf
   (`..._HH-MM_warm-piano`); `_FOLDER_RE` in intake.py tolerates the suffix.
+- A PHOTO CAN REACH AN ORDER FOLDER THREE WAYS, AND EACH HIDES FROM THE
+  OTHER TWO LOOKUPS (2026-08-16). `list_order_assets` asked by TAG (the
+  frontend's own convention) then by PUBLIC_ID PREFIX (legacy fixed-folder
+  mode) — but dynamic-folder mode files an asset by `asset_folder` and
+  leaves the public_id a bare name, so photos put in BY HAND (console
+  upload, or dragging existing assets in) carry neither the tag nor the path
+  and are invisible to both. Real symptom on AM-160826-VKXQ after its folder
+  was recreated in the console: "Order folder '...' contains no images" for
+  a folder that was plainly full, and `cloudinary_photos` showing 0 in the
+  panel. Third fallback added: `resources/by_asset_folder` (Admin API,
+  returns assets in a folder regardless of public_id path), through
+  `_paged_allowing_404` because a nonexistent asset folder 404s rather than
+  answering empty. Order matters — tag first (cheapest, most precise),
+  prefix second, asset_folder last — so nothing about existing orders
+  changes. Note an unknown TAG answers 200-with-empty, not 404, which is why
+  the real failure was "no images" rather than an error. Positions still
+  come from `context.order` / the public_id's trailing number, so
+  hand-uploaded photos named IMG_xxxx sort by upload time, NOT the
+  customer's chosen order. Pinned by
+  TestOrderPhotosAreFoundHoweverTheyWereFiled.
 - THE ORDER ID IS THE KEY, THE FOLDER NAME IS NOT (2026-08-16). Order
   AM-160826-VKXQ could not be ingested at all: the Firestore doc recorded
   `..._16.08.2026_00-45_מרגש` while the photos sat in `..._11-23_מרגש` —
