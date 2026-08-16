@@ -1,0 +1,147 @@
+"""Cutting a cast member's face out of a styled frame.
+
+The pipeline knows two things it never used together: which styled frames a
+person appears in (``Frame.people``, tagged by hand in the panel) and where
+their face sits in each one (``FramePerson.x``/``y``, recorded as the CENTRE
+OF THE FACE by the same tagger). That is everything needed to cut a canonical
+portrait of each character out of work already paid for — no new vision call,
+no new UI, no image credits.
+
+Those portraits are the movie's identity anchors, and they serve both halves
+of the character-consistency problem:
+
+* styling a frame passes the references for whoever is in it, so the image
+  model matches faces it has already drawn instead of re-inventing a cartoon
+  of that person from each photo independently;
+* rendering a clip can pass them to a video model that accepts character
+  elements, so a face survives the transit between two frames.
+
+Everything here is local, free and deterministic, which is why it may be
+rebuilt whenever it is out of date — unlike every step that spends money, it
+needs no confirmation gate.
+"""
+from __future__ import annotations
+
+import math
+from pathlib import Path
+from typing import Optional
+
+from PIL import Image
+
+from ..logging_setup import logger
+
+# Side of the crop for a frame with ONE tagged person, as a fraction of the
+# frame's height. A face plus hair, neck and a little shoulder — enough for
+# the model to read bone structure, hairline and glasses, which are the
+# features the style prompt already treats as identity.
+DEFAULT_CROP_FRACTION = 0.5
+
+# Never cut a window smaller than this fraction of the height: past it the
+# crop is more JPEG-ish mush than face, and a bad reference is worse than
+# none (it teaches the wrong face with full confidence).
+_MIN_CROP_FRACTION = 0.16
+
+# References are saved at most this big. They are looked at, not printed, and
+# several of them ride along with one API call — a full-height crop of a
+# 1080p frame would trade real request weight for detail nothing reads.
+DEFAULT_REFERENCE_EDGE = 512
+
+
+def reference_crop_box(
+    width: int,
+    height: int,
+    x: float,
+    y: float,
+    people_in_frame: int = 1,
+    crop_fraction: float = DEFAULT_CROP_FRACTION,
+) -> tuple[int, int, int, int]:
+    """The (left, top, right, bottom) box to cut around one tagged face.
+
+    ``x``/``y`` are fractions of the frame, as ``FramePerson`` stores them.
+
+    The size of a face is the one thing the tagger does NOT record, so it is
+    estimated from how many people share the frame: a solo portrait fills a
+    lot of the height, a group photo divides it up. Dividing by ``sqrt(n)``
+    matches how faces actually shrink as a group grows (people spread across
+    two dimensions, not one) and degrades gently — a wrong guess here costs
+    some context around the face, never the face itself.
+
+    The box is clamped to the image, and clamping SLIDES it rather than
+    shrinking it, so a face tagged near an edge still yields a full-size
+    square instead of a thin strip.
+    """
+    fraction = max(_MIN_CROP_FRACTION, crop_fraction / math.sqrt(max(1, people_in_frame)))
+    side = int(round(min(height * fraction, float(min(width, height)))))
+    side = max(1, side)
+
+    cx = int(round(min(max(x, 0.0), 1.0) * width))
+    cy = int(round(min(max(y, 0.0), 1.0) * height))
+    half = side // 2
+
+    left = min(max(cx - half, 0), max(0, width - side))
+    top = min(max(cy - half, 0), max(0, height - side))
+    return left, top, left + side, top + side
+
+
+def write_face_reference(
+    src: Path,
+    dst: Path,
+    x: float,
+    y: float,
+    people_in_frame: int = 1,
+    crop_fraction: float = DEFAULT_CROP_FRACTION,
+    max_edge: int = DEFAULT_REFERENCE_EDGE,
+) -> bool:
+    """Cut one face out of ``src`` and save it to ``dst``. True when written.
+
+    Never raises: a reference is an optimisation, and a project whose frames
+    cannot be read must still style, plan and render exactly as it did
+    before. An unreadable frame is a warning and a ``False``.
+    """
+    try:
+        with Image.open(src) as im:
+            im = im.convert("RGB")
+            box = reference_crop_box(
+                im.width, im.height, x, y, people_in_frame, crop_fraction
+            )
+            face = im.crop(box)
+            if max(face.size) > max_edge:
+                face.thumbnail((max_edge, max_edge), Image.LANCZOS)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            face.save(dst, format="PNG")
+        return True
+    except Exception as exc:  # noqa: BLE001 - a reference is never load-bearing
+        logger.warning("Could not cut a face reference from %s: %s", src.name, exc)
+        return False
+
+
+def pick_reference_frame(
+    appearances: list[tuple[str, int]],
+    preferred: str = "",
+) -> Optional[str]:
+    """Which frame to cut a character's canonical portrait from.
+
+    ``appearances`` is ``(frame output_path, how many people are tagged in
+    that frame)`` in movie order. The pick is the frame with the FEWEST
+    people in it — the one where this person's face is largest and least
+    likely to be confused with a neighbour's — with the earliest such frame
+    winning a tie, so the answer never wobbles between runs.
+
+    ``preferred`` is the human's own choice (``Character.reference_frame``)
+    and wins outright when the person really is tagged in it. A stale
+    preference — a frame deleted, or one they were untagged from — falls back
+    to the automatic pick rather than leaving the character with no
+    reference at all.
+    """
+    if not appearances:
+        return None
+    if preferred:
+        for path, _ in appearances:
+            if path == preferred:
+                return path
+    # (crowd size, position) — min() is stable, but sorting on the index
+    # explicitly is what makes "earliest wins the tie" a promise rather than
+    # an implementation detail somebody could optimise away.
+    return min(
+        enumerate(appearances), key=lambda item: (item[1][1], item[0])
+    )[1][0]

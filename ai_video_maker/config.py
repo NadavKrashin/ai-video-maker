@@ -225,6 +225,27 @@ class Config(BaseModel):
     unstageable_mover_budget: int = 2
     unstageable_crowd_limit: int = 3
 
+    # --- Character consistency (see media/faces.py) ------------------------ #
+    # A canonical styled portrait per cast member, cut for free out of frames
+    # already styled, using the face positions the panel's tagger records.
+    # Two consumers: the image model is shown the people it has already drawn
+    # when styling a new frame of them, and a video model that accepts
+    # character elements can be shown them at render time.
+    #
+    # Off by default because it depends on TAGS: an untagged project has no
+    # references, gets none, and behaves exactly as it did before. Turning it
+    # off entirely also restores the old behaviour on tagged projects.
+    cast_references_enabled: bool = True
+    # Side of the face crop for a frame with one tagged person, as a fraction
+    # of the frame's height; a fuller frame divides it down (see
+    # reference_crop_box). Raise for more shoulders and background, lower to
+    # tighten onto the face.
+    face_reference_crop: float = 0.5
+    # How many references may ride along with ONE styling call. They compete
+    # with the photo being styled for the model's attention, and a crowded
+    # frame would otherwise attach a dozen portraits to a single edit.
+    max_style_references: int = 4
+
 
     # --- Spending ledger (projects/<name>/logs/costs.json) ----------------- #
     # Unit prices used to value every API call the pipeline makes, so each

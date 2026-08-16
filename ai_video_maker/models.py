@@ -80,6 +80,15 @@ class Character(BaseModel):
     id: str
     epithet: str
     notes: str = ""
+    # Which styled frame this person's canonical face reference is cut from
+    # (a Frame.output_path). Empty means "let the pipeline choose" — it takes
+    # the frame with the fewest people in it, where the face is largest. Set
+    # it by hand (or in the panel's Cast editor) when that pick is a bad
+    # likeness: the reference is what later stylings and character-aware
+    # video models are told this person looks like, so it is worth one
+    # glance. A frame this person is not tagged in is ignored rather than
+    # obeyed — see media/faces.pick_reference_frame.
+    reference_frame: str = ""
 
 
 class Transition(BaseModel):

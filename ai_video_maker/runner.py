@@ -73,6 +73,7 @@ from .media.ffmpeg import (
     render_photo_still,
     sample_clip_frames,
 )
+from .media.faces import pick_reference_frame, write_face_reference
 from .media.letter import (
     find_emoji_font,
     find_letter_font,
@@ -634,6 +635,11 @@ class Pipeline:
             # feed the re-plan that follows it.
             if self._propose_tags(storyboard):
                 self._save_storyboard(storyboard)
+            # Free and derived from what was just written, so it needs no
+            # gate: the cast's canonical faces are cut straight out of the
+            # styled frames. They anchor the NEXT styling of these people and
+            # can be handed to a character-aware video model at render time.
+            self.build_cast_references(storyboard)
         return storyboard
 
     def _load_saved_storyboard_tolerant(self) -> Optional[Storyboard]:
@@ -2648,6 +2654,91 @@ class Pipeline:
             )
         return tagged
 
+    # ------------------- the cast's canonical faces ------------------------ #
+    def cast_reference_paths(
+        self, storyboard: Optional[Storyboard] = None
+    ) -> dict[str, Path]:
+        """Cast id -> the face reference on disk, for the ids that have one.
+
+        A read, not a build: callers that need the files fresh call
+        ``build_cast_references`` first. Missing files are simply absent, so
+        a project that has never had references (or had them deleted) yields
+        an empty mapping and every consumer degrades to its old behaviour.
+        """
+        if not self.config.cast_references_enabled:
+            return {}
+        refs: dict[str, Path] = {}
+        ids = (
+            [c.id for c in storyboard.characters] if storyboard is not None
+            else None
+        )
+        directory = self.workspace.cast_refs_dir
+        if not directory.is_dir():
+            return {}
+        for path in sorted(directory.glob("*.png")):
+            if ids is None or path.stem in ids:
+                refs[path.stem] = path
+        return refs
+
+    def build_cast_references(self, storyboard: Storyboard) -> dict[str, str]:
+        """Cut one canonical face per cast member out of the styled frames.
+
+        Returns ``{cast id: the frame it was cut from}`` for everyone who got
+        one. Free, local and deterministic — no API call, no image credit —
+        which is why this is allowed to run itself whenever it is out of
+        date, unlike every step that spends money.
+
+        A character with no tagged appearance gets no reference and no
+        complaint: tagging is optional, and an untagged movie must keep
+        behaving exactly as it did before this existed.
+        """
+        if not self.config.cast_references_enabled or self.dry_run:
+            return {}
+        root = self.workspace.root
+        people_per_frame = {
+            f.output_path: len(f.people) for f in storyboard.frames
+        }
+        appearances: dict[str, list[tuple[str, int]]] = {}
+        positions: dict[tuple[str, str], FramePerson] = {}
+        for frame in storyboard.frames:
+            if not (root / frame.output_path).exists():
+                continue
+            for person in frame.people:
+                appearances.setdefault(person.id, []).append(
+                    (frame.output_path, people_per_frame[frame.output_path])
+                )
+                positions[(person.id, frame.output_path)] = person
+
+        written: dict[str, str] = {}
+        stale = set(self.cast_reference_paths().keys())
+        for character in storyboard.characters:
+            chosen = pick_reference_frame(
+                appearances.get(character.id, []), character.reference_frame
+            )
+            if chosen is None:
+                continue
+            person = positions[(character.id, chosen)]
+            dst = self.workspace.cast_refs_dir / f"{character.id}.png"
+            if write_face_reference(
+                root / chosen, dst, person.x, person.y,
+                people_per_frame.get(chosen, 1),
+                self.config.face_reference_crop,
+            ):
+                written[character.id] = chosen
+                stale.discard(character.id)
+
+        # A reference for somebody who is no longer in the cast (or no longer
+        # tagged anywhere) would keep being handed to the image model as a
+        # person to match. Derived data, so dropping it is free and safe.
+        for orphan in stale:
+            (self.workspace.cast_refs_dir / f"{orphan}.png").unlink(missing_ok=True)
+        if written:
+            logger.info(
+                "Cast references: %d face(s) cut from the styled frames.",
+                len(written),
+            )
+        return written
+
     def cmd_tag(self) -> None:
         """Propose who is in each frame, for a human to correct.
 
@@ -2715,6 +2806,7 @@ class Pipeline:
 
         tagged = self._propose_tags(storyboard)
         self._save_storyboard(storyboard)
+        references = self.build_cast_references(storyboard)
         epithets = {c.id: c.epithet for c in storyboard.characters}
         print(f"\nTagged {tagged} of {len(targets)} frame(s):")
         for frame in storyboard.frames:
@@ -2732,6 +2824,12 @@ class Pipeline:
             )
         if missing:
             print(f"  ({missing} frame(s) have no styled image yet.)")
+        if references:
+            print(
+                f"\nCut {len(references)} cast face reference(s) into "
+                f"{self.workspace.cast_refs_dir.name}/ — these are what later "
+                "stylings of these people are matched against."
+            )
         print(
             "\nThis is a DRAFT — check it in the panel's \"Who's in each "
             "photo\" tagger, especially where two people look alike.\n"

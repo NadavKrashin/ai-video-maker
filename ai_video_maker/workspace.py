@@ -89,6 +89,16 @@ class Workspace:
         return self.root / "styled_images"
 
     @property
+    def cast_refs_dir(self) -> Path:
+        """One canonical styled portrait per cast member (see media/faces.py).
+
+        Cut for free out of frames already styled, so this directory is
+        DERIVED data: deleting it costs nothing but a rebuild, and nothing
+        downstream may fail because it is empty. Not created by mkdirs —
+        a project with no tagged people never grows one."""
+        return self.root / "cast_refs"
+
+    @property
     def storyboard_dir(self) -> Path:
         return self.root / "storyboard"
 
