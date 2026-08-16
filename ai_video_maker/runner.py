@@ -2543,6 +2543,8 @@ class Pipeline:
                     if is_unstageable_pair(
                         _snapshot_people.get(t.start_frame),
                         _snapshot_people.get(t.end_frame),
+                        mover_budget=self.config.unstageable_mover_budget,
+                        crowd_limit=self.config.unstageable_crowd_limit,
                     )
                     and not is_camera_transition(t.motion_prompt)
                 ],

@@ -854,9 +854,10 @@ _MODE_A_SYSTEM = (
     "position swap is at least difficulty 4; a swap combined with a setting "
     "change is 5. "
     "TOO MANY PEOPLE TO CHOREOGRAPH: exit-and-entrance staging is for a FEW "
-    "people — it does not scale. When more than three people would have to "
-    "leave or arrive between the two frames, or either frame holds five or "
-    "more visible people and the roster or arrangement changes, per-person "
+    "people — it does not scale. When more than {{MOVER_BUDGET}} people would "
+    "have to leave or arrive between the two frames, or either frame holds "
+    "{{OVER_CROWD_LIMIT}} or more visible people and the roster or "
+    "arrangement changes, per-person "
     "choreography cannot fit the beat budget, and the video model answers a "
     "many-body staging with ghost dissolves, bodies blending into each "
     "other, and people vanishing — a real movie staged seven exits and "
@@ -956,6 +957,43 @@ _MODE_A_SYSTEM = (
     "calling, soft wind'). Real on-screen/world sounds only — no music, no "
     "speech, no narration."
 )
+
+# Small numbers as words, for prompts. The thresholds are config now, so the
+# sentence that teaches them cannot carry a hard-coded numeral any more.
+_NUMBER_WORDS = (
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+    "nine", "ten", "eleven", "twelve",
+)
+
+
+def _spell(n: int) -> str:
+    return _NUMBER_WORDS[n] if 0 <= n < len(_NUMBER_WORDS) else str(n)
+
+
+def mode_a_system(
+    mover_budget: Optional[int] = None, crowd_limit: Optional[int] = None
+) -> str:
+    """The planner's system prompt with the LIVE gate thresholds spelled in.
+
+    ``_MODE_A_SYSTEM`` is a template: the TOO MANY PEOPLE TO CHOREOGRAPH
+    block used to hard-code "more than three" / "five or more", which stopped
+    being true the moment the thresholds became config. Leaving stale numerals
+    in the prompt is the same failure the gate's own ``unstageable_reason``
+    was built to avoid — telling the model one rule while the code enforces
+    another erodes compliance on every pair whose wording still matters.
+
+    The thresholds resolve at CALL time (the module constants are defined
+    further down, next to the gate they document), so ``None`` here means
+    "whatever the fallback is", never a value frozen at import.
+    """
+    budget = _MOVER_BUDGET if mover_budget is None else mover_budget
+    limit = _CROWD_LIMIT if crowd_limit is None else crowd_limit
+    return (
+        _MODE_A_SYSTEM
+        .replace("{{MOVER_BUDGET}}", _spell(budget))
+        .replace("{{OVER_CROWD_LIMIT}}", _spell(limit + 1))
+    )
+
 
 _STORYBOARD_NO_TEXT_FRAMES = (
     " Every frame MUST depict a real visual scene with characters "
@@ -1136,7 +1174,11 @@ def _people_count(n: int) -> str:
     return f"{n} person" if n == 1 else f"{n} people"
 
 
-def _tagged_people_block(tags: list[Optional[list[str]]]) -> str:
+def _tagged_people_block(
+    tags: list[Optional[list[str]]],
+    mover_budget: Optional[int] = None,
+    crowd_limit: Optional[int] = None,
+) -> str:
     """Tell the planner who is in each frame, and what that means per pair.
 
     Two halves, because the tags answer two different questions the planner
@@ -1167,7 +1209,9 @@ def _tagged_people_block(tags: list[Optional[list[str]]]) -> str:
         shared = [p for p in start if p in end]
         gone = [p for p in start if p not in end]
         arrived = [p for p in end if p not in start]
-        reason = unstageable_reason(start, end)
+        reason = unstageable_reason(
+            start, end, mover_budget=mover_budget, crowd_limit=crowd_limit
+        )
         if reason:
             # Do NOT prescribe the exit-and-entrance here: on these pairs it
             # is exactly the choreography that renders as ghost dissolves
@@ -1550,12 +1594,23 @@ def is_arrangement_swap(start_order: Any, end_order: Any) -> bool:
 # holding 9-13 people) that assumption broke: plans staged seven exits and
 # three entrances in ten seconds and Kling answered with ghost dissolves,
 # bodies mushing into each other, and people vanishing — and a sampled
-# 4-mover pair (two out, two in) already showed identity churn. The budget
-# is 3 movers; the crowd limit exists because past ~4 people the epithets
-# stop picking anyone out ("the teenage boy with short brown hair" in a
-# 13-person frame points at nobody), so choreography of ANY size mushes.
-_MOVER_BUDGET = 3
-_CROWD_LIMIT = 4
+# 4-mover pair (two out, two in) already showed identity churn. The crowd
+# limit exists because past a handful of people the epithets stop picking
+# anyone out ("the teenage boy with short brown hair" in a 13-person frame
+# points at nobody), so choreography of ANY size mushes.
+#
+# These are only the FALLBACK values, used when no config is threaded in.
+# The live numbers are `Config.unstageable_mover_budget` /
+# `unstageable_crowd_limit`, because where this line sits is a judgement
+# settled by watching renders, not a fact — see the config for why.
+# Lowered from 3/4 to 2/3 on 2026-08-16 after the user reported faces
+# distorting whenever people travel between frames: the camera-transition
+# clips were the best-looking output on the last real movie, so the pairs
+# just under the old line were the ones still being staged and still
+# mushing. This is a hypothesis about taste, which is exactly why it moved
+# into config where it can be tuned without a deploy.
+_MOVER_BUDGET = 2
+_CROWD_LIMIT = 3
 
 
 def _head_count(value: Any) -> int:
@@ -1569,15 +1624,21 @@ def _head_count(value: Any) -> int:
 def unstageable_reason(
     start_order: Any, end_order: Any,
     start_heads: Any = None, end_heads: Any = None,
+    mover_budget: Optional[int] = None, crowd_limit: Optional[int] = None,
 ) -> Optional[str]:
     """WHY this pair can no longer be staged through the people, or None.
 
-    ``"movers"``  — more than ``_MOVER_BUDGET`` people leave or arrive, so
+    ``"movers"``  — more than ``mover_budget`` people leave or arrive, so
     the choreography cannot fit the beat budget however few people are on
-    screen. ``"crowd"`` — the frame is fuller than ``_CROWD_LIMIT`` and the
+    screen. ``"crowd"`` — the frame is fuller than ``crowd_limit`` and the
     group changes at all: past that size the epithets stop picking anyone
     out ("the teenage boy with short brown hair" in a 13-person frame points
     at nobody), so choreography of ANY size mushes.
+
+    Both thresholds come from the config (``unstageable_mover_budget`` /
+    ``unstageable_crowd_limit``) wherever a caller has one; the module
+    defaults stand in for the callers that don't, so this stays a pure
+    function usable from a test with no config in hand.
 
     The reason exists so the explanation handed to the planner names the
     rule that actually fired. Deriving the wording separately let the two
@@ -1601,6 +1662,8 @@ def unstageable_reason(
     """
     if not isinstance(start_order, list) or not isinstance(end_order, list):
         return None
+    budget = _MOVER_BUDGET if mover_budget is None else mover_budget
+    limit = _CROWD_LIMIT if crowd_limit is None else crowd_limit
     starts = [_person_tokens(n) for n in start_order]
     ends = [_person_tokens(n) for n in end_order]
     pairs = _match_people(starts, ends)
@@ -1608,13 +1671,13 @@ def unstageable_reason(
         movers = abs(len(starts) - len(ends))
     else:
         movers = (len(starts) - len(pairs)) + (len(ends) - len(pairs))
-    if movers > _MOVER_BUDGET:
+    if movers > budget:
         return "movers"
     crowd = max(
         len(starts), len(ends),
         _head_count(start_heads), _head_count(end_heads),
     )
-    if crowd <= _CROWD_LIMIT:
+    if crowd <= limit:
         return None
     if movers > 0 or is_arrangement_swap(start_order, end_order):
         return "crowd"
@@ -1624,6 +1687,7 @@ def unstageable_reason(
 def is_unstageable_pair(
     start_order: Any, end_order: Any,
     start_heads: Any = None, end_heads: Any = None,
+    mover_budget: Optional[int] = None, crowd_limit: Optional[int] = None,
 ) -> bool:
     """Can this pair no longer be staged through the people themselves?
 
@@ -1632,7 +1696,8 @@ def is_unstageable_pair(
     repairing the wording cannot help when the staging itself is impossible.
     """
     return unstageable_reason(
-        start_order, end_order, start_heads, end_heads
+        start_order, end_order, start_heads, end_heads,
+        mover_budget, crowd_limit,
     ) is not None
 
 
@@ -1782,6 +1847,13 @@ class OpenAIClient:
         # than being dotted around the runner: the planner alone makes
         # condense/restage/reword calls the runner never sees.
         self.on_spend: Optional[Callable[[str, float, str], None]] = None
+
+    def _mode_a_system(self) -> str:
+        """The planner's standing instructions, carrying THIS config's gate."""
+        return mode_a_system(
+            self.config.unstageable_mover_budget,
+            self.config.unstageable_crowd_limit,
+        )
 
     # --- spending ----------------------------------------------------------- #
     def _spend(self, kind: str, usd: float, detail: str) -> None:
@@ -2039,7 +2111,7 @@ class OpenAIClient:
         # The reviewer must judge — and rewrite — under exactly the rules the
         # planner writes under, including everything learned so far.
         system = (
-            _MODE_A_SYSTEM
+            self._mode_a_system()
             + lesson_prompt_block(lessons or [], SCOPE_MOTION)
             + "\n\n--- YOUR TASK NOW ---\n"
             + _CLIP_REVIEW_SYSTEM
@@ -2456,7 +2528,11 @@ class OpenAIClient:
         tags = list(frame_people or [])
         tags += [None] * (n - len(tags))
         if any(t is not None for t in tags):
-            instruction += "\n\n" + _tagged_people_block(tags)
+            instruction += "\n\n" + _tagged_people_block(
+                tags,
+                self.config.unstageable_mover_budget,
+                self.config.unstageable_crowd_limit,
+            )
         if global_context.strip():
             # The user's whole-movie guidance (storyboard.global_motion_prompt).
             # It is prepended verbatim to every motion prompt at render time,
@@ -2471,7 +2547,10 @@ class OpenAIClient:
         # Learned rules go in the SYSTEM prompt, right after the standing
         # instructions they correct: they are policy, not per-request
         # context, and a targeted re-plan of one pair must get them too.
-        system = _MODE_A_SYSTEM + lesson_prompt_block(lessons or [], SCOPE_MOTION)
+        system = (
+            self._mode_a_system()
+            + lesson_prompt_block(lessons or [], SCOPE_MOTION)
+        )
 
         content: list[dict[str, Any]] = [{"type": "text", "text": instruction}]
         for i, fp in enumerate(frames, start=1):
@@ -2583,6 +2662,8 @@ class OpenAIClient:
             # question this branch has already answered with "don't".
             if is_unstageable_pair(
                 *orders(i), item.get("start_heads"), item.get("end_heads"),
+                self.config.unstageable_mover_budget,
+                self.config.unstageable_crowd_limit,
             ):
                 logger.info(
                     "Pair %d cannot be staged through its people (too many "

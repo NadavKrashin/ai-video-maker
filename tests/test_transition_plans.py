@@ -1324,6 +1324,82 @@ class TestUnstageablePairs:
         )
 
 
+class TestTheGateThresholdsAreTunable:
+    """Where choreography gives way to the camera is CONFIG, not a constant.
+
+    The line was 3 movers / 4 in a crowd; the user then reported faces
+    distorting whenever people travel between frames, and the camera clips
+    being the best-looking output on the last real movie. That says the pairs
+    sitting just under the old line were the ones still mushing — but "just
+    under" is a judgement about taste that only watching renders can settle,
+    so the numbers moved into config where they can be tuned per project and
+    without a deploy, and the defaults tightened to 2/3.
+    """
+
+    def test_three_movers_are_now_gated(self):
+        # One out, two in. Stageable under the old budget of 3, camera now.
+        assert is_unstageable_pair(["the man", "the tall woman"],
+                                   ["the man", "the small boy", "the girl"])
+
+    def test_two_movers_are_still_staged(self):
+        # The designed hand-over case: one leaves, one arrives.
+        assert not is_unstageable_pair(["the man"], ["the small boy"])
+
+    def test_a_four_person_frame_that_changes_is_now_gated(self):
+        four = ["the man", "the woman", "the small boy", "the girl"]
+        assert is_unstageable_pair(four, four[:-1] + ["the older man"])
+
+    def test_a_four_person_frame_holding_steady_is_still_staged(self):
+        # The crowd rule has never applied to a group that does not change:
+        # hold-steady staging works at any size.
+        four = ["the man", "the woman", "the small boy", "the girl"]
+        assert not is_unstageable_pair(four, list(four))
+
+    def test_an_explicit_budget_overrides_the_default(self):
+        loose = dict(mover_budget=3, crowd_limit=4)
+        assert not is_unstageable_pair(
+            ["the man", "the tall woman"],
+            ["the man", "the small boy", "the girl"],
+            **loose,
+        )
+        assert is_unstageable_pair(
+            ["the man", "the tall woman"],
+            ["the man", "the small boy", "the girl"],
+        )
+
+    def test_the_config_carries_the_live_numbers(self):
+        from ai_video_maker.config import Config
+        assert Config.model_fields["unstageable_mover_budget"].default == 2
+        assert Config.model_fields["unstageable_crowd_limit"].default == 3
+
+    def test_the_planner_is_told_the_same_numbers_the_code_enforces(self):
+        # The prompt used to hard-code "more than three" / "five or more".
+        # A stale numeral there teaches the model a rule the gate does not
+        # apply, which is exactly the incoherence unstageable_reason exists
+        # to avoid — so the sentence is generated from the live thresholds.
+        from ai_video_maker.clients.openai_client import mode_a_system
+
+        tight = mode_a_system(2, 3)
+        assert "more than two people" in tight
+        assert "four or more visible people" in tight
+
+        loose = mode_a_system(5, 8)
+        assert "more than five people" in loose
+        assert "nine or more visible people" in loose
+
+    def test_no_placeholder_ever_reaches_the_model(self):
+        from ai_video_maker.clients.openai_client import mode_a_system
+        assert "{{" not in mode_a_system()
+        assert "{{" not in mode_a_system(4, 6)
+
+    def test_the_client_spells_in_its_own_config(self, config):
+        from ai_video_maker.clients.openai_client import OpenAIClient
+
+        config.unstageable_mover_budget = 6
+        config.unstageable_crowd_limit = 9
+        assert "more than six people" in OpenAIClient(config)._mode_a_system()
+
+
 class TestCameraShiftPromptFamily:
     """The deterministic camera prompt, picked by the pair's shape."""
 

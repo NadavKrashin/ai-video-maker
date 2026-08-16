@@ -705,14 +705,17 @@ prompt has nobody crossing or leaving frame, a targeted rewrite restages it
 as an exit past the camera plus a walk back in. Prompt-side instructions
 alone kept missing these.
 
+<a id="when-the-camera-takes-over"></a>
+
 **Unstageable pairs become camera transitions.** Exit-and-entrance staging
 works for a couple of people and falls apart in a crowd: on a real order the
 planner staged seven exits and three entrances inside one ten-second clip and
 the video model rendered ghost dissolves, bodies mushing into each other, and
 people vanishing. The pipeline now decides in code, per pair, whether the
-staging can exist at all: more than **3 people** leaving or arriving, or a
-frame holding **more than 4 people** whose roster or arrangement changes,
-replaces the choreography with a deterministic **camera transition** — the
+staging can exist at all: more people leaving or arriving than
+`unstageable_mover_budget` (default **2**), or a frame holding more people
+than `unstageable_crowd_limit` (default **3**) whose roster or arrangement
+changes, replaces the choreography with a deterministic **camera transition** — the
 camera travels to the new setting and settles on exactly what the end frame
 shows — with a drift-to-one-person variant when a group narrows to one of its
 own, a scene variant when the end frame is empty, and a **turn-away variant
@@ -725,6 +728,17 @@ reports a per-frame **headcount census** (everyone visible, tagged or not),
 so a crowded frame with only two people tagged still gates correctly. Small
 pairs keep subject staging — this is the only other place camera language is
 allowed, alongside the offscreen last resort below.
+
+Both thresholds are **config, not constants** (`unstageable_mover_budget` /
+`unstageable_crowd_limit`), because where the line sits is a matter of taste
+only watching renders can settle: raise them to let the planner choreograph
+more pairs, lower them to hand more pairs to the camera, and pin a different
+answer for one movie with a per-project `config.json`. They tightened from
+3/4 to 2/3 in August 2026 after faces kept distorting on pairs where people
+travel between frames, while the camera clips were the best-looking output in
+the movie. The planner's own instructions are generated from whatever the
+numbers currently are, so the rule it is taught always matches the rule the
+code enforces.
 
 The gate acts when a pair is planned, so storyboards written before it keep
 their many-mover choreography until re-planned. Those pairs are surfaced —
@@ -1214,6 +1228,8 @@ bed costs nothing — it is your own file). Requires `ffmpeg`/`ffprobe` on your
 | `learning_enabled` | `true` (default): rules learned from clip feedback are appended to planning/style prompts. `false` stops sending them (nothing is deleted). |
 | `max_lessons_in_prompt` | How many active rules ride along with one call (default `25`, newest win). |
 | `clip_review_frames` | How many stills are sampled across a clip when the reviewer watches it (default `8`). |
+| `unstageable_mover_budget` | How many people may leave or arrive between two frames and still be choreographed individually (default `2`). Above it, the pair gets a deterministic camera transition instead — see [When the camera takes over](#when-the-camera-takes-over). |
+| `unstageable_crowd_limit` | Above this many visible people in either frame, ANY roster change hands the pair to the camera (default `3`). A group that is the same on both sides is never gated by this. |
 
 All spending figures are **estimates** derived from these prices — see
 [What it costs](#what-it-costs-spending).

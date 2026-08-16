@@ -205,6 +205,26 @@ class Config(BaseModel):
     # and try again, up to this many times. Set 0 to disable and fail fast.
     moderation_reword_attempts: int = 3
 
+    # --- Where person-choreography gives way to a camera move -------------- #
+    # A pair whose people cannot be staged one-by-one inside the beat budget
+    # gets a deterministic camera transition instead (see unstageable_reason
+    # in clients/openai_client.py). These two numbers are that threshold, and
+    # they are config rather than constants because the right value is a
+    # matter of taste that is only settled by watching renders: raise them to
+    # let the planner choreograph more pairs, lower them to hand more pairs to
+    # the camera. A per-project config.json can pin its own.
+    #
+    # mover budget: how many people may leave or arrive and still be staged
+    # individually. Roughly one mover per beat (5s = one beat, 10s = two),
+    # plus a little slack.
+    # crowd limit: above this many visible figures, an epithet stops picking
+    # anyone out ("the teenage boy with short brown hair" in a 13-person
+    # frame points at nobody), so ANY roster change mushes. A group that is
+    # the SAME on both sides is never gated by this — holding steady works at
+    # any size.
+    unstageable_mover_budget: int = 2
+    unstageable_crowd_limit: int = 3
+
 
     # --- Spending ledger (projects/<name>/logs/costs.json) ----------------- #
     # Unit prices used to value every API call the pipeline makes, so each
