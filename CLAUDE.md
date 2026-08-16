@@ -934,9 +934,16 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   being judged); fal/Kling rejections never match it, so clip rewording —
   where the WORDS really are the problem — is untouched.
   `moderation_failure_hint` turns the 400 into the lever that actually
-  moves it (crop tighter, swap the shot, or accept the frame is bridged
-  over), and `_style_images` records THAT on the failure so the panel shows
-  it instead of a raw payload. Pinned by TestOutputStageModeration.
+  moves it, and `_style_images` records THAT on the failure so the panel
+  shows it instead of a raw payload. On the CAUSE: both failing frames
+  were shot inside Disney gift shops — Mickey/Minnie popcorn buckets
+  held at chest height, a Donald Duck plush, shelves of character
+  merchandise. Styling asks for a CARTOON, so the model is being told to
+  draw Mickey Mouse, which image models refuse on copyright grounds; the
+  other 28 photos of the same trip styled fine. Copyrighted characters
+  are therefore listed FIRST in the hint, ahead of the full-body-child
+  theory I guessed at before actually looking at the photos. Pinned by
+  TestOutputStageModeration.
 - Content filters false-positive on family content: OpenAI during styling,
   and fal/Kling on clip motion prompts (`content_policy_violation`). Kling's
   worst trigger is a baby/child being physically handled (lifted, bounced,

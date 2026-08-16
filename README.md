@@ -1087,8 +1087,10 @@ re-rolls the same source photo past the same classifier — a real order spent
 ~7 minutes per photo proving it. Those stop after the first attempt and report
 what actually moves them: crop the photo tighter (head and shoulders), swap in
 another shot, or accept that the frame is bridged over and that photo will not
-appear in the movie. Ordinary family photos do trip this; full-body shots of
-children are the usual cause.
+appear in the movie. Two things trip it on ordinary customer photos:
+**copyrighted characters in shot** (theme-park merchandise, plush toys,
+printed cups — styling asks for a cartoon, and a cartoon of Mickey Mouse is
+exactly what an image model refuses to draw) and full-body shots of children.
 
 ---
 

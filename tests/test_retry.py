@@ -51,6 +51,11 @@ class TestOutputStageModeration:
         hint = moderation_failure_hint(RuntimeError(_OUTPUT_MODERATION))
         assert "Rewording cannot fix" in hint
         assert "Crop" in hint  # what to actually do
+        # Both real causes, because they need different crops: the copyrighted
+        # character came first on the order that prompted this (a Disney shop
+        # full of Mickey merchandise), not the child-in-frame one.
+        assert "COPYRIGHTED CHARACTERS" in hint
+        assert "children" in hint
 
     def test_a_non_moderation_error_gets_no_hint(self):
         assert moderation_failure_hint(RuntimeError("500 server error")) == ""

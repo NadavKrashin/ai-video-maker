@@ -93,11 +93,14 @@ def moderation_failure_hint(exc: BaseException) -> str:
         return (
             "The safety filter rejected the GENERATED image, not the prompt "
             "(moderation_stage: output). Rewording cannot fix that — what the "
-            "styler draws is driven by the source photo. Ordinary family "
-            "photos do trip this, most often full-body shots of children. "
-            "Crop the photo tighter (head and shoulders), swap in another "
-            "shot, or leave it out: a frame with no styled image is bridged "
-            "over, and that photo simply does not appear in the movie."
+            "styler draws is driven by the source photo. Two things trip it "
+            "on ordinary customer photos: COPYRIGHTED CHARACTERS in shot "
+            "(theme-park merchandise, plush toys, printed cups — styling asks "
+            "for a cartoon, and a cartoon of Mickey Mouse is exactly what an "
+            "image model refuses to draw), and full-body shots of children. "
+            "Crop the offending part out, swap in another shot, or leave it "
+            "out: a frame with no styled image is bridged over, and that "
+            "photo simply does not appear in the movie."
         )
     return (
         "A content filter rejected this request. The prompt is reworded and "
