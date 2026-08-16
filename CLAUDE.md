@@ -143,7 +143,7 @@ Core design rules:
   move is a global solution, no person-to-person mapping at all.
   `is_unstageable_pair` (openai_client.py) decides in code from the pair's
   rosters (tags first, model orders second): movers (leave+arrive) >
-  `_MOVER_BUDGET` (3), or crowd > `_CROWD_LIMIT` (4) while the roster or
+  the mover budget, or crowd > the crowd limit while the roster or
   arrangement changes → the planned choreography is REPLACED (never
   repaired) by `camera_shift_prompt`, a deterministic 4-shape family:
   drift-to-one-of-its-own (the reviewer's own 12_to_13 suggestion),
@@ -181,6 +181,23 @@ Core design rules:
   camera-family (`is_camera_transition`, strict-family on purpose). On
   am-130826-pcfd the gate flags 24 of 44 pairs — that movie really is
   unstageable nearly everywhere, which is the user's own diagnosis of it.
+  ...AND THE THRESHOLDS ARE CONFIG NOW, TIGHTENED (user report,
+  2026-08-16: faces distort whenever characters travel between the two
+  frames, and clients are unhappy). The camera clips being the best in the
+  movie says the pairs sitting JUST UNDER the old line were the ones still
+  mushing, so 3/4 became `unstageable_mover_budget` 2 /
+  `unstageable_crowd_limit` 3. They are config, not constants, because
+  where that line belongs is taste settled by watching renders — raise to
+  choreograph more, lower to hand more to the camera, and a per-project
+  config.json can pin its own. `_MOVER_BUDGET`/`_CROWD_LIMIT` survive only
+  as the fallback for callers with no config (the pure functions take
+  optional `mover_budget`/`crowd_limit`). The prompt's TOO MANY PEOPLE
+  block had "more than three"/"five or more" hard-coded; it is now a
+  template rendered by `mode_a_system(budget, limit)` — a stale numeral
+  there teaches the model a rule the gate does not apply, which is the
+  same incoherence the `unstageable_reason` wording fix was about. Never
+  reintroduce a literal number in that block. Pinned by
+  TestTheGateThresholdsAreTunable.
   Pinned by TestUnstageablePairs / TestCameraShiftPromptFamily /
   TestUnstageablePairsAreReplacedInCoercion /
   TestThePlannerIsTaughtTheSameGate / TestUnstageablePairsAreVisible /
@@ -327,6 +344,76 @@ Core design rules:
   destroy the hand work. Pinned by TestConfirmedIdentities /
   TestTagsDriveSwapDetection / TestIdentifyPeopleCoercion /
   TestFrameTagsSurviveStoryboardRuns / TestTaggedPeople.
+- THE CAST HAS FACES, NOT JUST NAMES (user report, 2026-08-16: "the same
+  person might not look the same between images"). Styling was structurally
+  guaranteed to drift: `style_image` sent ONE image (the photo) + a text
+  prompt, 8 in parallel, so frame 3 and frame 17 never knew they showed the
+  same person. "Preserve the likeness" anchors each output to THAT
+  PHOTOGRAPH, and an album spans years — honouring a 2019 and a 2024 photo
+  faithfully yields two different-looking cartoons. Correct per image, wrong
+  per movie. Fix: `media/faces.py` cuts one canonical portrait per cast
+  member into `cast_refs/<id>.png`, and `style_image` sends the relevant
+  ones alongside the photo. The crop needs NO new call and NO new UI —
+  `FramePerson.x/y` is already the face CENTRE, recorded by the panel's
+  tagger; face SIZE is the one thing not recorded, so it is estimated as
+  `crop/sqrt(people_in_frame)` (faces shrink in two dimensions as a group
+  grows) with a floor, because a mush crop teaches the wrong face with full
+  confidence. Free and derived, so it rebuilds itself on tag changes rather
+  than sitting behind a gate — the opposite of everything that spends money.
+  Key invariants: `_STYLE_REFERENCE_INSTRUCTION` says the references are
+  IDENTITY ONLY (they are frames of this same movie, full of scenery and
+  clothing from another moment that the edit endpoint will happily blend
+  in) and that THE PHOTOGRAPH WINS on clothing/action/place — people change
+  outfits between photos taken years apart. A single-image call stays
+  byte-identical to what it always was, so an untagged project cannot
+  behave differently. `references_for_frame` is the ONE decider, called both
+  when styling and when checking staleness — two implementations would
+  drift and report every frame stale forever. `Frame.styled_refs` stamps
+  what a frame was drawn against; an EMPTY stamp means "styled from no
+  references", which is true of every pre-existing frame and is deliberately
+  NOT reported outdated (a project fine yesterday must not wake up asking
+  for money). References come from the SAVED storyboard, which is what lets
+  all of this work with NO pipeline reordering: the first styling has no
+  tags, and the tags arriving afterwards land on the next deliberate
+  `--restyle-frame`. Pinned by tests/test_cast_references.py.
+- ...AND THE DRIFT THAT ALREADY HAPPENED IS FINDABLE (same day). `faces`
+  (cmd_faces) rebuilds the sheet for free; `faces --audit` is one vision
+  call comparing every tagged appearance of each cast member and naming the
+  frames where somebody is drawn as someone else. ONE call for the whole
+  cast, not one per person — a 29-entry cast is a real shape here.
+  `_FACE_AUDIT_SYSTEM` is conservative BY DESIGN: expression, angle,
+  lighting, clothing, haircut and crop quality are explicitly normal and
+  never findings, because this list invites a human to spend an image
+  credit per frame on it — a false alarm costs them, a miss costs nothing
+  they were not already living with. `_coerce_face_audit` drops unknown ids
+  and foreign labels, and a character flagged in EVERY frame is reduced to
+  "no odd frames, keep the note" (naming every crop is not a finding about
+  which frame to redo). Findings persist in `storyboard/face_audit.json` so
+  the panel shows yesterday's answer without re-buying it. NOTHING is ever
+  re-styled automatically — it prints/links the `--restyle-frame` command,
+  same rule as clips.
+- CHARACTER ELEMENTS ARE PLUMBED BUT OFF (2026-08-16). Newer Kling accepts
+  reference portraits that pin identity through a shot — exactly the
+  face-distortion-in-transit complaint. Shaped like `fal_start_frame_field`
+  / `fal_end_frame_field` (`fal_elements_field`, `fal_element_image_field`,
+  `fal_max_elements`, `fal_element_prompt_template`, `fal_elements_partial`)
+  so enabling it is CONFIG, not code. It ships off because fal.ai was
+  unreachable from the session that wrote it and ONE question decides
+  everything: does the endpoint take elements AND an end frame together?
+  Every clip here is pinned to the next styled photo; an endpoint that makes
+  you choose breaks chaining and `combine` shows jumps — that is not a
+  trade-off, it is a different product. Elements go only to people tagged in
+  BOTH frames (someone who leaves has no continuous identity to hold, and is
+  exactly who we stage an exit for so the model won't carry them across),
+  and NEVER to camera transitions (they name nobody, and they are already
+  the best clips). `fal_elements_partial` encodes the open question instead
+  of guessing: more qualifiers than the cap sends NONE by default (one crisp
+  face among three drifting can read worse than four drifting together);
+  flip it to rescue the most-recurring face. Elements join the render
+  fingerprint ONLY when present, so turning this on cannot orphan a paid
+  pending render. Also closed the last invisible staleness: a clip records
+  which model rendered it, and a mismatch with `fal_model_id` is flagged
+  (`model_changed`) rather than letting a movie silently mix two models.
 - AN EPITHET MUST OUTLIVE THE PHOTO IT CAME FROM (user call, 2026-08-02).
   The cast is pinned once and reused for the WHOLE movie, but the movie is
   built from photos taken months or years apart — so a clothing-anchored
@@ -614,7 +701,9 @@ Core design rules:
 
 Lifecycle: (`orders` → `ingest` for paid web orders, or `init` + manual
 images) → `storyboard` (stops for review; writes json/md/preview.html;
-`tag` then states who is in each frame, which later plans are told as fact)
+`tag` then states who is in each frame, which later plans are told as fact;
+`faces` cuts the cast's canonical portraits from those tags, and
+`faces --audit` reports where somebody is drawn as a different person)
 → `render` (plan + confirm; `--clip ID` redoes one clip) → `audio` → `combine`
 → `publish` (web orders only: delivers the movie into the order's Cloudinary
 folder as the next `final_vN`); `run` chains them (up to `combine`) with

@@ -411,6 +411,12 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, ve
             outdated
           </Badge>
         )}
+        {clip?.model_changed && (
+          <Badge variant="light" color="grape"
+            title={`Rendered with ${clip.model}, which is no longer the configured video model. The clip is fine — but a movie mixing two models can look inconsistent. Regenerate it when you want them to match (spends credits).`}>
+            older video model
+          </Badge>
+        )}
         <Text size="xs" c="dimmed">{tr.duration}s</Text>
         {edited && <Badge variant="light" color="yellow">edited</Badge>}
         {placeholder && !edited && (
@@ -716,6 +722,108 @@ function StoryboardPanel({ ask, locked, info, onReplanAll }) {
   );
 }
 
+// The cast's canonical faces: one styled portrait per person, cut for free
+// out of frames already paid for. They are what later stylings of that person
+// are matched against, so this card exists to answer one question at a
+// glance — "is THIS the face the model will be told to draw?" — and to let
+// you point it at a better frame when it isn't.
+function CastFacesCard({
+  name, snap, storyboard, locked, mediaV, audit, onRebuild, onAudit, onPickFrame
+}) {
+  const cast = storyboard.characters || [];
+  const findings = audit.characters || {};
+  // Which frames each person is tagged in — the choices for "cut it from a
+  // different photo instead".
+  const appearances = {};
+  (storyboard.frames || []).forEach((f) => {
+    (f.people || []).forEach((p) => {
+      (appearances[p.id] = appearances[p.id] || []).push(f.output_path);
+    });
+  });
+  const outdated = snap.storyboard?.outdated_styling || [];
+
+  return (
+    <Card withBorder padding="md">
+      <Group gap="sm" mb={4}>
+        <Text size="sm" fw={500}>Cast faces</Text>
+        <div style={{ flex: 1 }} />
+        <Button size="compact-xs" variant="default" disabled={locked}
+          onClick={onRebuild}
+          title="Re-cut every reference from the current tags. Free — the faces come from frames that are already styled.">
+          Rebuild
+        </Button>
+        <Button size="compact-xs" variant="default" disabled={locked}
+          onClick={onAudit}
+          title="One vision call compares every tagged appearance of each person and reports where they are drawn as somebody else. Nothing is re-styled.">
+          Find drifted faces…
+        </Button>
+      </Group>
+      <Text size="xs" c="dimmed" mb="xs">
+        One canonical face per person, cut from the photo where their face is
+        largest. Styling a photo of them sends these along, so the same person
+        stays the same character across the movie. Free to rebuild; edits here
+        apply the next time a frame is styled.
+      </Text>
+      {outdated.length > 0 && (
+        <Alert color="yellow" variant="light" mb="xs"
+          title={`${outdated.length} frame(s) were styled against older faces`}>
+          Their references have changed since — someone was re-cut from a
+          different photo, or tagged into or out of that frame. Re-style those
+          frames (one image credit each) from the Storyboard step to bring
+          them in line, or leave them: they are not broken, just older.
+        </Alert>
+      )}
+      {audit.ran_at && Object.values(findings).every((f) => !f.odd_frames?.length) && (
+        <Alert color="green" variant="light" mb="xs" title="No drifted faces">
+          The last audit checked {audit.checked} character(s) and found
+          everyone drawn consistently.
+        </Alert>
+      )}
+      <Stack gap="sm">
+        {cast.map((c) => {
+          const finding = findings[c.id] || {};
+          const odd = finding.odd_frames || [];
+          const frames = appearances[c.id] || [];
+          return (
+            <Group key={c.id} align="flex-start" gap="sm" wrap="nowrap">
+              <Image w={64} h={64} radius="sm" fit="cover"
+                fallbackSrc="data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E"
+                src={fileUrl(name, 'cast_refs', `${c.id}.png`, mediaV)}
+                alt={c.epithet} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <Text size="xs" fw={500}>{c.epithet || c.id}</Text>
+                {frames.length === 0 ? (
+                  <Text size="xs" c="dimmed">
+                    Tagged in no photo yet — no reference.
+                  </Text>
+                ) : (
+                  <Select size="xs" mt={4} allowDeselect={false}
+                    value={c.reference_frame || ''}
+                    data={[
+                      { value: '', label: `Automatic (${frames.length} photo(s))` },
+                      ...frames.map((p) => ({ value: p, label: p.split('/').pop() }))
+                    ]}
+                    onChange={(v) => onPickFrame(c.id, v || '')}
+                    title="Which photo this person's face is cut from. Automatic picks the one with the fewest people in it." />
+                )}
+                {odd.length > 0 && (
+                  <Text size="xs" c="orange" mt={4}>
+                    drawn differently in {odd.join(', ')}
+                    {finding.note ? ` — ${finding.note}` : ''}
+                  </Text>
+                )}
+                {!odd.length && finding.note && (
+                  <Text size="xs" c="dimmed" mt={4}>{finding.note}</Text>
+                )}
+              </div>
+            </Group>
+          );
+        })}
+      </Stack>
+    </Card>
+  );
+}
+
 // Step 2: the review stop. Planning has just named the cast and taken a
 // first guess at who is in each photo; this is where a human fixes both and
 // then pushes those corrections into the prompts. Nothing here renders.
@@ -751,6 +859,23 @@ function PeoplePanel({
           They only work in the photo they came from. Rewrite them below as
           something the person keeps — “the smaller boy with curly hair”, “the
           taller boy” — before re-planning.
+        </Alert>
+      )}
+      {info.driftedFaces > 0 && (
+        <Alert color="orange" variant="light" mb="md"
+          title={`${info.driftedFaces} photo(s) draw someone as a different person`}>
+          The last face audit found frames where a cast member's face is not
+          the same person as in their other photos. Open the Cast faces card
+          below to see who and where; re-styling those frames (one image
+          credit each) is a deliberate action from the Storyboard step.
+        </Alert>
+      )}
+      {info.outdatedStyling > 0 && (
+        <Alert color="yellow" variant="light" mb="md"
+          title={`${info.outdatedStyling} photo(s) were styled against older cast faces`}>
+          Their references changed afterwards. They are not broken — just
+          drawn before the current faces existed. Re-style them when you want
+          them in line.
         </Alert>
       )}
       <Group align="flex-end">
@@ -1276,7 +1401,14 @@ export default function ProjectDetail({ name, onBack }) {
     taggedFrames,
     outdatedPlans: (snap.storyboard?.outdated_plans || []).length,
     hasCast: (storyboard?.characters || []).length > 0,
-    fragileEpithets: (snap.storyboard?.fragile_epithets || []).length
+    fragileEpithets: (snap.storyboard?.fragile_epithets || []).length,
+    // Photos where the last audit says someone is drawn as somebody else,
+    // and photos styled against cast faces that have moved since. Both are
+    // reports, never actions: fixing either spends an image credit a frame.
+    driftedFaces: Object.values(
+      snap.storyboard?.face_audit?.characters || {}
+    ).reduce((n, f) => n + (f.odd_frames || []).length, 0),
+    outdatedStyling: (snap.storyboard?.outdated_styling || []).length
   };
 
   const stepStatus = (id) => {
@@ -1423,6 +1555,37 @@ export default function ProjectDetail({ name, onBack }) {
       label: 'Propose tags',
       command: 'tag', options: {}
     });
+  };
+
+  // Re-cutting the cast's faces is free (they come out of frames already
+  // styled) and changes nothing that exists, so it runs straight away — no
+  // confirmation modal, which is reserved for actions that spend money or
+  // destroy work.
+  const rebuildFaces = () => run('faces', {}, 'Rebuild cast faces');
+
+  const askForFaceAudit = () => ask({
+    title: 'Find faces drawn as a different person?',
+    lines: [
+      'Compares every tagged appearance of each cast member and reports the photos where somebody is drawn as someone else — a bald man who grew hair, a child who became a different child.',
+      'One OpenAI vision call. The face crops are cut locally and cost nothing.',
+      'Nothing is re-styled, re-planned or re-rendered: you get a list, and redoing a frame stays a separate deliberate action.'
+    ],
+    cost: 'openai',
+    label: 'Audit faces',
+    command: 'faces', options: { audit_faces: true }
+  });
+
+  // Which photo a person's canonical face is cut from. Like the epithet, this
+  // is plan/style-time input: it changes what the NEXT styling is matched
+  // against and marks nothing stale on its own.
+  const setReferenceFrame = (id, frame) => {
+    setStoryboard((sb) => ({
+      ...sb,
+      characters: (sb.characters || []).map(
+        (c) => (c.id === id ? { ...c, reference_frame: frame } : c)
+      )
+    }));
+    setDirty((d) => new Set(d).add(CAST_EDIT));
   };
 
   // Cast epithets feed FUTURE planning calls (they are baked into motion
@@ -2290,6 +2453,14 @@ export default function ProjectDetail({ name, onBack }) {
               </Card>
             );
           })()}
+          {(storyboard.characters || []).length > 0 && (
+            <CastFacesCard
+              name={name} snap={snap} storyboard={storyboard} locked={locked}
+              mediaV={mediaV}
+              audit={snap.storyboard?.face_audit || {}}
+              onRebuild={rebuildFaces} onAudit={askForFaceAudit}
+              onPickFrame={setReferenceFrame} />
+          )}
           {(storyboard.characters || []).length > 0 && (
             <Card withBorder padding="md">
               <Group gap="sm" mb={4}>

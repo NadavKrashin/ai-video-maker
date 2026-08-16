@@ -100,6 +100,11 @@ _ALLOWED_COMMANDS = {
     # `tag` proposes who is in each frame; it writes only frames[].people,
     # never a transition, so it can't invalidate a rendered clip.
     "tag",
+    # `faces` cuts the cast's canonical portraits (free, derived from frames
+    # already styled) and with audit_faces=true also reports where someone is
+    # drawn as a different person. It never re-styles, re-plans or re-renders
+    # anything — the repair is an explicit storyboard --restyle-frame.
+    "faces",
 }
 _ALLOWED_OPTIONS = {f.name for f in dataclasses.fields(RunOptions)}
 
@@ -1449,6 +1454,9 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         # because the file route deliberately refuses path separators.
         "published": lambda ws: ws.published_dir,
         "storyboard": lambda ws: ws.storyboard_dir,
+        # The cast's canonical faces, so the Cast editor can show what each
+        # person's identity anchor actually looks like.
+        "cast_refs": lambda ws: ws.cast_refs_dir,
     }
 
     @app.get("/api/projects/{name}/files/{kind}/{filename}",
