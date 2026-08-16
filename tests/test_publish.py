@@ -252,6 +252,83 @@ class TestSizeRejectionsAreTranslated:
         assert calls == [1]                   # a 400 is permanent: uploaded once
 
 
+class TestOrderPhotosAreFoundHoweverTheyWereFiled:
+    """Three routes into an order folder, each invisible to the other two.
+
+    A real order's folder was recreated in the Cloudinary console; the photos
+    inside carried neither the frontend's tag nor the folder in their
+    public_id, so both existing lookups returned nothing and ingest reported
+    "contains no images" for a folder that was plainly full. Dynamic-folder
+    mode files those assets by ``asset_folder`` alone.
+    """
+
+    LEAF = "AM-160826-VKXQ_Kfir-Daniel-16.08.2026_11-23_mood"
+
+    def _client(self, monkeypatch, pages: dict[str, list], not_found=()):
+        """Serve Admin-API listings by path; record which were asked for.
+
+        A listing with no hits answers 200 with an empty ``resources`` array —
+        which is what the real order did, since ingest reported "contains no
+        images" rather than failing. `not_found` covers the endpoints that
+        answer 404 instead (an asset folder that does not exist).
+        """
+        asked: list[str] = []
+
+        def _get(url, params=None, **kwargs):
+            path = url.split("/v1_1/cloud/", 1)[1]
+            asked.append(path)
+            if path in not_found:
+                return _FakeResponse(404, '{"error":{"message":"not found"}}')
+            return _FakeResponse(200, "{}", {"resources": pages.get(path, [])})
+
+        monkeypatch.setattr(requests, "get", _get)
+        client = CloudinaryClient("cloud", "key", "secret", base_delay=0)
+        return client, asked
+
+    @staticmethod
+    def _photo(public_id: str, order: str) -> dict:
+        return {
+            "public_id": public_id, "format": "jpg",
+            "secure_url": f"https://res.cloudinary.com/{public_id}.jpg",
+            "context": {"custom": {"order": order}},
+        }
+
+    def test_assets_filed_only_by_asset_folder_are_found(self, monkeypatch):
+        # Console-uploaded: bare public_ids, no tag, no path.
+        client, asked = self._client(monkeypatch, {
+            "resources/by_asset_folder": [
+                self._photo("kfir2", "2"), self._photo("kfir1", "1"),
+            ],
+        })
+        assets = client.list_order_assets(self.LEAF)
+        assert [a.position for a in assets] == [1, 2]  # still movie order
+        assert asked[-1] == "resources/by_asset_folder"
+
+    def test_the_tag_listing_still_wins_and_stops_there(self, monkeypatch):
+        client, asked = self._client(monkeypatch, {
+            f"resources/image/tags/{requests.utils.quote(self.LEAF, safe='')}":
+                [self._photo("video-orders/x/1", "1")],
+        })
+        assert len(client.list_order_assets(self.LEAF)) == 1
+        assert "resources/by_asset_folder" not in asked
+
+    def test_an_empty_folder_is_still_empty_not_an_error(self, monkeypatch):
+        # All three come back empty — the honest answer is "no photos", which
+        # ingest turns into a message about uploads still being pending.
+        client, asked = self._client(monkeypatch, {})
+        assert client.list_order_assets(self.LEAF) == []
+        assert "resources/by_asset_folder" in asked  # all three were tried
+
+    def test_a_folder_cloudinary_has_never_heard_of_is_not_a_crash(
+        self, monkeypatch
+    ):
+        # An asset folder that does not exist answers 404, not an empty list.
+        client, _ = self._client(
+            monkeypatch, {}, not_found={"resources/by_asset_folder"}
+        )
+        assert client.list_order_assets(self.LEAF) == []
+
+
 class _FakeCloudinary:
     """A CloudinaryClient stand-in: records the upload, invents no network."""
 

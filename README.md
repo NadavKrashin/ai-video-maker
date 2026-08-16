@@ -60,6 +60,17 @@ chosen order; re-running skips files that already exist (`--force`
 re-downloads, `--dry-run` just lists). Ingesting into a project that already
 holds a *different* order's images fails loudly — one project per order.
 
+An order's photos are looked up three ways, because a photo can be filed in
+the folder by three routes and each is invisible to the other two: by the
+frontend's **tag**, by **public_id prefix** (legacy fixed-folder mode), and
+finally by **asset folder** — dynamic-folder mode files an asset by
+`asset_folder` and leaves the public_id a bare name, so photos added by hand
+in the Cloudinary console carry neither the tag nor the path. Note that
+positions still come from `context.order` or the public_id's trailing number:
+hand-uploaded photos named `IMG_4821` have no position and fall back to upload
+time, which is probably not the order the customer chose. Name them `1, 2,
+3…`.
+
 When nothing matches by name, the **order id alone** is tried last. The order
 ledger and Cloudinary each build the folder leaf from their own timestamp, so
 the two can disagree in the middle of the name — a real order was recorded as

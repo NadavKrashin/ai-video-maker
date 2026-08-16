@@ -426,7 +426,14 @@ class Pipeline:
         folder = resolve_order_folder(self.options.order, client.list_order_folders())
         assets = client.list_order_assets(folder)
         if not assets:
-            raise PipelineError(f"Order folder '{folder}' contains no images.")
+            raise PipelineError(
+                f"Order folder '{folder}' contains no images. Cloudinary was "
+                "asked three ways — by the folder's tag, by public_id prefix, "
+                "and by asset folder — and all three came back empty, so the "
+                "photos are not in that folder. The customer's upload runs "
+                "AFTER payment is confirmed, so an order can exist with "
+                "nothing behind it."
+            )
 
         targets = [
             (asset, self.workspace.input_images_dir
