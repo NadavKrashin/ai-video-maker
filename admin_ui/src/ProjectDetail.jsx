@@ -437,6 +437,12 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, ve
             needs camera transition
           </Badge>
         )}
+        {clip?.duration_mismatch && (
+          <Badge variant="light" color="red"
+            title={`The file on disk is ${clip.seconds}s long, but this pair is planned as ${clip.planned_seconds}s. The clip is the older render — regenerate it to get the planned length.`}>
+            {clip.seconds}s on disk
+          </Badge>
+        )}
         {verdict && (
           <Badge variant="light" color={verdict === 'good' ? 'green' : 'orange'}
             title="You have given feedback on this clip — see the Learning tab for what it taught.">
@@ -457,9 +463,15 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, ve
           // A project with ~20 clips otherwise fires 20+ range requests on
           // open, which floods the single-worker origin through the tunnel
           // and freezes the panel (looked like the tunnel "going down").
+          // The cache-buster is the clip's own mtime, not the panel's job
+          // counter: a clip re-rendered from the CLI or another tab never
+          // moved that counter, so the src stayed identical and the player
+          // kept replaying the video it had already buffered — the render
+          // looked like it had done nothing. mediaV is the fallback for a
+          // server too old to report mtime.
           <video controls preload="none"
             style={{ width: 260, borderRadius: 8, background: '#000' }}
-            src={fileUrl(project, 'clips', clipFile, mediaV)} />
+            src={fileUrl(project, 'clips', clipFile, clip.mtime || mediaV)} />
         )}
       </Group>
       <Textarea label="Motion prompt" mt="sm" autosize minRows={2}

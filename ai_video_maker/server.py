@@ -1123,7 +1123,10 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
     @app.get("/api/projects/{name}", dependencies=guarded)
     async def project_detail(name: str) -> dict[str, Any]:
         ws = _workspace(name)
-        snap = _pipeline(ws).snapshot()
+        # probe_clips: one project's clips get measured on disk (memoised on
+        # mtime, so the 3s poll re-probes nothing). The LIST above deliberately
+        # doesn't — it would measure every clip of every project per refresh.
+        snap = _pipeline(ws).snapshot(probe_clips=True)
         snap["order"] = read_order_record(ws.order_file)
         snap["jobs"] = [j.summary() for j in jobs.list(project=name, limit=10)]
         _mark_in_flight(ws.root.name, snap.get("pending_renders", []))

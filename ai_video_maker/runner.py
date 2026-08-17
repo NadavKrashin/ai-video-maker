@@ -63,6 +63,7 @@ from .logging_setup import logger
 from .media.ffmpeg import (
     apply_edge_fades,
     apply_end_fade,
+    cached_duration,
     combine_clips,
     ffprobe_duration,
     find_generated_clips,
@@ -119,6 +120,12 @@ from .workspace import PROJECT_ROOT, Workspace, lessons_file
 # shipped, a re-combine returned the identical old ending.
 #   2 - letter emoji via a colour font; photos no longer dimmed under it
 _SEGMENT_RENDERER_VERSION = 2
+
+# How far a rendered clip may sit from its planned length before status calls
+# it a mismatch. The providers round (a "5" comes back 5.0-5.2s) and the SFX
+# pass re-encodes the audio, which adds a few milliseconds of AAC padding; the
+# fault this catches is the whole other length, 5 against 10.
+_DURATION_TOLERANCE_SECONDS = 1.0
 
 # (info_lines, question) -> proceed? Injected by the CLI as a terminal prompt;
 # defaults to always-yes so embedded/API callers never block on stdin.
@@ -2373,11 +2380,71 @@ class Pipeline:
         return str(dst.relative_to(ws.root))
 
     # ------------------------------ status step --------------------------- #
-    def snapshot(self) -> dict[str, Any]:
+    def _clip_entry(
+        self,
+        clip: Path,
+        exists: bool,
+        planned: Optional[int],
+        probe: bool,
+    ) -> dict[str, Any]:
+        """One clip's line in `snapshot()`.
+
+        `mtime` is what the panel hangs its media cache-buster on. Clips are
+        replaced in place under a stable filename, and the panel used to bump
+        that buster only when a job it started settled — so a clip re-rendered
+        from the CLI, or from another browser tab, left the open panel showing
+        the PREVIOUS video from the media element's own buffer. A re-render
+        always moves the mtime, whoever ran it.
+
+        `seconds` is the clip's REAL length, measured on disk, against
+        `planned_seconds` from the storyboard. Nothing checked the two agreed:
+        a pair re-planned from 10s to 5s (every camera transition is 5s) and
+        re-rendered gave no way to tell a 5s file that the browser was
+        replaying stale from a 10s file the provider actually returned. They
+        are different faults with different fixes, and both used to look
+        exactly like "the render did nothing".
+        """
+        entry: dict[str, Any] = {
+            "id": clip.stem,
+            "file": clip.name,
+            "rendered": exists,
+            "sfx": exists and self.state.is_done(f"sfx:{clip.name}"),
+            # Rendered before its transition was re-planned; kept as-is until
+            # someone regenerates it deliberately.
+            "stale": exists and self.state.status(f"stale:{clip.name}") is not None,
+            "planned_seconds": planned,
+            "mtime": None,
+            "seconds": None,
+            "duration_mismatch": False,
+        }
+        if not exists:
+            return entry
+        try:
+            entry["mtime"] = int(clip.stat().st_mtime)
+        except OSError:  # raced with a delete; the rest of status still stands
+            return entry
+        if not probe:
+            return entry
+        seconds = cached_duration(clip)
+        if seconds is None:  # no ffprobe, or an unreadable file — say nothing
+            return entry
+        entry["seconds"] = round(seconds, 2)
+        entry["duration_mismatch"] = (
+            planned is not None
+            and abs(seconds - planned) > _DURATION_TOLERANCE_SECONDS
+        )
+        return entry
+
+    def snapshot(self, *, probe_clips: bool = False) -> dict[str, Any]:
         """Structured project status: what exists, what's missing, what's next.
 
         The one source of truth for "where does this project stand" —
         ``cmd_status`` prints it, the admin API returns it as JSON.
+
+        `probe_clips` additionally measures each rendered clip on disk (see
+        `_clip_entry`). It is off by default because the projects LIST calls
+        this for every project at once; the detail view and `status`, which
+        describe ONE project, turn it on.
         """
         ws = self.workspace
 
@@ -2431,19 +2498,16 @@ class Pipeline:
                 self._clip_name(a, b)
                 for a, b in self._bridge_pairs(frames, quiet=True)
             ]
+            planned_seconds = {
+                Path(t.output_path).stem: t.duration
+                for t in storyboard.transitions
+            }
             for clip in expected:
                 exists = clip.exists()
                 missing += 0 if exists else 1
-                clips.append({
-                    "id": clip.stem,
-                    "file": clip.name,
-                    "rendered": exists,
-                    "sfx": exists and self.state.is_done(f"sfx:{clip.name}"),
-                    # Rendered before its transition was re-planned; kept
-                    # as-is until someone regenerates it deliberately.
-                    "stale": exists
-                    and self.state.status(f"stale:{clip.name}") is not None,
-                })
+                clips.append(self._clip_entry(
+                    clip, exists, planned_seconds.get(clip.stem), probe_clips
+                ))
             found = (
                 find_generated_clips(ws.clips_dir)
                 if ws.clips_dir.exists() else []
@@ -3189,7 +3253,7 @@ class Pipeline:
 
     def cmd_status(self) -> None:
         """Print where this project stands and what to run next."""
-        snap = self.snapshot()
+        snap = self.snapshot(probe_clips=True)
         ws = self.workspace
         line = "=" * 60
         print(f"\n{line}\nPROJECT STATUS: {ws.root.name}\n{line}")
@@ -3262,7 +3326,15 @@ class Pipeline:
                     "  !! OUTDATED (storyboard changed - redo with --clip)"
                     if clip.get("stale") else ""
                 )
-                print(f"    clip {clip['id']:<12} rendered  ({sfx}){outdated}")
+                length = (
+                    f"  !! {clip['seconds']}s ON DISK, plan says "
+                    f"{clip['planned_seconds']}s"
+                    if clip.get("duration_mismatch") else ""
+                )
+                print(
+                    f"    clip {clip['id']:<12} rendered  ({sfx})"
+                    f"{outdated}{length}"
+                )
             else:
                 print(f"    clip {clip['id']:<12} MISSING")
         if snap["stray_clips"]:

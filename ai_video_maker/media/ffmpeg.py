@@ -189,6 +189,33 @@ def ffprobe_duration(path: Path) -> Optional[float]:
         return None
 
 
+# One entry per path: (mtime_ns, size, duration). `snapshot()` reports the real
+# length of every rendered clip and runs on every panel poll, so an unmemoised
+# probe would be one ffprobe subprocess per clip per poll.
+_DURATION_CACHE: dict[str, tuple[int, int, Optional[float]]] = {}
+
+
+def cached_duration(path: Path) -> Optional[float]:
+    """`ffprobe_duration`, memoised on the file's mtime + size.
+
+    Keyed on mtime+size rather than content: a clip is REPLACED IN PLACE when
+    it is re-rendered, so the key has to move when the bytes do, and hashing
+    multi-megabyte videos on every status read is exactly what this avoids. A
+    lying mtime (the cloud-sync trap in CLAUDE.md) only costs a stale number
+    on a status screen here — it never decides whether work is redone.
+    """
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    cached = _DURATION_CACHE.get(str(path))
+    if cached is not None and cached[:2] == (stat.st_mtime_ns, stat.st_size):
+        return cached[2]
+    duration = ffprobe_duration(path)
+    _DURATION_CACHE[str(path)] = (stat.st_mtime_ns, stat.st_size, duration)
+    return duration
+
+
 def sample_timestamps(duration: float, count: int) -> list[float]:
     """Evenly spaced sample points inside a clip of `duration` seconds.
 

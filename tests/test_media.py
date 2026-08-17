@@ -14,6 +14,7 @@ from ai_video_maker.media.ffmpeg import (
     _photo_fit_filter,
     _photo_still_cmd,
     _sample_frame_cmd,
+    cached_duration,
     find_generated_clips,
     sample_timestamps,
 )
@@ -300,3 +301,63 @@ class TestClipFrameSampling:
         assert "-frames:v" in cmd and cmd[cmd.index("-frames:v") + 1] == "1"
         assert "scale='min(512,iw)':-2" in " ".join(cmd)
         assert cmd[-1] == "f.jpg"
+
+
+class TestCachedDuration:
+    """Measuring a clip is cheap only if it isn't measured on every poll.
+
+    `snapshot()` reports the real length of every rendered clip, and the panel
+    polls it every 3 seconds — so the probe is memoised. The key has to be
+    mtime + size, because a re-rendered clip REPLACES its file under the same
+    name: cache on the path alone and the panel would keep reporting the
+    previous render's length forever.
+    """
+
+    def _probe(self, monkeypatch, answers):
+        calls = []
+
+        def fake(path):
+            calls.append(path)
+            return answers.pop(0)
+
+        monkeypatch.setattr(
+            "ai_video_maker.media.ffmpeg.ffprobe_duration", fake
+        )
+        return calls
+
+    def test_second_read_of_an_unchanged_file_does_not_probe_again(
+        self, monkeypatch, tmp_path
+    ):
+        clip = tmp_path / "a_to_b.mp4"
+        clip.write_bytes(b"video")
+        calls = self._probe(monkeypatch, [5.1])
+        assert cached_duration(clip) == 5.1
+        assert cached_duration(clip) == 5.1
+        assert len(calls) == 1
+
+    def test_a_re_rendered_clip_is_measured_again(self, monkeypatch, tmp_path):
+        clip = tmp_path / "a_to_b.mp4"
+        clip.write_bytes(b"the ten second render")
+        calls = self._probe(monkeypatch, [10.0, 5.0])
+        assert cached_duration(clip) == 10.0
+        # Same filename, new bytes — exactly what render does.
+        clip.write_bytes(b"the five second render")
+        assert cached_duration(clip) == 5.0
+        assert len(calls) == 2
+
+    def test_a_missing_file_answers_none_without_probing(
+        self, monkeypatch, tmp_path
+    ):
+        calls = self._probe(monkeypatch, [])
+        assert cached_duration(tmp_path / "gone.mp4") is None
+        assert calls == []
+
+    def test_an_unreadable_answer_is_not_cached_as_a_number(
+        self, monkeypatch, tmp_path
+    ):
+        # No ffprobe on the machine (or a corrupt file) must stay None rather
+        # than become a fake length something else compares against.
+        clip = tmp_path / "a_to_b.mp4"
+        clip.write_bytes(b"video")
+        self._probe(monkeypatch, [None])
+        assert cached_duration(clip) is None

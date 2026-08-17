@@ -290,6 +290,29 @@ Core design rules:
   the movie was built — mtime is fine here, both sides are local and the fix
   is free). Pinned by TestOutdatedPlans /
   TestPlansRecordWhatTheyWerePlannedFrom / TestFinalVideoFreshness.
+- ...AND THE CLIP'S OWN LENGTH IS PART OF THAT (user report, 2026-08-17,
+  am-170926-a6qn). A pair re-planned to 5s (camera transitions always are)
+  was re-rendered — the log said `04_to_05 5s RENDER`, `Clip ready` — and the
+  panel still played 10 seconds. Nothing could tell the two possible causes
+  apart, and they need opposite fixes: a STALE PREVIEW in the browser, or a
+  file that really is 10s. Both are now closed. (1) The panel's media
+  cache-buster was `mediaV`, bumped only when a job THE PANEL STARTED
+  settled — a clip re-rendered from the CLI or another tab left the src
+  byte-identical, so the `<video>` element replayed its own buffered copy
+  and never issued a request (the origin's `Cache-Control: no-store` is
+  irrelevant when no HTTP happens). Each clip now reports its `mtime` and
+  the player hangs the buster on THAT, so any re-render changes the URL
+  whoever ran it. (2) `snapshot()` reports each rendered clip's REAL length
+  (`seconds`, measured on disk) against `planned_seconds`, with
+  `duration_mismatch` when they differ by more than
+  `_DURATION_TOLERANCE_SECONDS` (1.0 — providers round a "5" to 5.0-5.2s and
+  the SFX pass adds AAC padding; the fault being caught is 5 against 10).
+  Measuring is `cached_duration` (memoised on mtime+size, since status is
+  read every 3s) and is OPT-IN — `snapshot(probe_clips=True)` — because the
+  projects LIST calls snapshot for every project at once. An unmeasurable
+  clip (no ffprobe) reports `seconds: None` and NO mismatch: sending someone
+  to re-render a correct file costs real money. Pinned by
+  TestClipsReportWhatIsActuallyOnDisk / TestCachedDuration.
 - IDENTITY IS ITS OWN STEP, BETWEEN PLANNING AND RENDERING (user call,
   2026-08-02). The flow is PLAN → CORRECT → RE-PLAN → render: `storyboard`
   styles, plans, builds the cast AND ends by proposing who is in each

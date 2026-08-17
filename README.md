@@ -484,6 +484,7 @@ without you asking:
 |---|---|---|
 | A **prompt** written before you tagged a photo or renamed someone in the cast | “prompt predates your tags” on the clip; a count in step 2 | Re-plan those pairs (the panel offers exactly the ones behind) |
 | A **rendered clip** whose prompt, duration or frames changed since | “outdated” badge; `status` marks it | `render --clip ID`, or “Generate everything that needs it” |
+| A **rendered clip whose file is the wrong length** — still the 10s render after the pair became 5s | “Ns on disk” badge; `status` prints `Ns ON DISK, plan says Ms` | `render --clip ID` (the badge means the file really is that long, not that your browser is showing an old copy) |
 | A **styled frame** whose source photo changed | listed as a changed frame | `storyboard` (asks before re-styling) |
 | A **cast name** that describes clothing | flagged in the Cast editor | Rewrite it, then re-plan |
 | A **prompt that was never really planned** (a quota failure left the generic fallback) | “generic prompt” badge | Run `storyboard` again |

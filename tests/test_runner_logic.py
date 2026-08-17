@@ -1808,3 +1808,99 @@ class TestUnstageablePairsAreVisible:
         sb = self._tagged_storyboard(workspace, self.SIX)
         sb.save(workspace.default_storyboard_json)
         assert p.snapshot()["storyboard"]["unstageable_pairs"] == []
+
+
+class TestClipsReportWhatIsActuallyOnDisk:
+    """A rendered clip's real length, and when the file last changed.
+
+    Both exist because of one real report: a pair re-planned to 5s (camera
+    transitions always are) was re-rendered, and the panel still played a 10s
+    video. Nothing in the system could tell the two possible causes apart —
+    a stale preview in the browser, or a file the provider really returned at
+    the wrong length. `mtime` fixes the first (the panel hangs its media
+    cache-buster on it, so ANY re-render changes the URL, including one run
+    from the CLI); `seconds` vs `planned_seconds` makes the second visible.
+    """
+
+    @staticmethod
+    def _probe(monkeypatch, seconds):
+        monkeypatch.setattr(
+            "ai_video_maker.media.ffmpeg.ffprobe_duration", lambda path: seconds
+        )
+
+    @staticmethod
+    def _clip(snap, clip_id):
+        return next(c for c in snap["clips"] if c["id"] == clip_id)
+
+    def _project(self, workspace, durations=None):
+        _write_frames(workspace, [1, 2, 3])
+        _storyboard(workspace, 3, durations=durations).save(
+            workspace.default_storyboard_json
+        )
+        return _touch(workspace.clips_dir / "001_to_002.mp4", b"clip")
+
+    def test_mtime_is_reported_without_measuring_anything(
+        self, pipeline, workspace
+    ):
+        clip = self._project(workspace)
+        entry = self._clip(pipeline.snapshot(), "001_to_002")
+        assert entry["mtime"] == int(clip.stat().st_mtime)
+        # The projects LIST asks for no probe: measuring every clip of every
+        # project on every refresh is what this default protects.
+        assert entry["seconds"] is None
+        assert entry["duration_mismatch"] is False
+
+    def test_an_unrendered_clip_has_no_mtime_to_bust_a_cache_with(
+        self, pipeline, workspace
+    ):
+        _write_frames(workspace, [1, 2, 3])
+        _storyboard(workspace, 3).save(workspace.default_storyboard_json)
+        entry = self._clip(pipeline.snapshot(probe_clips=True), "001_to_002")
+        assert entry["rendered"] is False
+        assert entry["mtime"] is None and entry["seconds"] is None
+
+    def test_a_ten_second_file_against_a_five_second_plan_is_a_mismatch(
+        self, pipeline, workspace, monkeypatch
+    ):
+        self._project(workspace, durations=[5, 5])
+        self._probe(monkeypatch, 10.0)
+        entry = self._clip(pipeline.snapshot(probe_clips=True), "001_to_002")
+        assert entry["seconds"] == 10.0
+        assert entry["planned_seconds"] == 5
+        assert entry["duration_mismatch"] is True
+
+    def test_provider_rounding_is_not_a_mismatch(
+        self, pipeline, workspace, monkeypatch
+    ):
+        # Kling hands back 5.0-5.2s for a "5", and the SFX pass re-encodes the
+        # audio on top of that. Flagging those would make the badge noise.
+        self._project(workspace, durations=[5, 5])
+        self._probe(monkeypatch, 5.18)
+        entry = self._clip(pipeline.snapshot(probe_clips=True), "001_to_002")
+        assert entry["seconds"] == 5.18
+        assert entry["duration_mismatch"] is False
+
+    def test_no_ffprobe_reports_nothing_rather_than_a_fault(
+        self, pipeline, workspace, monkeypatch
+    ):
+        # An unmeasurable clip must not read as a wrong-length clip: the panel
+        # would send the user to spend credits re-rendering a correct file.
+        self._project(workspace, durations=[5, 5])
+        self._probe(monkeypatch, None)
+        entry = self._clip(pipeline.snapshot(probe_clips=True), "001_to_002")
+        assert entry["seconds"] is None
+        assert entry["duration_mismatch"] is False
+
+    def test_a_bridged_clip_has_no_plan_to_disagree_with(
+        self, pipeline, workspace, monkeypatch
+    ):
+        # Frame 2 never styled -> render pairs 1->3, a clip no transition
+        # describes. Its length is whatever it is; there is nothing to check.
+        _write_frames(workspace, [1, 3])
+        _storyboard(workspace, 3).save(workspace.default_storyboard_json)
+        _touch(workspace.clips_dir / "001_to_003.mp4", b"clip")
+        self._probe(monkeypatch, 10.0)
+        entry = self._clip(pipeline.snapshot(probe_clips=True), "001_to_003")
+        assert entry["seconds"] == 10.0
+        assert entry["planned_seconds"] is None
+        assert entry["duration_mismatch"] is False
