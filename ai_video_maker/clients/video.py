@@ -205,7 +205,7 @@ class VideoClient:
         # same reason as the frame fields: different models name this
         # differently, and the endpoint's exact schema is the one thing that
         # cannot be checked from here.
-        if element_urls and c.fal_elements_field:
+        if element_urls and c.elements_enabled():
             args[c.fal_elements_field] = [
                 {c.fal_element_image_field: url} for url in element_urls
             ]
@@ -255,10 +255,13 @@ class VideoClient:
         (moderation) or no longer matches the storyboard (fingerprint).
         """
         job_key = f"falreq:{dst.name}"
-        # Elements the configured model cannot accept are dropped HERE rather
+        # Elements the configured MODEL cannot accept are dropped HERE rather
         # than at the call site, so they never reach the fingerprint either —
-        # switching a model that ignores them must not orphan a paid render.
-        elements = list(elements or []) if self.config.fal_elements_field else []
+        # switching to a model that ignores them must not orphan a paid
+        # render. Kling 2.5 answers False here whatever the element fields
+        # say, which is what makes "2.5 never gets cast faces" a property of
+        # the model rather than a switch someone has to remember.
+        elements = list(elements or []) if self.config.elements_enabled() else []
         fingerprint = self.fingerprint(
             start_frame, end_frame, motion_prompt, duration, elements
         )

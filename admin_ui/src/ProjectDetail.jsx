@@ -390,7 +390,7 @@ function SpendCard({ project, cost }) {
   );
 }
 
-function TransitionCard({ project, tr, framesById, clip, edited, placeholder, verdict, planBehind, endsOffscreen, unstageable, selected, onToggleSelect, onEdit, onRegenerate, onReplan, onRedoAudio, onFeedback, busy, replanBusy, audioBusy, mediaV }) {
+function TransitionCard({ project, tr, framesById, clip, edited, placeholder, verdict, planBehind, endsOffscreen, unstageable, isCamera, selected, onToggleSelect, onEdit, onRegenerate, onReplan, onReplanAsCamera, onRedoAudio, onFeedback, busy, replanBusy, audioBusy, mediaV }) {
   const startImg = frameName(framesById, tr.start_frame);
   const endImg = frameName(framesById, tr.end_frame);
   const clipFile = tr.output_path.split('/').pop();
@@ -484,6 +484,13 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, ve
           title="Ask the AI planner to write a fresh motion prompt for this pair (small OpenAI call; the clip is not re-rendered)">
           Re-plan prompt
         </Button>
+        {!isCamera && (
+          <Button variant="default" size="xs" loading={replanBusy}
+            onClick={() => onReplanAsCamera(tr.id)}
+            title="Replace the choreography with the camera move: people hold still, the camera travels to the new setting and settles on the end frame. Free and instant — use it when people distort while travelling between the frames.">
+            Use camera move
+          </Button>
+        )}
         {clip?.rendered && (
           <Button variant="default" size="xs" loading={audioBusy}
             onClick={() => onRedoAudio(tr.id)}
@@ -908,7 +915,57 @@ function PeoplePanel({
   );
 }
 
-function RenderPanel({ ask, locked, info, onGenerateAll }) {
+// Which video model this project renders with. The choice carries its own
+// consequences — the request shape, the price per second, and whether the
+// cast's faces can be sent at all — so all three are shown next to it rather
+// than left as separate settings to keep in step.
+function VideoModelPicker({ locked, current, models, onPick }) {
+  const chosen = models.find((m) => m.key === current.key);
+  return (
+    <Card withBorder padding="sm" mb="md">
+      <Group align="flex-end" gap="sm">
+        <Select label="Video model" w={230} allowDeselect={false}
+          disabled={locked || !models.length}
+          value={current.key || ''}
+          data={[
+            ...(current.key ? [] : [{ value: '', label: current.label }]),
+            ...models.map((m) => ({ value: m.key, label: m.label }))
+          ]}
+          onChange={(v) => v && v !== current.key && onPick(v)}
+          title="Which Kling model renders this project's clips. Only this project changes." />
+        <div style={{ flex: 1 }}>
+          <Group gap="xs" mb={4}>
+            <Badge variant="light"
+              color={current.sends_cast_faces ? 'green' : 'gray'}>
+              {current.sends_cast_faces
+                ? 'sends cast faces'
+                : current.supports_elements
+                  ? 'cast faces available'
+                  : 'no cast faces'}
+            </Badge>
+            <Badge variant="light" color="gray">
+              ${Number(current.usd_per_second || 0).toFixed(3)}/s
+            </Badge>
+            {chosen && !chosen.verified && (
+              <Badge variant="light" color="orange"
+                title="This request shape comes from fal's docs and has not been rendered from here yet.">
+                untested here
+              </Badge>
+            )}
+          </Group>
+          <Text size="xs" c="dimmed">
+            {chosen?.note
+              || 'Following the shared config. Pick a model to pin one for this project.'}
+          </Text>
+        </div>
+      </Group>
+    </Card>
+  );
+}
+
+function RenderPanel({
+  ask, locked, info, onGenerateAll, videoModel, videoModels, onPickModel
+}) {
   const [motionPrompt, setMotionPrompt] = useState('');
   const [duration, setDuration] = useState('');
   const [dryRun, setDryRun] = useState(false);
@@ -941,6 +998,8 @@ function RenderPanel({ ask, locked, info, onGenerateAll }) {
         doesn't have one yet. Review the storyboard first — each clip is paid
         the moment it renders.
       </PanelIntro>
+      <VideoModelPicker locked={locked} current={videoModel}
+        models={videoModels} onPick={onPickModel} />
       {info.outdated > 0 && (
         <Alert color="orange" variant="light" mb="md"
           title={`${info.outdated} rendered clip(s) are outdated`}>
@@ -1269,8 +1328,18 @@ export default function ProjectDetail({ name, onBack }) {
   // the browser would otherwise keep showing the pre-render version. Bumped
   // on every poll while a job runs, and once more when it settles.
   const [mediaV, setMediaV] = useState(0);
+  // The selectable video models. Fetched once — the registry is static.
+  const [videoModels, setVideoModels] = useState([]);
   const pollRef = useRef(null);
   const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    api.videoModels()
+      .then((d) => setVideoModels(d.models || []))
+      // A failed fetch just leaves the picker empty; it must never stop the
+      // page rendering, since everything else on it still works.
+      .catch(() => setVideoModels([]));
+  }, []);
 
   const load = useCallback(async () => {
     const data = await api.project(name);
@@ -1367,6 +1436,9 @@ export default function ProjectDetail({ name, onBack }) {
   // choreography can't exist (too many movers / too crowded). Re-planning
   // them yields the deterministic camera transition.
   const unstageablePairs = new Set(snap.storyboard?.unstageable_pairs || []);
+  // Recognising a camera prompt is deliberately strict-family and lives in
+  // one place on the server; the panel just reads the answer.
+  const cameraPairs = new Set(snap.storyboard?.camera_transitions || []);
   const chip = stepChip(snap.next_step);
   const activeJob = (snap.jobs || []).find((j) => ['running', 'queued', 'cancelling'].includes(j.state));
   const locked = Boolean(activeJob);
@@ -1655,6 +1727,65 @@ export default function ProjectDetail({ name, onBack }) {
       cost: 'openai',
       label: 'Re-plan prompt',
       action: () => run('storyboard', { replan_clips: [clipId] }, `re-plan ${clipId}`)
+    });
+  };
+
+  // Pinning a video model for THIS project. Free and instant — it writes one
+  // key into the project's config.json and renders nothing. Clips already
+  // made keep the model they were made with and get flagged, which is the
+  // part worth spelling out in the modal.
+  const pickVideoModel = (key) => {
+    const model = videoModels.find((m) => m.key === key);
+    const rendered = (snap.clips || []).filter((c) => c.rendered).length;
+    ask({
+      title: `Render this project with ${model?.label || key}?`,
+      lines: [
+        `Every clip rendered from now on uses ${model?.label || key} at about $${Number(model?.usd_per_second || 0).toFixed(3)} per second.`,
+        model?.supports_elements
+          ? 'This model accepts the cast\'s face references, so they will be sent with each clip to hold each person\'s identity through the shot.'
+          : 'This model cannot take face references, so the cast faces will NOT be sent — identity is held only by the two frames and the prompt.',
+        ...(rendered ? [
+          `The ${rendered} clip(s) already rendered are NOT re-rendered. They keep the model they were made with and are flagged "older video model" so a movie can't silently mix two.`
+        ] : []),
+        ...(model && !model.verified ? [
+          'This request shape comes from fal\'s documentation and has not been rendered from here — try a single clip before committing a whole movie to it.'
+        ] : []),
+        'Only this project changes; nothing else in the studio is affected.'
+      ],
+      cost: 'free',
+      label: 'Use this model',
+      action: async () => {
+        setBusyAction('video model');
+        try {
+          await api.setVideoModel(name, key);
+          notify(`Now rendering with ${model?.label || key}`);
+          await load();
+        } catch (e) { notify(`Could not switch model: ${e.message}`, 'red'); }
+        finally { setBusyAction(''); }
+      }
+    });
+  };
+
+  // The human override for a pair that mushed even though the gate judged it
+  // stageable. Deterministic wording, so it costs nothing and is instant —
+  // the opposite of the vision re-plan above.
+  const replanAsCamera = (clipId) => {
+    if (needsSave()) return;
+    ask({
+      title: `Make ${clipId} a camera transition?`,
+      lines: [
+        'Replaces this pair\'s choreography with the camera move: the people hold still, the camera travels to the new setting and settles on exactly what the end frame shows.',
+        'Use it when people distort or dissolve while travelling between the two frames — a camera move never maps one person onto another, which is why these are usually the cleanest clips in a movie.',
+        'FREE and instant: the wording is a fixed template, so there is no AI call. The clip becomes 5 seconds.',
+        'Any hand-written prompt for this pair is replaced. The clip is NOT re-rendered — it gets marked "outdated" so you can regenerate it when you want the new plan applied.'
+      ],
+      cost: 'free',
+      label: 'Use camera move',
+      action: () => run(
+        'storyboard',
+        { replan_clips: [clipId], replan_as_camera: true },
+        `camera transition ${clipId}`,
+      )
     });
   };
 
@@ -2033,7 +2164,9 @@ export default function ProjectDetail({ name, onBack }) {
       onReplanOutdated={replanOutdated}
       onOpenTagger={() => { setShowTagger(true); setOpenPanel(''); }} />,
     render: <RenderPanel ask={ask} locked={locked} info={info}
-      onGenerateAll={() => { if (!needsSave()) generateAll(snap); }} />,
+      onGenerateAll={() => { if (!needsSave()) generateAll(snap); }}
+      videoModel={snap.video_model || {}} videoModels={videoModels}
+      onPickModel={pickVideoModel} />,
     audio: <AudioPanel ask={ask} locked={locked} info={info}
       onUploadMusic={uploadMusic} onRemoveMusic={removeMusic}
       onFetchMusicUrl={fetchMusicUrl} musicBusy={musicBusy} />,
@@ -2558,12 +2691,15 @@ export default function ProjectDetail({ name, onBack }) {
               planBehind={outdatedPlans.has(tr.id)}
               endsOffscreen={offscreenEndings.has(tr.id)}
               unstageable={unstageablePairs.has(tr.id)}
+              isCamera={cameraPairs.has(tr.id)}
               selected={selected.has(tr.id)} onToggleSelect={toggleSelected}
               onEdit={editTransition}
-              onRegenerate={regenerate} onReplan={replanPrompt} onRedoAudio={redoAudio}
+              onRegenerate={regenerate} onReplan={replanPrompt}
+              onReplanAsCamera={replanAsCamera} onRedoAudio={redoAudio}
               onFeedback={openFeedback}
               busy={busyAction === `render ${tr.id}`}
-              replanBusy={busyAction === `re-plan ${tr.id}`}
+              replanBusy={busyAction === `re-plan ${tr.id}`
+                || busyAction === `camera transition ${tr.id}`}
               audioBusy={busyAction === `audio ${tr.id}`}
               mediaV={mediaV} />
           ))}

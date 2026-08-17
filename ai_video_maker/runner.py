@@ -38,6 +38,7 @@ from .clients.cloudinary_client import (
 from .clients.download import download_file
 from .clients.openai_client import (
     OpenAIClient,
+    camera_shift_prompt,
     ends_offscreen,
     indistinct_epithets,
     is_camera_transition,
@@ -46,6 +47,7 @@ from .clients.openai_client import (
 )
 from .clients.video import VideoClient
 from .config import Config
+from .constants import VALID_DURATIONS
 from .costs import KIND_CLIP, KIND_SFX, CostLedger, estimate_usd
 from .errors import PipelineCancelled, PipelineError, StoryboardError
 from .feedback import (
@@ -972,6 +974,21 @@ class Pipeline:
                 f"No such transition(s) to re-plan: {', '.join(sorted(unknown))}.\n"
                 "Valid ids: " + ", ".join(f"{a.id}_to_{b.id}" for a, b in pairs)
             )
+        # Pairs the caller wants turned into a camera transition outright
+        # (--camera alongside --replan-clip / --replan-all, or the panel's
+        # "Re-plan as camera move"). The gate already converts pairs it
+        # judges unstageable, but that judgement is made from tags and
+        # headcounts and it cannot see what a render looked like — so this
+        # is the human override for a pair that mushed anyway.
+        #
+        # It applies to EXPLICITLY requested pairs only. A pair that is dirty
+        # because its photo changed must never silently become a camera move.
+        # And the prompt is the deterministic template, so there is no vision
+        # call: forcing a camera transition is free and instant.
+        camera_forced = (
+            {f"{a.id}_to_{b.id}" for a, b in pairs} & requested
+            if self.options.replan_as_camera else set()
+        )
         dirty: list[int] = []
         stale_tids: list[str] = []
         for i, (a, b) in enumerate(pairs):
@@ -988,7 +1005,11 @@ class Pipeline:
                 prior is not None
                 and prior.motion_prompt == self.config.motion_prompt
             )
-            if (saved is None or changed or prior is None or placeholder
+            if f"{a.id}_to_{b.id}" in camera_forced:
+                # Deterministic template — planning it would spend a call to
+                # produce something the code is about to overwrite anyway.
+                pass
+            elif (saved is None or changed or prior is None or placeholder
                     or f"{a.id}_to_{b.id}" in requested):
                 dirty.append(i)
             if changed:
@@ -1012,6 +1033,27 @@ class Pipeline:
             cast=cast_now,
             frame_people=frame_people,
         )
+
+        # Forced camera transitions, written straight in. The wording comes
+        # from the same deterministic family the gate uses, picked by the
+        # pair's own rosters (an untagged pair falls back to the generic
+        # travel-and-settle). ALWAYS 5s: a camera move is one continuous
+        # beat, and ten seconds of it is a slack shot at twice the price.
+        for i, (a, b) in enumerate(pairs):
+            tid = f"{a.id}_to_{b.id}"
+            if tid not in camera_forced:
+                continue
+            prior = saved_tr.get((a.output_path, b.output_path))
+            plans[i] = (
+                camera_shift_prompt(frame_people[i], frame_people[i + 1]),
+                min(VALID_DURATIONS),
+                prior.sound_prompt if prior else "",
+            )
+        if camera_forced:
+            logger.info(
+                "Camera transition forced on %d pair(s): %s",
+                len(camera_forced), ", ".join(sorted(camera_forced)),
+            )
 
         transitions: list[Transition] = []
         replanned: list[str] = []
@@ -1468,7 +1510,7 @@ class Pipeline:
             # epithet for an element to attach to, and these are already the
             # best-looking clips in a movie. Leave them exactly as they are.
             chosen: list[str] = []
-            if refs and self.config.fal_elements_field and not is_camera_transition(motion):
+            if refs and self.config.elements_enabled() and not is_camera_transition(motion):
                 chosen = elements_for_clip(
                     [(p.id, p.x) for p in getattr(by_name.get(a.name), "people", [])],
                     [(p.id, p.x) for p in getattr(by_name.get(b.name), "people", [])],
@@ -2684,6 +2726,14 @@ class Pipeline:
                         self.style_reference_plan(storyboard).items()
                     },
                 ),
+                # Pairs already carrying a camera-family prompt. Exposed so
+                # the panel doesn't have to re-implement the recognition
+                # (`is_camera_transition` is strict-family on purpose, and a
+                # second copy of that list in JavaScript would drift).
+                "camera_transitions": [
+                    t.id for t in storyboard.transitions
+                    if is_camera_transition(t.motion_prompt)
+                ],
                 "unstageable_pairs": [
                     t.id for t in storyboard.transitions
                     if is_unstageable_pair(
@@ -2702,6 +2752,11 @@ class Pipeline:
             "missing_frames": missing_frames,
             "clips": clips,
             "stray_clips": stray,
+            # Which video model this project renders with, and whether that
+            # model can be handed the cast's faces. The panel shows both so
+            # the choice and its consequence are never two separate things
+            # to keep in step.
+            "video_model": self._video_model_state(),
             "pending_renders": self.pending_renders(),
             "final_video": ws.final_video.exists(),
             # The movie was built before one of its clips was (re-)rendered,
@@ -2921,6 +2976,25 @@ class Pipeline:
                 len(written),
             )
         return written
+
+    def _video_model_state(self) -> dict[str, Any]:
+        """What this project renders with, for status and the panel picker."""
+        preset = self.config.video_model_preset()
+        return {
+            "key": preset.key if preset else "",
+            "label": preset.label if preset else self.config.fal_model_id,
+            "model_id": self.config.fal_model_id,
+            "verified": bool(preset.verified) if preset else False,
+            # Whether the model CAN take cast faces, and whether it is
+            # actually going to — a capable model with the cast references
+            # switched off still sends none.
+            "supports_elements": bool(preset.supports_elements) if preset else False,
+            "sends_cast_faces": (
+                self.config.elements_enabled()
+                and self.config.cast_references_enabled
+            ),
+            "usd_per_second": self.config.pricing.clip_usd_per_second,
+        }
 
     def read_face_audit(self) -> dict[str, Any]:
         """The last face-consistency audit, or an empty report. Never raises."""
@@ -3780,6 +3854,23 @@ class Pipeline:
                 print(f"    clip {clip['id']:<12} MISSING")
         if snap["stray_clips"]:
             print(f"  Stray clips      : {', '.join(snap['stray_clips'])}")
+
+        # Which model renders this project, and whether it can be handed the
+        # cast's faces — one line, because the two are one decision.
+        model = snap.get("video_model") or {}
+        if model:
+            faces = (
+                "cast faces sent" if model.get("sends_cast_faces")
+                else "no cast faces (model can't take them)"
+                if not model.get("supports_elements")
+                else "cast faces available but off"
+            )
+            print(
+                f"  Video model      : {model.get('label')} "
+                f"(${model.get('usd_per_second'):.3f}/s, {faces})"
+                + ("  !! request shape untested here"
+                   if model.get("key") and not model.get("verified") else "")
+            )
 
         # Paid-for renders whose output was never collected. Nothing fetches
         # these in the background — only the next render of that clip does.

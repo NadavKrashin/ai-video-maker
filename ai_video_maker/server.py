@@ -29,6 +29,7 @@ address are throttled (see ``_AuthThrottle``).
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import os
 import queue
@@ -83,6 +84,7 @@ from .media.music_url import fetch_music
 from .models import Storyboard, changed_transition_ids
 from .options import RunOptions
 from .runner import Pipeline
+from .video_models import VIDEO_MODELS, get_video_model, model_keys
 from .workspace import (
     PROJECT_ROOT,
     PROJECTS_DIR,
@@ -1183,6 +1185,79 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
             )
         state = save_letter(ws.letter_file, text)
         return {"ok": True, "letter": state}
+
+    @app.get("/api/video-models", dependencies=guarded)
+    async def list_video_models() -> dict[str, Any]:
+        """The selectable video models, for the panel's picker."""
+        return {
+            "models": [
+                {
+                    "key": m.key,
+                    "label": m.label,
+                    "model_id": m.model_id,
+                    "supports_elements": m.supports_elements,
+                    "usd_per_second": m.usd_per_second,
+                    "verified": m.verified,
+                    "note": m.note,
+                }
+                for m in VIDEO_MODELS
+            ]
+        }
+
+    @app.put("/api/projects/{name}/video-model", dependencies=guarded)
+    async def set_video_model(name: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Pin which video model this ONE project renders with.
+
+        Writes `video_model` into projects/<name>/config.json, which is
+        merged over the shared config — so this never changes what any other
+        movie renders with. Deliberately narrow: it edits exactly one key and
+        validates it against the registry, rather than opening the whole
+        config to arbitrary writes from a browser.
+
+        Free and instant. It does not re-render anything: clips already
+        rendered keep the model they were made with and are flagged
+        `model_changed` so a movie can't silently mix two.
+        """
+        ws = _workspace(name)
+        key = str(body.get("model") or "").strip()
+        if key and get_video_model(key) is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown model {key!r}. Available: "
+                       + ", ".join(model_keys()),
+            )
+        path = ws.root / "config.json"
+        try:
+            current = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+            if not isinstance(current, dict):
+                raise ValueError("project config.json is not a JSON object")
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Could not read the project config: {exc}"
+            ) from exc
+        # An empty choice REMOVES the pin rather than writing "", so the
+        # project goes back to following the shared config.
+        if key:
+            current["video_model"] = key
+        else:
+            current.pop("video_model", None)
+        # The preset's field names are derived at load time, never frozen
+        # into the file — otherwise a corrected preset could never reach a
+        # project that had already been pinned.
+        for derived in ("fal_model_id", "fal_start_frame_field",
+                        "fal_end_frame_field", "fal_elements_field",
+                        "fal_element_image_field", "fal_max_elements",
+                        "fal_element_prompt_template"):
+            current.pop(derived, None)
+        try:
+            path.write_text(
+                json.dumps(current, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Could not save the project config: {exc}"
+            ) from exc
+        return {"ok": True, "video_model": key}
 
     @app.put("/api/projects/{name}/storyboard", dependencies=guarded)
     async def save_storyboard(name: str, body: dict[str, Any]) -> dict[str, Any]:

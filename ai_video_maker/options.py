@@ -66,6 +66,12 @@ class RunOptions:
     # a prompt when its pair is planned again. Hand-written prompts are
     # replaced, so it is never implicit.
     replan_all: bool = False
+    # storyboard: turn the pairs named by --replan-clip / --replan-all into
+    # deterministic CAMERA transitions instead of planning choreography for
+    # them. The human override for a pair the gate judged stageable but that
+    # mushed when rendered. Free — the wording is a template, so no vision
+    # call — and always a 5s clip.
+    replan_as_camera: bool = False
     # faces: also ask the vision model which frames draw a cast member as a
     # different person. Off by default because rebuilding the reference sheet
     # is free and this is the one part of it that costs a call.
@@ -130,6 +136,7 @@ class RunOptions:
             retag=bool(get("retag")),
             tag_frames=not get("no_tag", False),
             replan_all=bool(get("replan_all")),
+            replan_as_camera=bool(get("camera")),
             audit_faces=bool(get("audit")),
             feedback_clip=get("clip_id"),
             feedback_note=get("note"),

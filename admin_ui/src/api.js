@@ -86,6 +86,14 @@ export const api = {
     request(`/api/projects/${encodeURIComponent(name)}/actions/${command}`, {
       method: 'POST', body: JSON.stringify(options)
     }),
+  // The selectable video models, and pinning one for a single project. The
+  // PUT writes just `video_model` into projects/<name>/config.json — it
+  // renders nothing and never touches another movie.
+  videoModels: () => request('/api/video-models'),
+  setVideoModel: (name, model) =>
+    request(`/api/projects/${encodeURIComponent(name)}/video-model`, {
+      method: 'PUT', body: JSON.stringify({ model })
+    }),
   // What the studio has spent: every project's estimate + the grand total.
   costs: () => request('/api/costs'),
   // One project's ledger, line by line (what each paid call bought).

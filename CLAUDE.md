@@ -396,14 +396,61 @@ Core design rules:
   the panel shows yesterday's answer without re-buying it. NOTHING is ever
   re-styled automatically — it prints/links the `--restyle-frame` command,
   same rule as clips.
-- CHARACTER ELEMENTS ARE PLUMBED BUT OFF (2026-08-16). Newer Kling accepts
+- THE MODEL IS PICKED BY NAME, AND IT DECIDES WHETHER FACES ARE SENT (user
+  request, 2026-08-17). `video_models.py` holds named presets
+  (`kling-2.5-turbo-pro`, `kling-3-pro`, `kling-3-turbo-pro`); `video_model`
+  in config names one and `apply_video_model_preset` fills every `fal_*`
+  field at LOAD time. The reason it is a preset and not three keys: models
+  disagree about what the frame fields are CALLED (`image_url` vs
+  `start_image_url`, `tail_image_url` vs `end_image_url`) and a mismatch
+  does not fail loudly — it silently drops the end frame and the movie stops
+  chaining. Explicitly-set `fal_*` keys still win, so nothing existing
+  changes and an unpresetted endpoint can still be hand-configured.
+  `Config.elements_enabled()` is the ONE answer to "send the cast faces?":
+  a preset that says `supports_elements=False` refuses even when the element
+  fields are set by hand, which is what makes "2.5 never gets faces" a
+  property of the model rather than a second switch that drifts out of step
+  with it; an UNKNOWN model id falls back to the fields so a new endpoint is
+  still testable. Pricing follows the model (`clip_usd_per_second`) unless
+  pinned, or a 60%-more-expensive model would keep reporting the old
+  estimate. `verified` marks a shape actually rendered from here — only 2.5
+  is; the Kling 3 entries are from fal's docs (fal.ai was unreachable), so
+  status and the panel say "untested here" and the advice is one
+  `render --clip ID` first. The panel's picker (`PUT
+  /api/projects/<n>/video-model`) is deliberately narrow — one validated key
+  into one project's config.json, never a general config editor — and it
+  DELETES any hand-written derived `fal_*` keys so a stale
+  `fal_end_frame_field` from the previous model cannot silently break the
+  new one, and never writes the derived values (a corrected preset must be
+  able to reach a project that is already pinned). Pinned by
+  tests/test_video_models.py + tests/test_server_video_model.py.
+- A HUMAN CAN FORCE THE CAMERA ON ONE PAIR (user request, 2026-08-17).
+  `storyboard --replan-clip ID --camera` (panel: the clip's "Use camera
+  move") replaces that pair's choreography with `camera_shift_prompt` — the
+  same deterministic family the gate uses, shape picked from the pair's own
+  rosters. The gate decides from tags and headcounts and has never seen a
+  render; this is the override for the pair that mushed anyway. FREE and
+  callless by construction: the forced pairs are excluded from `dirty` so
+  `_plan_pairs` is never asked about them (a planning call would produce
+  something the code overwrites), and `_NoPlanner` in the tests is what
+  proves it. Always 5s (one continuous beat), sound_prompt preserved (it
+  feeds a different step), clip marked stale not deleted. Applies ONLY to
+  explicitly requested ids — a pair dirty because its photo changed must
+  never silently become a camera move. `snapshot()`'s
+  `camera_transitions` exists so the panel can hide the button on a pair
+  that already is one WITHOUT keeping a second copy of the strict-family
+  prefix list in JavaScript. Pinned by tests/test_camera_replan.py.
+- CHARACTER ELEMENTS ARE PLUMBED BUT OFF BY DEFAULT (2026-08-16). Newer Kling accepts
   reference portraits that pin identity through a shot — exactly the
   face-distortion-in-transit complaint. Shaped like `fal_start_frame_field`
   / `fal_end_frame_field` (`fal_elements_field`, `fal_element_image_field`,
   `fal_max_elements`, `fal_element_prompt_template`, `fal_elements_partial`)
-  so enabling it is CONFIG, not code. It ships off because fal.ai was
-  unreachable from the session that wrote it and ONE question decides
-  everything: does the endpoint take elements AND an end frame together?
+  so enabling it is CONFIG, not code — and since 2026-08-17 the normal way
+  to enable it is picking a Kling 3 preset, which fills those fields in and
+  gates them on the model. The DEFAULT model is still 2.5, so out of the box
+  nothing is sent. fal.ai was unreachable from the session that wrote it and
+  ONE question decides everything: does the endpoint take elements AND an
+  end frame together?
   Every clip here is pinned to the next styled photo; an endpoint that makes
   you choose breaks chaining and `combine` shows jumps — that is not a
   trade-off, it is a different product. Elements go only to people tagged in
@@ -1009,7 +1056,8 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   already-paid pending renders stay resumable. `cfg_scale` is deliberately
   left at the provider default until a real A/B on one clip says otherwise.
 - `config.json` at the repo root is the user's live shared config. Current
-  model choices are deliberate: Kling v2.5 Turbo Pro (`fal_model_id`),
+  model choices are deliberate: Kling v2.5 Turbo Pro (`video_model` /
+  `fal_model_id`),
   `gpt-image-2` for images (user wants OpenAI images), `gpt-5.1` for
   text/vision planning. The gpt-5 model line rejects non-default `temperature`
   — don't add temperature params to chat calls.

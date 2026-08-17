@@ -216,6 +216,15 @@ def build_parser() -> argparse.ArgumentParser:
                          "didn't change; everything else is kept. If its clip "
                          "is already rendered it gets marked outdated. "
                          "Repeatable.")
+    sp.add_argument("--camera", action="store_true",
+                    help="With --replan-clip / --replan-all: make those pairs "
+                         "deterministic CAMERA transitions (the camera travels "
+                         "to the new setting and settles on the end frame) "
+                         "instead of choreographing the people. Free — the "
+                         "wording is a template, so no vision call — and "
+                         "always a 5-second clip. Use it on a pair that mushed "
+                         "when rendered even though the gate judged it "
+                         "stageable.")
     sp.add_argument("--restyle-frame", action="append", metavar="NAME",
                     help="Re-style this frame from scratch (styled png name, "
                          "e.g. beach.png) even though its source is unchanged "

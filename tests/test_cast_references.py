@@ -640,6 +640,15 @@ class TestTellingTheModelWhichPersonAnElementIs:
 
 
 class TestElementsRideOnTheRequestOnlyWhenConfigured:
+    # Kling 3 is the element-capable model; the default 2.5 is not, and the
+    # class below pins that it stays that way.
+    CAPABLE = dict(
+        fal_model_id="fal-ai/kling-video/v3/pro/image-to-video",
+        fal_elements_field="elements",
+        fal_element_image_field="frontal_image_url",
+        fal_max_elements=1,
+    )
+
     def _client(self, config, **overrides):
         from ai_video_maker.clients.video import VideoClient
         for key, value in overrides.items():
@@ -652,25 +661,21 @@ class TestElementsRideOnTheRequestOnlyWhenConfigured:
         assert not any("element" in k.lower() for k in args)
 
     def test_a_configured_model_receives_them_in_its_own_shape(self, config):
-        client = self._client(
-            config,
-            fal_elements_field="elements",
-            fal_element_image_field="frontal_image_url",
-        )
+        client = self._client(config, **self.CAPABLE)
         args = client._build_arguments("s", "e", "m", 5, ["http://face"])
         assert args["elements"] == [{"frontal_image_url": "http://face"}]
 
     def test_the_end_frame_still_rides_alongside_elements(self, config):
         # The contract this pipeline cannot give up: a clip lands exactly on
         # the next styled photo. Elements must never displace that.
-        client = self._client(config, fal_elements_field="elements")
+        client = self._client(config, **self.CAPABLE)
         args = client._build_arguments("s", "e", "m", 5, ["http://face"])
         assert args[config.fal_end_frame_field] == "e"
 
     def test_elements_join_the_fingerprint_only_when_present(
         self, config, workspace
     ):
-        client = self._client(config, fal_elements_field="elements")
+        client = self._client(config, **self.CAPABLE)
         start = _styled(workspace, "s.png", size=(8, 8))
         end = _styled(workspace, "e.png", size=(8, 8))
         face = workspace.cast_refs_dir / "c1.png"

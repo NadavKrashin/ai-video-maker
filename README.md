@@ -762,9 +762,13 @@ references exist for — a face distorting while people travel between the two
 frames — so the plumbing is in place and shaped exactly like the frame
 fields, meaning **turning it on is a config change, not a code change**.
 
-It ships **off** because the endpoint's schema has not been verified from
-here. Read fal's API page for the model you intend to use and check three
-things:
+The simplest way to turn this on is to pick a Kling 3 preset (see
+`video_model` above), which sets all of it coherently. The raw fields below
+are for a model that has no preset yet.
+
+The presets ship with Kling 3's element fields already filled in, but the
+endpoint's schema has **not been verified from here**. Read fal's API page
+for the model you intend to use and check three things:
 
 1. **Does it accept elements AND an end frame in the same request?** This is
    the one that decides everything. Every clip in this pipeline is pinned to
@@ -847,6 +851,23 @@ first and watch the result: the camera transitions being the best-looking
 clips in a movie is a reason to suspect that line, not proof of where it
 belongs.
 
+**Asking for a camera move yourself.** The gate decides from tags and
+headcounts; it has never seen a render. When a pair mushes anyway, override
+it:
+
+```bash
+python pipeline.py storyboard myfilm --replan-clip 003_to_004 --camera
+```
+
+or the clip's **Use camera move** button in the panel. It replaces that
+pair's choreography with the same deterministic wording the gate uses, picked
+by the pair's own rosters. **Free and instant** — the prompt is a template,
+so there is no AI call — and always a 5-second clip. The sound prompt is
+kept, the clip is marked outdated rather than re-rendered, and no other pair
+is touched. `--camera` applies only to pairs you name with `--replan-clip` /
+`--replan-all`: a pair that is merely dirty because its photo changed still
+goes through the planner.
+
 The gate acts when a pair is planned, so storyboards written before it keep
 their many-mover choreography until re-planned. Those pairs are surfaced —
 `snapshot()["storyboard"]["unstageable_pairs"]`, a `status` warning, and a
@@ -877,13 +898,39 @@ clip interpolates from one styled frame to the next):
 "fal_duration_as_string": true
 ```
 
+**Pick a model by name (`video_model`).** Models disagree about what their
+inputs are *called* — the start frame is `image_url` on Kling 2.5 and
+`start_image_url` on Kling 3 — and setting the model id without the matching
+field names does not fail loudly: it silently drops the end frame, and the
+movie stops landing on its photos. So name a preset instead and every `fal_*`
+field is filled in together:
+
+| `video_model` | Model | Frame fields | Cast faces | Price |
+|---|---|---|---|---|
+| `kling-2.5-turbo-pro` | Kling 2.5 Turbo Pro (default) | `image_url` / `tail_image_url` | **no** | $0.07/s |
+| `kling-3-pro` | Kling 3.0 Pro | `start_image_url` / `end_image_url` | **yes** (1) | $0.112/s |
+| `kling-3-turbo-pro` | Kling 3.0 Turbo Pro | `start_image_url` / `end_image_url` | **yes** (1) | $0.14/s |
+
+Whether the cast's face references are sent is a property of the **model**,
+not a separate switch: Kling 2.5 cannot read them and never gets them, even
+if the element fields are set by hand; Kling 3 can and does. That is the one
+thing that must not be possible to leave half-configured.
+
+Any `fal_*` key you set explicitly still beats the preset, so experiments
+need no new preset and every existing config keeps working untouched. Pricing
+follows the model too, unless you pin your own — otherwise switching to a
+model that costs 60% more would keep reporting the old estimate.
+
+The panel's Render step has a picker (it writes `video_model` into that one
+project's `config.json`; nothing else in the studio changes). The Kling 3
+entries come from fal's published docs and have **not been rendered from
+here** — try a single clip with `render <project> --clip ID` and check the
+end frame is honoured before committing a whole movie.
+
 - **Start frame** → `fal_start_frame_field` (`image_url`). **End frame** →
   `fal_end_frame_field` (`tail_image_url`); set it to `""` for start-frame-only.
 - `fal_duration_as_string: true` because fal's Kling expects a string enum
   (`"5"`/`"10"`); set it `false` for a model that wants an integer.
-- **Kling 3.0 on fal:** set `fal_model_id` to
-  `"fal-ai/kling-video/v3/pro/image-to-video"`, `fal_start_frame_field` to
-  `"start_image_url"`, and `fal_end_frame_field` to `"end_image_url"`.
 - `fal_negative_prompt` — sent as the model's `negative_prompt` when
   non-empty. The shared config ships a preset targeting artifacts seen on
   real renders (face distortion, morphing, flicker); set it to `""`
@@ -1118,7 +1165,7 @@ which are project-less).
 | `serve` | — (no project argument) `--host`, `--port`, `--no-watch` |
 | `ingest` | `<order>` (id / folder / unique fragment), `--force`, `--dry-run` |
 | `init` | — |
-| `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--replan-all` (rewrite every prompt from the current cast + tags), `--no-tag` (skip the identity proposal), `--replan-clip ID` (repeatable; fresh motion prompt for that pair), `--restyle-frame NAME` (repeatable; re-style that frame, e.g. `2.png`, marking adjacent clips outdated), `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
+| `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--replan-all` (rewrite every prompt from the current cast + tags), `--no-tag` (skip the identity proposal), `--replan-clip ID` (repeatable; fresh motion prompt for that pair), `--camera` (with either re-plan flag: make those pairs camera transitions — free, no AI call), `--restyle-frame NAME` (repeatable; re-style that frame, e.g. `2.png`, marking adjacent clips outdated), `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
 | `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 5\|10`, `--add-audio`, `--no-audio` |
 | `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-file PATH`, `--music-url URL` |
 | `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--music-url URL`, `--add-audio`, `--no-audio`, `--final`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter` |

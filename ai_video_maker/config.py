@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from .costs import Pricing
 from .errors import ConfigError
+from .video_models import VideoModel, get_video_model, model_for_id, model_keys
 
 
 class Config(BaseModel):
@@ -37,10 +38,19 @@ class Config(BaseModel):
     openai_text_model: str = "gpt-5.1"
 
     # --- fal.ai image-to-video. Auth via FAL_KEY. ---
+    # PREFERRED: name a preset here and every fal_* field below is filled in
+    # coherently — see video_models.py for the list ("kling-2.5-turbo-pro",
+    # "kling-3-pro", "kling-3-turbo-pro"). Models disagree about what the
+    # frame fields are CALLED, and setting the model id without the matching
+    # field names does not fail loudly: it silently drops the end frame, and
+    # the movie stops landing on its photos. A preset makes that impossible.
+    #
+    # Any fal_* key set explicitly still wins over the preset, so an
+    # experiment needs no new preset and every existing config keeps working
+    # untouched. Empty = no preset, exactly the old hand-configured behaviour.
+    video_model: str = ""
     # Default: Kling v2.5 Turbo Pro (image_url + tail_image_url, start->end
     # interpolation — same request shape as v2.1, better and cheaper).
-    # For Kling 3.0 use model "fal-ai/kling-video/v3/pro/image-to-video" with
-    # start field "start_image_url" and end field "end_image_url".
     fal_model_id: str = "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
     fal_start_frame_field: str = "image_url"
     # End-frame support is model-dependent. Leave empty to send only the start
@@ -328,6 +338,7 @@ class Config(BaseModel):
         if override_path is not None:
             overrides = cls._read_json(override_path, required=False)
             data.update(overrides)
+        data = apply_video_model_preset(data)
         try:
             return cls(**data)
         except ValidationError as exc:
@@ -350,3 +361,60 @@ class Config(BaseModel):
         if not isinstance(data, dict):
             raise ConfigError(f"{path} must contain a JSON object.")
         return data
+
+    # --- the chosen video model, and what it can do ------------------------ #
+    def video_model_preset(self) -> Optional[VideoModel]:
+        """The preset behind this config, by name or by model id.
+
+        Falls back to matching ``fal_model_id`` so a config written before
+        presets existed still gets the capability answers — which is what
+        keeps "does this model take elements?" from becoming a second switch
+        somebody has to remember to flip in step with the model.
+        """
+        return get_video_model(self.video_model) or model_for_id(self.fal_model_id)
+
+    def elements_enabled(self) -> bool:
+        """Should cast face references ride along with a clip request?
+
+        The MODEL decides. Kling 2.5 cannot take elements, so it never gets
+        them however the element fields happen to be set — that is the whole
+        point of tying this to the model rather than to a separate flag that
+        could drift out of step with it. An unrecognised model has no opinion
+        recorded, so it falls back to the fields, which is what lets a new
+        endpoint be tried by hand before it earns a preset.
+        """
+        configured = bool(self.fal_elements_field) and self.fal_max_elements > 0
+        preset = self.video_model_preset()
+        if preset is not None and not preset.supports_elements:
+            return False
+        return configured
+
+
+def apply_video_model_preset(data: dict[str, Any]) -> dict[str, Any]:
+    """Fill in the ``fal_*`` fields implied by ``data['video_model']``.
+
+    Keys already present in ``data`` are left ALONE — an explicitly written
+    value always beats the preset, so a per-project experiment needs no new
+    preset and no existing config changes behaviour. An unknown preset name
+    is left for pydantic-free validation below rather than silently ignored:
+    a typo that quietly rendered on the wrong model would be expensive.
+    """
+    name = str(data.get("video_model") or "").strip()
+    if not name:
+        return data
+    preset = get_video_model(name)
+    if preset is None:
+        raise ConfigError(
+            f"Unknown video_model {name!r}. Available: "
+            + ", ".join(model_keys())
+        )
+    merged = dict(data)
+    for key, value in preset.as_config_fields().items():
+        merged.setdefault(key, value)
+    # Pricing follows the model unless the config states its own — otherwise
+    # switching to a model that costs 60% more would keep reporting the old
+    # estimate, and the spend figures are the only cost signal there is.
+    pricing = dict(merged.get("pricing") or {})
+    pricing.setdefault("clip_usd_per_second", preset.usd_per_second)
+    merged["pricing"] = pricing
+    return merged
