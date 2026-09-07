@@ -1512,6 +1512,14 @@ export default function ProjectDetail({ name, onBack }) {
   const [openPanel, setOpenPanel] = useState('');
   const [uploading, setUploading] = useState(false);
   const [musicBusy, setMusicBusy] = useState(false);
+  // Which clip's "needs fixing" mark is mid-flight. Declared up here with the
+  // rest of the state and NOT next to its handler further down: everything
+  // below `if (!snap) return` runs only once the snapshot has loaded, so a
+  // hook there is skipped on the first render and the hook count changes
+  // between renders — React tears the whole page down with "rendered more
+  // hooks than during the previous render", which looks exactly like the
+  // project page crashing on open.
+  const [flagBusy, setFlagBusy] = useState('');
   const [letterBusy, setLetterBusy] = useState(false);
   const [confirm, setConfirm] = useState(null);
   // Which transition the feedback form is open for (null = closed), and what
@@ -1936,7 +1944,6 @@ export default function ProjectDetail({ name, onBack }) {
   // nothing it could destroy. Deliberately NOT the Feedback button: that one
   // costs two model calls and teaches the planner a studio-wide rule, which
   // is far too much ceremony for "come back to this one".
-  const [flagBusy, setFlagBusy] = useState('');
   const toggleNeedsFix = async (clipId, marked, note = '') => {
     setFlagBusy(clipId);
     try {
