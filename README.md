@@ -171,7 +171,8 @@ the `ADMIN_API_TOKEN` from `.env`:
   `letter.txt`), **publishing the finished movie into the order's Cloudinary
   folder** (step 5 — the modal names the exact file, e.g. `final_v2.mp4`,
   before anything is uploaded, and nothing there is ever replaced), and `run`
-  for the whole chain, plus a **Feedback** button on every rendered clip
+  for the whole chain, plus a **Needs fixing** toggle and a **Feedback** button
+  on every rendered clip
   (tell the planner what it got wrong — see
   [Teaching the planner](#teaching-the-planner-feedback--lessons)) and two
   studio-wide tabs: **Spending** (what each project cost and the total) and
@@ -589,6 +590,39 @@ Details worth knowing:
   turns the whole mechanism off without deleting anything.
 - With no lessons stored, every prompt is byte-for-byte what it was before
   this feature existed.
+
+### Marking clips that need fixing
+
+Watching twenty-nine clips and remembering which six were wrong is the actual
+problem, and feedback is the wrong tool for it: it costs two model calls and
+writes a studio-wide rule. **`flag` is the worklist** — free, instant, and
+yours to tick off:
+
+```bash
+python pipeline.py flag myfilm --clip 003_to_004 "the boy teleports"
+python pipeline.py flag myfilm --clip 003_to_004 --clear   # dealt with
+```
+
+In the panel it is the **Needs fixing** button on every rendered clip, which
+becomes **✓ Fixed** once marked. Marks show up as a red badge on the clip, a
+count in the Render step, a `status` line and
+`snapshot()["clip_flags"]`. They live in `projects/<name>/clip_flags.json`.
+
+The two are deliberately different things, and the difference is the point:
+
+| | `feedback` | `flag` |
+|---|---|---|
+| What it is | evidence, pinned to the exact prompt that produced the clip | a to-do list for this movie |
+| Costs | two OpenAI calls (watch + distil) | nothing |
+| Teaches the planner | yes — a studio-wide rule | no |
+| Can be undone | no (append-only, by design) | yes — that is the whole point |
+
+Marking a clip **changes nothing about the movie**: nothing is deleted, and
+nothing is re-rendered. Fix the prompt and regenerate the clip when you are
+ready, the same explicit paid action as always. If you re-render a clip that
+is still marked, the mark is **not** cleared for you — it is reported as
+"re-rendered since you marked it" instead, because deciding you are finished
+with your own note is not the pipeline's call.
 
 ### What it costs (spending)
 
@@ -1229,6 +1263,7 @@ which are project-less).
 | `ingest` | `<order>` (id / folder / unique fragment), `--force`, `--dry-run` |
 | `init` | — |
 | `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--replan-all` (rewrite every prompt from the current cast + tags), `--no-tag` (skip the identity proposal), `--replan-clip ID` (repeatable; fresh motion prompt for that pair), `--camera` (with either re-plan flag: make those pairs camera transitions — free, no AI call), `--stage-people` (the opposite override: keep the people choreography on pairs the gate would make camera moves), `--restyle-frame NAME` (repeatable; re-style that frame, e.g. `2.png`, marking adjacent clips outdated), `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
+| `flag` | `--clip ID` (required; which rendered clip), `--clear` (tick it off instead) — plus an optional positional note |
 | `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 5\|10`, `--add-audio`, `--no-audio` |
 | `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-file PATH`, `--music-url URL` |
 | `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--music-url URL`, `--add-audio`, `--no-audio`, `--final`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter` |

@@ -50,6 +50,7 @@ from .config import Config
 from .constants import VALID_DURATIONS
 from .costs import KIND_CLIP, KIND_SFX, CostLedger, estimate_usd
 from .errors import PipelineCancelled, PipelineError, StoryboardError
+from .clip_flags import ClipFlagStore
 from .feedback import (
     MAX_NOTE_CHARS,
     SCOPE_MOTION,
@@ -250,6 +251,7 @@ class Pipeline:
         # corrected on one order is corrected for every later one too.
         self.lessons = LessonStore(lessons_file())
         self.feedback_store = FeedbackStore(workspace.feedback_file)
+        self.clip_flags = ClipFlagStore(workspace.clip_flags_file)
         self.openai = OpenAIClient(config)
         # Every OpenAI call (including the condense/restage/reword ones the
         # runner never sees directly) prices itself into this project's ledger.
@@ -306,6 +308,7 @@ class Pipeline:
             "combine": self.cmd_combine,
             "publish": self.cmd_publish,
             "status": self.cmd_status,
+            "flag": self.cmd_flag,
             "tag": self.cmd_tag,
             "faces": self.cmd_faces,
             "feedback": self.cmd_feedback,
@@ -2615,6 +2618,11 @@ class Pipeline:
                 self._clip_name(a, b)
                 for a, b in self._bridge_pairs(frames, quiet=True)
             ]
+            # The human's worklist, read once for the whole loop.
+            marked = {
+                f.transition_id: f.note
+                for f in self._clip_flags_safe().values()
+            }
             for clip in expected:
                 exists = clip.exists()
                 missing += 0 if exists else 1
@@ -2643,6 +2651,10 @@ class Pipeline:
                         rendered_with
                         and rendered_with != self.config.fal_model_id
                     ),
+                    # A human watched this one and said it needs redoing.
+                    # Purely a note to a human: nothing here acts on it.
+                    "needs_fix": clip.stem in marked,
+                    "fix_note": marked.get(clip.stem, ""),
                 })
             found = (
                 find_generated_clips(ws.clips_dir)
@@ -2823,6 +2835,10 @@ class Pipeline:
             # Human judgements of this project's clips, and how many lessons
             # they taught the planner (see feedback.py).
             "feedback": self._feedback_summary(),
+            # Clips a human marked as needing a fix (see clip_flags.py).
+            # A worklist, not evidence: free to set, free to clear, and it
+            # changes nothing about the movie on its own.
+            "clip_flags": self._clip_flag_summary(clips),
             "music": ws.music_file.exists(),
             "custom_music": ws.custom_music_file.exists(),
             "has_failed_jobs": self.failed.path.exists(),
@@ -3350,6 +3366,90 @@ class Pipeline:
             logger.warning("Could not read the feedback file: %s", exc)
             return {"count": 0, "good": 0, "bad": 0, "lessons": 0,
                     "by_transition": {}}
+
+    def _clip_flags_safe(self) -> dict[str, Any]:
+        """Every mark, or none — a worklist must never break status."""
+        try:
+            return self.clip_flags.all()
+        except Exception as exc:  # noqa: BLE001 - a note can't break status
+            logger.warning("Could not read the clip flags file: %s", exc)
+            return {}
+
+    def _clip_flag_summary(self, clips: list[dict[str, Any]]) -> dict[str, Any]:
+        """Marks + whether each one's clip has been re-rendered since."""
+        mtimes: dict[str, float] = {}
+        for clip in clips:
+            if not clip.get("rendered"):
+                continue
+            path = self.workspace.clips_dir / clip["file"]
+            try:
+                mtimes[clip["id"]] = path.stat().st_mtime
+            except OSError:
+                continue
+        try:
+            return self.clip_flags.summary(mtimes)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not summarise the clip flags: %s", exc)
+            return {"count": 0, "ids": [], "flags": [], "rerendered": []}
+
+    def mark_clip(self) -> dict[str, Any]:
+        """Mark or unmark one rendered clip as needing a fix.
+
+        Free, instant and reversible — it writes one small file and renders
+        nothing. Marking a clip that is not rendered yet is refused: the mark
+        means "I watched this and it is wrong", and there is nothing to have
+        watched.
+        """
+        tid = (self.options.feedback_clip or "").strip()
+        if not tid:
+            raise PipelineError(
+                "Which clip? Pass --clip ID (e.g. --clip 003_to_004)."
+            )
+        clip_path = self.workspace.clips_dir / f"{tid}.mp4"
+        if self.options.clear_flag:
+            cleared = self.clip_flags.clear(tid)
+            return {"transition_id": tid, "marked": False, "was_marked": cleared}
+        if not clip_path.exists():
+            raise PipelineError(
+                f"No rendered clip for {tid} ({clip_path} does not exist). "
+                "A mark says a clip you watched needs redoing, so there has "
+                "to be one to watch — render it first."
+            )
+        try:
+            mtime = clip_path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        flag = self.clip_flags.mark(
+            tid, self.options.feedback_note or "", mtime
+        )
+        return {
+            "transition_id": tid, "marked": True, "note": flag.note,
+            "was_marked": False,
+        }
+
+    def cmd_flag(self) -> None:
+        """CLI face of :meth:`mark_clip`."""
+        result = self.mark_clip()
+        tid = result["transition_id"]
+        if not result["marked"]:
+            print(
+                f"\n{tid} is no longer marked."
+                if result["was_marked"]
+                else f"\n{tid} was not marked; nothing to clear."
+            )
+        else:
+            print(f"\n{tid} is marked as needing a fix.")
+            if result["note"]:
+                print(f"  Note: {result['note']}")
+            print(
+                "  Nothing was deleted or re-rendered — redo it when you are "
+                "ready with:\n    "
+                + self._next_command("render", "--clip", tid)
+            )
+        summary = self._clip_flag_summary(self.snapshot().get("clips") or [])
+        if summary["count"]:
+            print(f"  Marked in this project: {', '.join(summary['ids'])}")
+        print(f"  Worklist: {self.workspace.clip_flags_file}")
 
     def record_feedback(self) -> dict[str, Any]:
         """Record one judgement of a rendered clip and learn a rule from it.
@@ -3950,6 +4050,29 @@ class Pipeline:
                     "frames/prompt/duration changed since it was submitted). "
                     "Rendering this clip will pay for a fresh one; the old "
                     "job's output is lost."
+                )
+
+        # The human's own worklist. Printed before the money so it reads as
+        # what it is: what YOU still have to look at, not what the pipeline
+        # thinks is wrong.
+        flags = snap["clip_flags"]
+        if flags["count"]:
+            print(
+                f"  Needs fixing     : {flags['count']} clip(s) you marked — "
+                + ", ".join(flags["ids"])
+            )
+            for item in flags["flags"]:
+                if item["note"]:
+                    print(f"     {item['transition_id']}: {item['note']}")
+            if flags["rerendered"]:
+                # Never cleared automatically: deciding a human's note is
+                # finished with is not the code's call.
+                print(
+                    "     re-rendered since you marked them ("
+                    + ", ".join(flags["rerendered"])
+                    + ") — clear with:\n     "
+                    + self._next_command(
+                        "flag", "--clip", flags["rerendered"][0], "--clear")
                 )
 
         letter = snap["letter"]

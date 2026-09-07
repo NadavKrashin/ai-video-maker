@@ -86,6 +86,10 @@ class RunOptions:
     # different person. Off by default because rebuilding the reference sheet
     # is free and this is the one part of it that costs a call.
     audit_faces: bool = False
+    # flag: clear the mark instead of setting it. The whole value of the
+    # worklist is being able to tick something off, so unmarking is a
+    # first-class action, not an edit of a record.
+    clear_flag: bool = False
     # feedback: one human judgement of a rendered clip (see feedback.py).
     # `feedback_clip` is the transition id it is about ("003_to_004"); empty
     # means feedback about the movie in general. `feedback_learn` off records
@@ -149,6 +153,7 @@ class RunOptions:
             replan_as_camera=bool(get("camera")),
             replan_stages_people=bool(get("stage_people")),
             audit_faces=bool(get("audit")),
+            clear_flag=bool(get("clear")),
             feedback_clip=get("clip_id"),
             feedback_note=get("note"),
             # --good flips the verdict; the default is that feedback is a

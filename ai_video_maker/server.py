@@ -79,6 +79,7 @@ from .intake import (
 )
 from .logging_setup import logger, setup_logging
 from .media.audio_files import looks_like_audio
+from .clip_flags import ClipFlagStore
 from .media.letter import read_letter, save_letter
 from .media.music_url import fetch_music
 from .models import Storyboard, changed_transition_ids
@@ -1240,6 +1241,48 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
             )
         state = save_letter(ws.letter_file, text)
         return {"ok": True, "letter": state}
+
+    @app.put("/api/projects/{name}/clips/{clip_id}/flag", dependencies=guarded)
+    async def flag_clip(
+        name: str, clip_id: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Mark (or unmark) a rendered clip as needing a fix.
+
+        A worklist, not a judgement the pipeline acts on — see clip_flags.py
+        for why this is deliberately separate from the feedback store. Free,
+        instant and reversible, so it goes straight through rather than
+        through the job runner: there is no work to queue and nothing to
+        confirm. Marking cannot delete or re-render anything, which is what
+        makes it safe to expose this directly.
+        """
+        ws = _workspace(name)
+        marked = body.get("marked", True)
+        if not isinstance(marked, bool):
+            raise HTTPException(
+                status_code=422, detail="'marked' must be true or false"
+            )
+        note = body.get("note", "")
+        if not isinstance(note, str):
+            raise HTTPException(status_code=422, detail="'note' must be a string")
+        # The id becomes a filename, so it may not wander out of clips/.
+        if "/" in clip_id or "\\" in clip_id or clip_id in ("", ".", ".."):
+            raise HTTPException(status_code=422, detail="Bad clip id")
+        store = ClipFlagStore(ws.clip_flags_file)
+        if not marked:
+            store.clear(clip_id)
+            return {"ok": True, "marked": False}
+        clip_path = ws.clips_dir / f"{clip_id}.mp4"
+        if not clip_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"No rendered clip for {clip_id} — render it first.",
+            )
+        try:
+            mtime = clip_path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        flag = store.mark(clip_id, note, mtime)
+        return {"ok": True, "marked": True, "note": flag.note}
 
     @app.get("/api/video-models", dependencies=guarded)
     async def list_video_models() -> dict[str, Any]:

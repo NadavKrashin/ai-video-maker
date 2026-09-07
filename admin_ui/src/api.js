@@ -101,6 +101,14 @@ export const api = {
     request(`/api/projects/${encodeURIComponent(name)}/video-model`, {
       method: 'PUT', body: JSON.stringify({ model })
     }),
+  // Mark (or unmark) a rendered clip as needing a fix. A worklist, not
+  // feedback: free, instant, reversible, and it teaches the planner nothing.
+  flagClip: (name, clipId, marked, note = '') =>
+    request(
+      `/api/projects/${encodeURIComponent(name)}/clips/`
+      + `${encodeURIComponent(clipId)}/flag`,
+      { method: 'PUT', body: JSON.stringify({ marked, note }) }
+    ),
   // What the studio has spent: every project's estimate + the grand total.
   costs: () => request('/api/costs'),
   // One project's ledger, line by line (what each paid call bought).

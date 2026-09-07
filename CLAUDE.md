@@ -711,6 +711,32 @@ Core design rules:
   rather than deleted. `lessons` lists/edits them; `learning_enabled` and
   `max_lessons_in_prompt` (newest win) bound the mechanism. Pinned by
   tests/test_feedback.py + tests/test_server_learning.py.
+- A WORKLIST IS NOT EVIDENCE, SO IT GETS ITS OWN STORE (user request,
+  2026-09-08: "mark rendered clips that are not good so that I know which
+  needs fixing"). The obvious move was to reuse the feedback verdict — it
+  already records bad/good per transition and already draws a badge — and it
+  is wrong. `feedback.py` is APPEND-ONLY evidence pinned to the exact prompt
+  that produced the clip, it costs two model calls, it mints studio-wide
+  lessons, and its verdicts have no "never mind" because nothing is learned
+  in reverse. What the user asked for is a to-do list: one click, free, and
+  above all UNMARKABLE, because ticking things off is the entire point.
+  Forcing that into the evidence log would have meant appending a `good`
+  entry to cancel a `bad` one, which is a lie in the one file that exists to
+  be true. So `clip_flags.py` + `projects/<n>/clip_flags.json`: mutable,
+  keyed by transition id, free, and it teaches the planner NOTHING (a test
+  asserts marking writes no feedback entry). CLI `flag <proj> --clip ID
+  [note] [--clear]`, `PUT /api/projects/<n>/clips/<id>/flag`, panel button
+  "Needs fixing" ↔ "✓ Fixed". Marking is refused on an UNRENDERED clip (the
+  mark means "I watched this"), but CLEARING never is — you must be able to
+  tick off a mark whose clip you already deleted. Re-rendering a marked clip
+  does NOT clear the mark: `clip_mtime` is stamped at mark time and a newer
+  clip is reported as `rerendered`, because deciding a human's note is
+  finished with is not the code's call — same rule as never auto-deleting a
+  clip. A `clip_mtime` of 0 means "unknown", never "re-rendered", so marks
+  made before the stamp existed stay quiet. Free/instant, so no `ask({...})`
+  modal and no JobRunner — that machinery is for spending money and
+  destroying work. Pinned by tests/test_clip_flags.py +
+  tests/test_server_clip_flags.py.
 - MONEY IS TRACKED PER PROJECT, AS AN ESTIMATE (2026-07-31). Every completed
   API call prices itself into `projects/<n>/logs/costs.json` from the
   `pricing` block in config.json — OpenAI calls report through

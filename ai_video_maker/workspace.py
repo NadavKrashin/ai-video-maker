@@ -170,6 +170,14 @@ class Workspace:
         return self.root / "feedback.json"
 
     @property
+    def clip_flags_file(self) -> Path:
+        """Clips a human marked as needing a fix (see clip_flags.py).
+
+        Next to feedback.json because it is also content about this movie —
+        but it is a mutable worklist, not the append-only evidence log."""
+        return self.root / "clip_flags.json"
+
+    @property
     def letter_file(self) -> Path:
         """User-written closing-letter text (used when closing_letter is on)."""
         return self.root / "letter.txt"

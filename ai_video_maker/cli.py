@@ -14,6 +14,7 @@ endpoint):
     publish     upload the finished movie into its Cloudinary order folder
     status      show where the project stands and what to run next
     tag         say who is in each frame (identity ground truth for planning)
+    flag        mark a rendered clip as needing a fix (a worklist; free)
     feedback    tell the planner what a rendered clip got wrong, and learn from it
     lessons     show/edit what it has learned so far (project-less)
     costs       what each project has cost, and the total (project-less)
@@ -364,6 +365,23 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Say what would be cut and compared, spending nothing.")
     sp.add_argument("-y", "--yes", action="store_true",
                     help="Skip the confirmation prompt for --audit.")
+
+    sp = command("flag",
+                 "Mark a rendered clip as needing a fix, so you know which "
+                 "ones to come back to. FREE and instant — it writes one small "
+                 "file, teaches the planner nothing and changes nothing about "
+                 "the movie. Marks show up in `status`, in the snapshot and on "
+                 "the clip in the panel; clear one with --clear once it is "
+                 "fixed. Use `feedback` instead when you want the planner to "
+                 "LEARN from what went wrong.")
+    sp.add_argument("--clip", dest="clip_id", metavar="ID", required=True,
+                    help="Which rendered clip needs fixing (e.g. 003_to_004).")
+    sp.add_argument("note", nargs="?", default="",
+                    help="Optional reminder of what is wrong with it, for when "
+                         "you come back. Keep it short — the long version "
+                         "belongs in `feedback`, where it can teach something.")
+    sp.add_argument("--clear", action="store_true",
+                    help="Unmark this clip instead (it has been dealt with).")
 
     sp = command("feedback",
                  "Tell the planner what a rendered clip got wrong (or right). "

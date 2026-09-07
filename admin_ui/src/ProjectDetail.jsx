@@ -395,7 +395,7 @@ function SpendCard({ project, cost }) {
   );
 }
 
-function TransitionCard({ project, tr, framesById, clip, edited, placeholder, verdict, planBehind, endsOffscreen, unstageable, isCamera, selected, onToggleSelect, onEdit, onRegenerate, onReplan, onReplanAsCamera, onReplanStagingPeople, onRedoAudio, onFeedback, busy, replanBusy, audioBusy, mediaV }) {
+function TransitionCard({ project, tr, framesById, clip, edited, placeholder, verdict, planBehind, endsOffscreen, unstageable, isCamera, selected, onToggleSelect, onEdit, onRegenerate, onReplan, onReplanAsCamera, onReplanStagingPeople, onRedoAudio, onFeedback, onToggleFix, busy, replanBusy, audioBusy, flagBusy, mediaV }) {
   const startImg = frameName(framesById, tr.start_frame);
   const endImg = frameName(framesById, tr.end_frame);
   const clipFile = tr.output_path.split('/').pop();
@@ -424,6 +424,14 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, ve
           <Badge variant="light" color="grape"
             title={`Rendered with ${clip.model}, which is no longer the configured video model. The clip is fine — but a movie mixing two models can look inconsistent. Regenerate it when you want them to match (spends credits).`}>
             older video model
+          </Badge>
+        )}
+        {clip?.needs_fix && (
+          <Badge variant="filled" color="red"
+            title={clip.fix_note
+              ? `You marked this clip as needing a fix: ${clip.fix_note}`
+              : 'You marked this clip as needing a fix.'}>
+            needs fixing
           </Badge>
         )}
         <Text size="xs" c="dimmed">{tr.duration}s</Text>
@@ -530,6 +538,20 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, ve
             </Menu.Item>
           </Menu.Dropdown>
         </Menu>
+        {clip?.rendered && (
+          // Free, instant and reversible, so no confirmation modal — that
+          // one is for spending money and destroying work. This writes a
+          // line in a worklist and cannot touch the clip.
+          <Button size="xs" loading={flagBusy}
+            variant={clip.needs_fix ? 'filled' : 'default'}
+            color={clip.needs_fix ? 'red' : undefined}
+            onClick={() => onToggleFix(tr.id, !clip.needs_fix, clip.fix_note)}
+            title={clip.needs_fix
+              ? 'You marked this as needing a fix. Click to tick it off.'
+              : 'Mark this clip as needing a fix, so you know which ones to come back to. Free — it changes nothing about the movie and teaches the planner nothing (use Feedback for that).'}>
+            {clip.needs_fix ? '✓ Fixed' : 'Needs fixing'}
+          </Button>
+        )}
         {clip?.rendered && (
           <Button variant="default" size="xs" loading={audioBusy}
             onClick={() => onRedoAudio(tr.id)}
@@ -1165,6 +1187,22 @@ function RenderPanel({
           “Generate everything that needs it” to redo them in the same job.
         </Alert>
       )}
+      {/* Your own worklist, not something the pipeline worked out. Kept
+          separate from "outdated" above for that reason: outdated is a fact
+          about the plan, this is a judgement about the picture. */}
+      {info.needsFix.length > 0 && (
+        <Alert color="red" variant="light" mb="md"
+          title={`${info.needsFix.length} clip(s) you marked as needing a fix`}>
+          {info.needsFix.join(', ')}. Nothing here is redone automatically —
+          fix the prompt and regenerate the clip when you are ready, then tick
+          it off with the clip's ✓ Fixed button.
+          {info.fixRerendered.length > 0 && (
+            <> Already re-rendered since you marked{' '}
+              {info.fixRerendered.length > 1 ? 'them' : 'it'}:{' '}
+              {info.fixRerendered.join(', ')} — worth a look and a tick.</>
+          )}
+        </Alert>
+      )}
       <Group align="flex-end">
         <TextInput label="Motion prompt override for this run (optional)"
           style={{ flex: 1 }} miw={240} placeholder="(per-clip storyboard prompts)"
@@ -1617,6 +1655,11 @@ export default function ProjectDetail({ name, onBack }) {
     missing: total - rendered,
     outdated: (snap.clips || []).filter((c) => c.rendered && c.stale).length,
     needsRender: clipsNeedingRender(snap).length,
+    // The human's worklist (see clip_flags.py) — never mixed into
+    // needsRender: a marked clip is not automatically re-rendered, because
+    // whatever was wrong with it usually needs a prompt edit first.
+    needsFix: snap.clip_flags?.ids || [],
+    fixRerendered: snap.clip_flags?.rerendered || [],
     silentRendered: (snap.clips || []).filter((c) => c.rendered && !c.sfx).length,
     finalExists: Boolean(snap.final_video),
     customMusic: Boolean(snap.custom_music),
@@ -1885,6 +1928,23 @@ export default function ProjectDetail({ name, onBack }) {
       label: 'Re-plan prompt',
       action: () => run('storyboard', { replan_clips: [clipId] }, `re-plan ${clipId}`)
     });
+  };
+
+  // The worklist: which rendered clips you have decided need redoing. Free,
+  // instant and reversible, so like the settings card it goes straight
+  // through rather than through ask() — there is nothing to confirm and
+  // nothing it could destroy. Deliberately NOT the Feedback button: that one
+  // costs two model calls and teaches the planner a studio-wide rule, which
+  // is far too much ceremony for "come back to this one".
+  const [flagBusy, setFlagBusy] = useState('');
+  const toggleNeedsFix = async (clipId, marked, note = '') => {
+    setFlagBusy(clipId);
+    try {
+      await api.flagClip(name, clipId, marked, marked ? note : '');
+      notify(marked ? `${clipId} marked as needing a fix` : `${clipId} ticked off`);
+      await load();
+    } catch (e) { notify(`Could not update the mark: ${e.message}`, 'red'); }
+    finally { setFlagBusy(''); }
   };
 
   // Saving a tuning knob is free, instant and reversible — it writes one
@@ -2924,6 +2984,7 @@ export default function ProjectDetail({ name, onBack }) {
               onRegenerate={regenerate} onReplan={replanPrompt}
               onReplanAsCamera={replanAsCamera}
               onReplanStagingPeople={replanStagingPeople} onRedoAudio={redoAudio}
+              onToggleFix={toggleNeedsFix} flagBusy={flagBusy === tr.id}
               onFeedback={openFeedback}
               busy={busyAction === `render ${tr.id}`}
               replanBusy={busyAction === `re-plan ${tr.id}`
