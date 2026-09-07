@@ -10,7 +10,7 @@ import {
   Textarea, TextInput, Title, UnstyledButton
 } from '@mantine/core';
 import { api, fileUrl } from './api.js';
-import { COST, ConfirmModal, notify, stepChip, usd } from './ui.jsx';
+import { COST, ConfirmModal, ZoomableImage, notify, stepChip, usd } from './ui.jsx';
 
 // A transition's start_frame/end_frame is the styled image path in practice
 // ("styled_images/img1.png"), but may also be a frame id — handle both.
@@ -300,6 +300,9 @@ function FrameTagger({ project, frame, cast, mediaV, onChange }) {
       </Group>
       <div style={{ position: 'relative', cursor: active ? 'crosshair' : 'default' }}
         onClick={place}>
+        {/* Deliberately NOT a ZoomableImage: on this one image a click means
+            "place a face tag here", and the tag's x/y come from where you
+            clicked. Opening a lightbox instead would take the tagger away. */}
         <Image src={fileUrl(project, 'styled', imgName, mediaV)} radius="sm"
           alt={imgName} />
         {people.map((p) => (
@@ -394,6 +397,10 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, ve
   const startImg = frameName(framesById, tr.start_frame);
   const endImg = frameName(framesById, tr.end_frame);
   const clipFile = tr.output_path.split('/').pop();
+  const framePair = [
+    ...(startImg ? [{ src: fileUrl(project, 'styled', startImg, mediaV), label: `start · ${tr.start_frame}` }] : []),
+    ...(endImg ? [{ src: fileUrl(project, 'styled', endImg, mediaV), label: `end · ${tr.end_frame}` }] : [])
+  ];
   return (
     <Card withBorder padding="md">
       <Group gap="xs" mb="sm">
@@ -452,11 +459,15 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, ve
       </Group>
       <Group align="center" gap="md">
         <Group gap={6} align="center" wrap="nowrap">
-          {startImg && <Image src={fileUrl(project, 'styled', startImg, mediaV)} alt={tr.start_frame}
-            w={128} radius="sm" loading="lazy" />}
+          {/* Either frame opens the PAIR: what you are judging on a clip card
+              is the journey between them, which one frame cannot show. */}
+          {startImg && <ZoomableImage src={fileUrl(project, 'styled', startImg, mediaV)}
+            alt={tr.start_frame} w={128} radius="sm" loading="lazy"
+            zoomTitle={tr.id} zoomImages={framePair} />}
           <Text c="dimmed">→</Text>
-          {endImg && <Image src={fileUrl(project, 'styled', endImg, mediaV)} alt={tr.end_frame}
-            w={128} radius="sm" loading="lazy" />}
+          {endImg && <ZoomableImage src={fileUrl(project, 'styled', endImg, mediaV)}
+            alt={tr.end_frame} w={128} radius="sm" loading="lazy"
+            zoomTitle={tr.id} zoomImages={framePair} />}
         </Group>
         {clip?.rendered && (
           // preload="none": don't fetch clip bytes until the user hits play.
@@ -791,12 +802,18 @@ function CastFacesCard({
           const finding = findings[c.id] || {};
           const odd = finding.odd_frames || [];
           const frames = appearances[c.id] || [];
+          // Zoomable only when a reference exists: with none, the image falls
+          // back to a blank SVG and blowing that up would show nothing.
+          const RefImage = frames.length ? ZoomableImage : Image;
           return (
             <Group key={c.id} align="flex-start" gap="sm" wrap="nowrap">
-              <Image w={64} h={64} radius="sm" fit="cover"
+              {/* 64px square, cropped to fill — exactly the size at which a
+                  mush crop and a clean one look the same. */}
+              <RefImage w={64} h={64} radius="sm" fit="cover"
                 fallbackSrc="data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E"
                 src={fileUrl(name, 'cast_refs', `${c.id}.png`, mediaV)}
-                alt={c.epithet} />
+                alt={c.epithet}
+                zoomTitle={`${c.epithet || c.id} — cast reference`} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <Text size="xs" fw={500}>{c.epithet || c.id}</Text>
                 {frames.length === 0 ? (
@@ -2549,6 +2566,14 @@ export default function ProjectDetail({ name, onBack }) {
             {inputImages.map((img) => {
               const styledName = img.replace(/\.[^.]+$/, '.png');
               const styled = styledImages.includes(styledName);
+              // Clicking either thumbnail opens BOTH big: at 120px you can
+              // see that a frame was styled, not whether the face survived it.
+              const zoomPair = [
+                { src: fileUrl(name, 'input', img, 0), label: 'original' },
+                ...(styled
+                  ? [{ src: fileUrl(name, 'styled', styledName, mediaV), label: 'styled' }]
+                  : [])
+              ];
               return (
                 <Stack key={img} gap={2} w={styled ? 244 : 120}>
                   {/* Original AND styled, side by side. The styled frame used
@@ -2558,17 +2583,19 @@ export default function ProjectDetail({ name, onBack }) {
                       from the source needs both in one glance. */}
                   <Group gap={4} wrap="nowrap" align="flex-start">
                     <Stack gap={0}>
-                      <Image w={120} radius="sm" alt={`${img} (original)`}
+                      <ZoomableImage w={120} radius="sm" alt={`${img} (original)`}
                         style={styling && !styled ? { opacity: 0.45 } : undefined}
-                        src={fileUrl(name, 'input', img, 0)} />
+                        src={fileUrl(name, 'input', img, 0)}
+                        zoomTitle={img} zoomImages={zoomPair} />
                       {styled && (
                         <Text size="10px" c="dimmed" ta="center">original</Text>
                       )}
                     </Stack>
                     {styled && (
                       <Stack gap={0}>
-                        <Image w={120} radius="sm" alt={`${styledName} (styled)`}
-                          src={fileUrl(name, 'styled', styledName, mediaV)} />
+                        <ZoomableImage w={120} radius="sm" alt={`${styledName} (styled)`}
+                          src={fileUrl(name, 'styled', styledName, mediaV)}
+                          zoomTitle={img} zoomImages={zoomPair} />
                         <Text size="10px" c="dimmed" ta="center">styled</Text>
                       </Stack>
                     )}

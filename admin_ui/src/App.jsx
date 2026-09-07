@@ -10,6 +10,7 @@ import ProjectsTab from './ProjectsTab.jsx';
 import ProjectDetail from './ProjectDetail.jsx';
 import SpendingTab from './SpendingTab.jsx';
 import LearningTab from './LearningTab.jsx';
+import { LightboxProvider } from './ui.jsx';
 
 function Settings({ onConnected }) {
   const [token, setToken] = useState(getToken());
@@ -58,32 +59,34 @@ export default function App() {
   const openProject = (name) => { setProject(name); setTab('project'); };
 
   return (
-    <Container size="lg" py="lg">
-      <Group mb="xl" gap="lg">
-        <Title order={2} c="orange.4" style={{ letterSpacing: '-0.5px' }}>
-          AI Video Maker
-        </Title>
-        <SegmentedControl
-          value={tab === 'project' ? 'projects' : tab}
-          onChange={(value) => { setTab(value); setProject(''); }}
-          data={[
-            { label: 'Orders', value: 'orders' },
-            { label: 'Projects', value: 'projects' },
-            { label: 'Spending', value: 'spending' },
-            { label: 'Learning', value: 'learning' }
-          ]} />
-        <div style={{ flex: 1 }} />
-        <Button variant="default" size="xs" onClick={() => setConnected(false)}>
-          Settings
-        </Button>
-      </Group>
-      {tab === 'orders' && <OrdersTab onOpenProject={openProject} />}
-      {tab === 'projects' && <ProjectsTab onOpenProject={openProject} />}
-      {tab === 'spending' && <SpendingTab onOpenProject={openProject} />}
-      {tab === 'learning' && <LearningTab onOpenProject={openProject} />}
-      {tab === 'project' && project && (
-        <ProjectDetail name={project} onBack={() => setTab('projects')} />
-      )}
-    </Container>
+    <LightboxProvider>
+      <Container size="lg" py="lg">
+        <Group mb="xl" gap="lg">
+          <Title order={2} c="orange.4" style={{ letterSpacing: '-0.5px' }}>
+            AI Video Maker
+          </Title>
+          <SegmentedControl
+            value={tab === 'project' ? 'projects' : tab}
+            onChange={(value) => { setTab(value); setProject(''); }}
+            data={[
+              { label: 'Orders', value: 'orders' },
+              { label: 'Projects', value: 'projects' },
+              { label: 'Spending', value: 'spending' },
+              { label: 'Learning', value: 'learning' }
+            ]} />
+          <div style={{ flex: 1 }} />
+          <Button variant="default" size="xs" onClick={() => setConnected(false)}>
+            Settings
+          </Button>
+        </Group>
+        {tab === 'orders' && <OrdersTab onOpenProject={openProject} />}
+        {tab === 'projects' && <ProjectsTab onOpenProject={openProject} />}
+        {tab === 'spending' && <SpendingTab onOpenProject={openProject} />}
+        {tab === 'learning' && <LearningTab onOpenProject={openProject} />}
+        {tab === 'project' && project && (
+          <ProjectDetail name={project} onBack={() => setTab('projects')} />
+        )}
+      </Container>
+    </LightboxProvider>
   );
 }

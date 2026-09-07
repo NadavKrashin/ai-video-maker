@@ -1,7 +1,9 @@
-// Shared pieces: toasts, status colors, cost badges, and the confirmation
-// modal every mutating action goes through.
+// Shared pieces: toasts, status colors, cost badges, the image lightbox, and
+// the confirmation modal every mutating action goes through.
 import React, { useEffect, useState } from 'react';
-import { Badge, Button, Group, List, Modal, TextInput } from '@mantine/core';
+import {
+  Anchor, Badge, Button, Group, Image, List, Modal, Stack, Text, TextInput
+} from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 
 export const notify = (message, color = 'gray') =>
@@ -73,5 +75,85 @@ export function ConfirmModal({ confirm, onConfirm, onCancel }) {
         </>
       )}
     </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Lightbox: click any thumbnail in the panel to see it at full size.
+//
+// The panel's thumbnails are deliberately small (120px in the Photos step,
+// 128px on a clip card, 64px for a cast reference) so a 30-photo order fits on
+// one screen — but that is far too small for the judgement those pictures are
+// actually there to support: whether a face survived styling, whether a head
+// got cropped, whether the reference portrait is a clean crop of the right
+// person. Rather than grow the grid, clicking opens the picture big.
+//
+// It takes a LIST of images, not one, because at every site the useful unit is
+// a comparison: original vs styled in the Photos step (the card's own comment
+// says telling a likeness slip from the source needs both in one glance), and
+// start vs end frame on a clip card. Blowing up one half of a pair would give
+// you the size and take away the comparison.
+
+const LightboxContext = React.createContext(null);
+
+export function LightboxProvider({ children }) {
+  const [shot, setShot] = useState(null);
+  return (
+    <LightboxContext.Provider value={setShot}>
+      {children}
+      <Modal opened={Boolean(shot)} onClose={() => setShot(null)} centered
+        size="auto" title={shot?.title} padding="md">
+        {/* nowrap, and each image capped to its share of the viewport: a pair
+            that wraps puts the second picture below the fold, which is the
+            one thing this must not do — you would be scrolling between two
+            images instead of comparing them. */}
+        <Group align="flex-start" gap="md" wrap="nowrap" justify="center">
+          {(shot?.images || []).map((img, i) => (
+            <Stack key={i} gap={4} align="center" style={{ minWidth: 0 }}>
+              <img src={img.src} alt={img.label || shot.title}
+                style={{
+                  display: 'block', objectFit: 'contain', borderRadius: 6,
+                  maxHeight: '76vh',
+                  maxWidth: shot.images.length > 1 ? '42vw' : '86vw'
+                }} />
+              {img.label && (
+                <Text size="xs" c="dimmed">
+                  {img.label}
+                  {' · '}
+                  <Anchor href={img.src} target="_blank" rel="noreferrer" size="xs">
+                    open full size
+                  </Anchor>
+                </Text>
+              )}
+            </Stack>
+          ))}
+        </Group>
+      </Modal>
+    </LightboxContext.Provider>
+  );
+}
+
+// Returns `zoom({ title, images: [{ src, label }] })`. Safe to call outside a
+// provider — it becomes a no-op rather than throwing, so a component rendered
+// in isolation (or a future tab that forgets the provider) still works.
+export const useLightbox = () => React.useContext(LightboxContext) || (() => {});
+
+// Drop-in for Mantine's <Image> that opens the lightbox when clicked.
+// `zoomImages` overrides what gets shown — that is how a thumbnail opens its
+// pair rather than only itself.
+export function ZoomableImage({ zoomTitle, zoomImages, style, ...props }) {
+  const zoom = useLightbox();
+  return (
+    <Image {...props} style={{ cursor: 'zoom-in', ...(style || {}) }}
+      title={props.title || 'Click to see it bigger'}
+      onClick={(event) => {
+        // Several of these sit inside cards that have their own click
+        // handlers (the face tagger places a tag wherever you click).
+        event.stopPropagation();
+        zoom({
+          title: zoomTitle || props.alt,
+          images: zoomImages || [{ src: props.src, label: props.alt }]
+        });
+      }} />
   );
 }

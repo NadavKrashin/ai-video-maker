@@ -190,6 +190,13 @@ the `ADMIN_API_TOKEN` from `.env`:
   once the whole run finishes. Each photo shows the **original beside its
   styled frame**, because judging a likeness slip, a cropped head or an
   invented face means comparing the two, not looking at the styled one alone.
+  **Clicking any picture opens it big** — and opens the *pair*, because at
+  120px you can see that a frame was styled but not whether the face
+  survived it. The same works on a clip card (click either frame to see
+  start and end side by side) and on a cast reference portrait, where a
+  64px square is exactly the size at which a clean crop and a mush crop
+  look identical. The face tagger is the one exception: there a click means
+  "place a tag here", so it keeps tagging.
   **Jobs sit directly under the step tiles** — clicking a step is what creates
   one, and its log is where you look when a run misbehaves.
   **Photos that will be skipped** get their own alert: a storyboard frame
