@@ -191,6 +191,16 @@ class Workspace:
         return self.storyboard_dir / "storyboard.json"
 
     @property
+    def project_config_file(self) -> Path:
+        """Per-project config overrides, merged over the shared config.json.
+
+        Holds only the keys this ONE movie pins — the video model, the
+        experiment knobs from the panel's settings card, anything hand-added.
+        Absent for a project that follows the studio defaults, which is the
+        normal case."""
+        return self.root / "config.json"
+
+    @property
     def face_audit_file(self) -> Path:
         """The last face-consistency audit's findings (see cmd_faces).
 

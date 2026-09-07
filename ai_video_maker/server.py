@@ -83,6 +83,7 @@ from .media.letter import read_letter, save_letter
 from .media.music_url import fetch_music
 from .models import Storyboard, changed_transition_ids
 from .options import RunOptions
+from .project_settings import coerce_settings, describe_settings
 from .runner import Pipeline
 from .video_models import VIDEO_MODELS, get_video_model, model_keys
 from .workspace import (
@@ -706,8 +707,62 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         return ws
 
     def _pipeline(ws: Workspace) -> Pipeline:
-        cfg = Config.load(config_path, override_path=ws.root / "config.json")
+        cfg = Config.load(config_path, override_path=ws.project_config_file)
         return Pipeline(cfg, ws, RunOptions())
+
+    def _read_project_config(ws: Workspace) -> dict[str, Any]:
+        """This project's config overrides, or {} when it has none.
+
+        A malformed file is a 500 rather than a silent {}: overwriting one
+        would throw away whatever a human hand-wrote in there, and the panel
+        is the only place the error would ever be read.
+        """
+        path = ws.project_config_file
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Could not read the project config: {exc}"
+            ) from exc
+        if not isinstance(data, dict):
+            raise HTTPException(
+                status_code=500,
+                detail=f"{path.name} must contain a JSON object",
+            )
+        return data
+
+    def _read_shared_config() -> dict[str, Any]:
+        """The studio-wide config as raw JSON, for validating an override on
+        top of it before anything is written."""
+        try:
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Could not read the shared config: {exc}"
+            ) from exc
+        return data if isinstance(data, dict) else {}
+
+    def _write_project_config(ws: Workspace, data: dict[str, Any]) -> None:
+        """Save the overrides, or DELETE the file once nothing is pinned.
+
+        An empty file left behind would be indistinguishable from a project
+        that pins something, and `Config.load` treats a missing override file
+        and an empty one identically anyway — so the tidier state is no file.
+        """
+        path = ws.project_config_file
+        try:
+            if data:
+                path.write_text(
+                    json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+                )
+            else:
+                path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Could not save the project config: {exc}"
+            ) from exc
 
     # ------------------------------ endpoints ------------------------------ #
 
@@ -1226,15 +1281,7 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
                 detail=f"Unknown model {key!r}. Available: "
                        + ", ".join(model_keys()),
             )
-        path = ws.root / "config.json"
-        try:
-            current = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-            if not isinstance(current, dict):
-                raise ValueError("project config.json is not a JSON object")
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            raise HTTPException(
-                status_code=500, detail=f"Could not read the project config: {exc}"
-            ) from exc
+        current = _read_project_config(ws)
         # An empty choice REMOVES the pin rather than writing "", so the
         # project goes back to following the shared config.
         if key:
@@ -1249,15 +1296,64 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
                         "fal_element_image_field", "fal_max_elements",
                         "fal_element_prompt_template"):
             current.pop(derived, None)
-        try:
-            path.write_text(
-                json.dumps(current, indent=2, ensure_ascii=False), encoding="utf-8"
-            )
-        except OSError as exc:
-            raise HTTPException(
-                status_code=500, detail=f"Could not save the project config: {exc}"
-            ) from exc
+        _write_project_config(ws, current)
         return {"ok": True, "video_model": key}
+
+    @app.put("/api/projects/{name}/settings", dependencies=guarded)
+    async def save_project_settings(
+        name: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Override a few config knobs for THIS project.
+
+        Deliberately an allowlist (`project_settings.PROJECT_SETTINGS`), not a
+        config editor: most of config breaks renders in ways that are hard to
+        diagnose from a browser, while these few exist precisely to be
+        experimented with. Everything else in the project's config.json is
+        left exactly as it is.
+
+        Body is ``{"settings": {key: value}}``. A value of ``null`` REMOVES
+        the override so the shared config decides again — a different thing
+        from pinning the shared value, and it has to stay expressible or a
+        project could never be un-pinned.
+
+        Free and instant: nothing is re-planned, re-styled or re-rendered.
+        These are plan-time and render-time inputs, so they land on the next
+        storyboard/render, the same rule as the cast and the photo tags.
+        """
+        ws = _workspace(name)
+        patch = body.get("settings")
+        if not isinstance(patch, dict):
+            raise HTTPException(
+                status_code=422, detail="'settings' must be an object"
+            )
+        try:
+            cleaned = coerce_settings(patch)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        current = _read_project_config(ws)
+        for key, value in cleaned.items():
+            if value is None:
+                current.pop(key, None)
+            else:
+                current[key] = value
+        # Validate the RESULT before saving: a combination this config class
+        # rejects would otherwise be written to disk and then break every
+        # later load of the project, including the status page that would
+        # have to explain it.
+        try:
+            Config(**{**_read_shared_config(), **current})
+        except Exception as exc:  # noqa: BLE001 - reported, not raised through
+            raise HTTPException(
+                status_code=422, detail=f"Those settings are not valid: {exc}"
+            ) from exc
+        _write_project_config(ws, current)
+
+        pipeline = _pipeline(ws)
+        return {
+            "ok": True,
+            "settings": describe_settings(pipeline.config, pipeline.pinned_settings()),
+        }
 
     @app.put("/api/projects/{name}/storyboard", dependencies=guarded)
     async def save_storyboard(name: str, body: dict[str, Any]) -> dict[str, Any]:

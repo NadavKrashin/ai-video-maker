@@ -882,6 +882,35 @@ movie — e.g. its own `style_prompt` or a different `fal_model_id`. It is merge
 key-over-key on top of the shared config, so different movies can use different
 looks/models without touching the global file.
 
+<a id="project-settings"></a>
+
+**…and the tuning knobs are editable from the panel.** A few of those keys
+exist precisely to be experimented with — their right value is a matter of
+taste that only watching a render settles — so the project page has a
+**Project settings** card for them, at the bottom above the delete button:
+
+| Setting | Effect |
+|---|---|
+| `unstageable_mover_budget` | how many people may leave/arrive and still be choreographed one by one |
+| `unstageable_crowd_limit` | above this many people, any change to the group hands the pair to the camera |
+| `cast_references_enabled` | send each person's canonical face when styling a photo of them |
+| `fal_elements_partial` | on an element-capable model, pin one face when not everyone fits |
+
+Each row shows whether the value is **set for this project** or inherited as
+the **studio default**, with a Reset that removes the override rather than
+pinning today's shared value — so a project can go back to following the
+global config. Saving is free and instant: nothing is re-planned, re-styled or
+re-rendered, and the card says which step each knob lands on.
+
+This is deliberately **not** a config editor. The server keeps an allowlist
+(`ai_video_maker/project_settings.py`) and refuses anything else, because most
+of config breaks renders in ways that are hard to diagnose from a browser — a
+wrong frame field silently drops the end frame, a rewritten `style_prompt`
+quietly undoes years of accumulated rules. Those stay a deliberate edit on the
+machine; the [video model](#video-model) has its own picker.
+
+<a id="video-model"></a>
+
 ### Model & start/end frames (important)
 
 The pipeline is built around **consecutive frame pairs** (start → end). The video
@@ -1394,9 +1423,9 @@ bed costs nothing — it is your own file). Requires `ffmpeg`/`ffprobe` on your
 | `learning_enabled` | `true` (default): rules learned from clip feedback are appended to planning/style prompts. `false` stops sending them (nothing is deleted). |
 | `max_lessons_in_prompt` | How many active rules ride along with one call (default `25`, newest win). |
 | `clip_review_frames` | How many stills are sampled across a clip when the reviewer watches it (default `8`). |
-| `unstageable_mover_budget` | How many people may leave or arrive between two frames and still be choreographed individually (default `3`). Above it, the pair gets a deterministic camera transition instead — see [When the camera takes over](#when-the-camera-takes-over). |
-| `unstageable_crowd_limit` | Above this many visible people in either frame, ANY roster change hands the pair to the camera (default `4`). A group that is the same on both sides is never gated by this. |
-| `cast_references_enabled` | `true` (default): styling a tagged frame is anchored to the cast's canonical faces. `false` restores the old per-photo behaviour. Untagged projects are unaffected either way. |
+| `unstageable_mover_budget` | How many people may leave or arrive between two frames and still be choreographed individually (default `3`). Editable in the panel ([Project settings](#project-settings)). Above it, the pair gets a deterministic camera transition instead — see [When the camera takes over](#when-the-camera-takes-over). |
+| `unstageable_crowd_limit` | Above this many visible people in either frame, ANY roster change hands the pair to the camera (default `4`). Editable in the panel ([Project settings](#project-settings)). A group that is the same on both sides is never gated by this. |
+| `cast_references_enabled` | Editable in the panel ([Project settings](#project-settings)). `true` (default): styling a tagged frame is anchored to the cast's canonical faces. `false` restores the old per-photo behaviour. Untagged projects are unaffected either way. |
 | `face_reference_crop` | Side of the face crop for a frame with one tagged person, as a fraction of the frame height (default `0.5`); a fuller frame divides it down. |
 | `max_style_references` | How many cast faces may ride along with one styling call (default `4`). When a frame has more tagged people, the ones who appear in the most frames win. |
 

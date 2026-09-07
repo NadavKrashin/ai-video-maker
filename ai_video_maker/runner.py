@@ -111,6 +111,7 @@ from .models import (
     tagged_people,
 )
 from .options import RunOptions
+from .project_settings import describe_settings, setting_keys
 from .publish import (
     publish_state,
     published_versions,
@@ -2757,6 +2758,10 @@ class Pipeline:
             # the choice and its consequence are never two separate things
             # to keep in step.
             "video_model": self._video_model_state(),
+            # The handful of config knobs this project may override from the
+            # panel, with the value it actually runs on and whether that was
+            # pinned here or inherited from the shared config.
+            "settings": describe_settings(self.config, self.pinned_settings()),
             "pending_renders": self.pending_renders(),
             "final_video": ws.final_video.exists(),
             # The movie was built before one of its clips was (re-)rendered,
@@ -2976,6 +2981,26 @@ class Pipeline:
                 len(written),
             )
         return written
+
+    def pinned_settings(self) -> dict[str, Any]:
+        """The editable keys THIS project pins in its own config.json.
+
+        Only the allowlisted ones: anything else in that file was put there by
+        hand and is none of the settings card's business. Never raises — an
+        unreadable override file must not take the whole status page down with
+        it, and the shared config still decides.
+        """
+        path = self.workspace.project_config_file
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Could not read %s: %s", path, exc)
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {k: v for k, v in data.items() if k in set(setting_keys())}
 
     def _video_model_state(self) -> dict[str, Any]:
         """What this project renders with, for status and the panel picker."""

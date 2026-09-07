@@ -5,9 +5,9 @@
 // goes through a confirmation modal that says exactly what will happen.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Alert, Badge, Button, Card, Checkbox, Divider, Group, Image, Modal, Paper,
-  ScrollArea, SegmentedControl, Select, Stack, Text, Textarea, TextInput,
-  Title, UnstyledButton
+  Alert, Badge, Button, Card, Checkbox, Divider, Group, Image, Modal,
+  NumberInput, Paper, ScrollArea, SegmentedControl, Select, Stack, Text,
+  Textarea, TextInput, Title, UnstyledButton
 } from '@mantine/core';
 import { api, fileUrl } from './api.js';
 import { COST, ConfirmModal, notify, stepChip, usd } from './ui.jsx';
@@ -826,6 +826,102 @@ function CastFacesCard({
             </Group>
           );
         })}
+      </Stack>
+    </Card>
+  );
+}
+
+// The handful of config knobs whose right value is a matter of taste that
+// only a watched render settles. They were always tunable by editing
+// projects/<name>/config.json on the machine — which, behind the tunnel,
+// means a shell on the mini, so "just try 2/3 on one project" was advice
+// nobody could act on. Deliberately NOT a config editor: the server keeps an
+// allowlist, and everything else stays out of reach of a browser.
+function ProjectSettingsCard({ settings, locked, busy, onSave, onReset }) {
+  // Local edits, so a number can be typed without a save per keystroke.
+  const [draft, setDraft] = useState({});
+  const pending = Object.keys(draft).length > 0;
+
+  // Drop local edits once the server's answer matches them — otherwise a
+  // saved value would keep showing as unsaved.
+  useEffect(() => {
+    setDraft((d) => {
+      const next = { ...d };
+      settings.forEach((s) => {
+        if (Object.prototype.hasOwnProperty.call(next, s.key)
+            && next[s.key] === s.value) delete next[s.key];
+      });
+      return Object.keys(next).length === Object.keys(d).length ? d : next;
+    });
+  }, [settings]);
+
+  const valueOf = (s) => (
+    Object.prototype.hasOwnProperty.call(draft, s.key) ? draft[s.key] : s.value
+  );
+  const edit = (key, value) => setDraft((d) => ({ ...d, [key]: value }));
+
+  const APPLIES = {
+    're-plan': 'takes effect when a pair is re-planned',
+    restyle: 'takes effect when a frame is re-styled',
+    render: 'takes effect on the next render'
+  };
+
+  if (!settings.length) return null;
+  return (
+    <Card withBorder padding="md" mt="xl">
+      <Group gap="sm" mb={4}>
+        <Text size="sm" fw={500}>Project settings</Text>
+        <div style={{ flex: 1 }} />
+        {pending && (
+          <Button size="compact-xs" variant="subtle"
+            onClick={() => setDraft({})}>Discard</Button>
+        )}
+        <Button size="compact-xs" disabled={locked || !pending} loading={busy}
+          onClick={() => onSave(draft)}>
+          Save settings
+        </Button>
+      </Group>
+      <Text size="xs" c="dimmed" mb="sm">
+        Tuning knobs for THIS movie only — nothing else in the studio changes,
+        and nothing here spends credits or touches work already on disk. Values
+        marked “studio default” are inherited from the shared config and will
+        follow it if it changes; saving one pins it here instead.
+      </Text>
+      <Stack gap="md">
+        {settings.map((s) => (
+          <div key={s.key}>
+            <Group align="center" gap="sm" wrap="nowrap">
+              {s.kind === 'bool' ? (
+                <Checkbox label={s.label} checked={Boolean(valueOf(s))}
+                  disabled={locked}
+                  onChange={(e) => edit(s.key, e.target.checked)} />
+              ) : (
+                <NumberInput label={s.label} w={150} size="xs"
+                  min={s.minimum ?? undefined} max={s.maximum ?? undefined}
+                  disabled={locked} value={valueOf(s)} clampBehavior="strict"
+                  onChange={(v) => edit(s.key, v === '' ? s.value : Number(v))} />
+              )}
+              <div style={{ flex: 1 }} />
+              <Badge variant="light" size="sm"
+                color={Object.prototype.hasOwnProperty.call(draft, s.key)
+                  ? 'yellow' : s.pinned ? 'blue' : 'gray'}>
+                {Object.prototype.hasOwnProperty.call(draft, s.key)
+                  ? 'unsaved'
+                  : s.pinned ? 'set for this project' : 'studio default'}
+              </Badge>
+              {s.pinned && (
+                <Button size="compact-xs" variant="subtle" disabled={locked}
+                  onClick={() => onReset(s.key)}
+                  title="Stop overriding this here and follow the shared config again">
+                  Reset
+                </Button>
+              )}
+            </Group>
+            <Text size="xs" c="dimmed" mt={4}>
+              {s.help} <i>({APPLIES[s.applies] || s.applies})</i>
+            </Text>
+          </div>
+        ))}
       </Stack>
     </Card>
   );
@@ -1729,6 +1825,25 @@ export default function ProjectDetail({ name, onBack }) {
       action: () => run('storyboard', { replan_clips: [clipId] }, `re-plan ${clipId}`)
     });
   };
+
+  // Saving a tuning knob is free, instant and reversible — it writes one
+  // file and renders nothing — so it goes straight through rather than
+  // through ask(). The confirmation modal is for spending money and for
+  // destroying work; putting it here would be friction with nothing to
+  // confirm.
+  const saveSettings = async (patch) => {
+    setBusyAction('settings');
+    try {
+      await api.saveProjectSettings(name, patch);
+      notify('Project settings saved');
+      await load();
+    } catch (e) { notify(`Could not save settings: ${e.message}`, 'red'); }
+    finally { setBusyAction(''); }
+  };
+
+  // null means "stop overriding this here", which is a different thing from
+  // pinning today's shared value — the project follows the studio again.
+  const resetSetting = (key) => saveSettings({ [key]: null });
 
   // Pinning a video model for THIS project. Free and instant — it writes one
   // key into the project's config.json and renders nothing. Clips already
@@ -2708,6 +2823,10 @@ export default function ProjectDetail({ name, onBack }) {
       {snap.storyboard_error && (
         <Text c="red" size="sm">Storyboard unreadable: {snap.storyboard_error}</Text>
       )}
+
+      <ProjectSettingsCard settings={snap.settings || []} locked={locked}
+        busy={busyAction === 'settings'}
+        onSave={saveSettings} onReset={resetSetting} />
 
       {/* Deliberately last and deliberately plain: the one action here that
           destroys paid work with no way back. Kept away from the step tiles

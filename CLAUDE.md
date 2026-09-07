@@ -424,6 +424,33 @@ Core design rules:
   new one, and never writes the derived values (a corrected preset must be
   able to reach a project that is already pinned). Pinned by
   tests/test_video_models.py + tests/test_server_video_model.py.
+- MAKING A KNOB CONFIG IS ONLY HALF THE JOB (user question, 2026-09-07:
+  "is this editable from the ui?"). Twice I told the user to "just try 2/3 on
+  one project's config.json" — which, behind the Cloudflare tunnel, means SSH
+  to the mini. A setting nobody can reach is not tunable. The panel's Project
+  settings card (bottom of the project page, above Delete) now edits four
+  keys: `unstageable_mover_budget`, `unstageable_crowd_limit`,
+  `cast_references_enabled`, `fal_elements_partial` — the ones whose right
+  value is TASTE settled by watching renders, which is exactly the category
+  that must not ship as a silent default (see the gate-tightening revert
+  above). `project_settings.py` is the single source of truth: the server
+  validates against it and the panel renders its inputs from it, so a new
+  knob is one entry, not a schema kept in step across two languages.
+  Deliberately an ALLOWLIST, never a config editor — an unknown key is a 422
+  rather than ignored (silently dropping one would let the panel believe it
+  saved), and `style_prompt` / the `fal_*` request fields stay out of a
+  browser's reach because they break renders in ways that are hard to
+  diagnose from there. `null` UNPINS (different from pinning today's shared
+  value, and it has to stay expressible or a project could never follow the
+  studio again); the override file is DELETED once nothing is pinned; the
+  merged result is validated by `Config(...)` BEFORE writing, so a rejected
+  combination can never land on disk and break every later load. The card
+  shows "set for this project" vs "studio default" per row — a bare number
+  looks like somebody's choice when it may be the studio default about to
+  change under them. Saving is free/instant so it does NOT go through
+  `ask({...})`: that modal is for spending money and destroying work.
+  `snapshot()["settings"]` carries it. Pinned by
+  tests/test_server_project_settings.py.
 - A HUMAN CAN FORCE THE CAMERA ON ONE PAIR (user request, 2026-08-17).
   `storyboard --replan-clip ID --camera` (panel: the clip's "Use camera
   move") replaces that pair's choreography with `camera_shift_prompt` — the

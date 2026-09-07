@@ -90,6 +90,13 @@ export const api = {
   // PUT writes just `video_model` into projects/<name>/config.json — it
   // renders nothing and never touches another movie.
   videoModels: () => request('/api/video-models'),
+  // The project's tuning knobs. `settings` is {key: value}; a value of null
+  // removes the override so the shared config decides again. Free — it saves
+  // one file and renders nothing.
+  saveProjectSettings: (name, settings) =>
+    request(`/api/projects/${encodeURIComponent(name)}/settings`, {
+      method: 'PUT', body: JSON.stringify({ settings })
+    }),
   setVideoModel: (name, model) =>
     request(`/api/projects/${encodeURIComponent(name)}/video-model`, {
       method: 'PUT', body: JSON.stringify({ model })
