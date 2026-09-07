@@ -1121,6 +1121,40 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   are therefore listed FIRST in the hint, ahead of the full-body-child
   theory I guessed at before actually looking at the photos. Pinned by
   TestOutputStageModeration.
+- A BARE-CHILD BLOCK MOVES IN TWO STAGES, AND EACH STAGE HAS ITS OWN LEVER
+  (2026-09-07, order אלינור-לבנברג). Every family album has bath and diaper
+  photos in it, so this is core content, not an edge case: 3 of 30 photos
+  came back `safety_violations=[sexual]` — a bare baby in a crib, a baby in
+  a bath, a toddler in a diaper. Read the STAGE before reaching for a fix.
+  An INPUT-stage block is judging the request, and on these photos the
+  variable is the PIXELS (the same shared style prompt passed on the other
+  28) — so the lever is CROPPING to the face: on the two hard frames a crop
+  moved them from input-refused-every-time to input-accepted. That promotes
+  the problem to an OUTPUT-stage block, where the model drew a cartoon of a
+  nude infant and the picture was refused; there the lever is the PROMPT,
+  because the prompt decides what gets drawn. `Frame.style_note` is the
+  existing escape hatch and it worked: "a soft blanket draped over his back
+  and shoulders" / "bath foam up to his collarbone" — both plausible in the
+  real scene, so the memory still reads true — and both frames styled on the
+  next try. Note the notes must describe something that could have been in
+  the photo; inventing clothing on a bath shot is a visible lie about a
+  memory the customer is buying, so it is the USER'S call, not a default.
+  Two corrections to the intuitions this file already carried. (1) The
+  existing `_DEBRAND_INSTRUCTION` output-stage retry is the WRONG medicine
+  here — it is about licensed characters and says nothing about nudity, so
+  it burns an attempt. (2) "The prompt is not the variable" is too strong:
+  frame 006 failed rewords 1 and 2 and PASSED on reword 3 with a
+  byte-identical image, so the score is a combined image+text score sitting
+  on a threshold and either lever can tip it. That also means these
+  outcomes are stochastic — a photo refused today can pass on a later
+  attempt, and a "sexual" label is the name of the bucket whose threshold
+  was crossed, never a verdict about the photograph.
+  Operational trap worth keeping: replacing an input photo through the
+  panel ADDS a file, it does not swap one. The originals were deleted with
+  no backup and this project had no order.json, so there was no Cloudinary
+  copy to recover from — back up `input_images/` before editing a photo,
+  and rename the replacement to the frame's own name before it styles, or
+  the scratch filename is baked into the styled png and every clip id.
 - Content filters false-positive on family content: OpenAI during styling,
   and fal/Kling on clip motion prompts (`content_policy_violation`). Kling's
   worst trigger is a baby/child being physically handled (lifted, bounced,
