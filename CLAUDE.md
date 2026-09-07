@@ -467,6 +467,26 @@ Core design rules:
   `camera_transitions` exists so the panel can hide the button on a pair
   that already is one WITHOUT keeping a second copy of the strict-family
   prefix list in JavaScript. Pinned by tests/test_camera_replan.py.
+- ...AND A HUMAN CAN FORCE THE PEOPLE, WHICH IS THE OTHER HALF OF THE SAME
+  OVERRIDE (user request, 2026-09-08). The gate judges from tags and
+  headcounts and has never watched a render, so it can be wrong in BOTH
+  directions; only the camera direction had an override. `storyboard
+  --replan-clip ID --stage-people` (panel: the clip's "Re-plan prompt" is now
+  a menu — let the planner decide / force a camera move / stage the people
+  anyway) keeps the planner's choreography on a pair `is_unstageable_pair`
+  would have replaced. Unlike `--camera` this one PLANS, so it costs a vision
+  call: the flag does not write a prompt, it stops the coercion throwing one
+  away. `stage_anyway` is one bool PER PAIR, sliced per planning segment
+  because the gate runs inside `_coerce_transition_plans` — a global switch
+  would silently free every pair in the same call. It suppresses ONLY that
+  gate: swap restaging and `_complete_offscreen_ending` still run, so "try
+  anyway" can never become the back door that ships an offscreen ending
+  (`TestTheGateCanBeOverriddenPerPair` asserts exactly that). Same
+  explicitly-requested-only rule as `--camera` — a pair dirty because its
+  photo changed must not be force-staged — and asking for both overrides at
+  once is a PipelineError, because they want opposite things and guessing a
+  winner is worse than refusing. Pinned by TestForcingThePeopleInstead /
+  TestTheGateCanBeOverriddenPerPair.
 - CHARACTER ELEMENTS ARE PLUMBED BUT OFF BY DEFAULT (2026-08-16). Newer Kling accepts
   reference portraits that pin identity through a shot — exactly the
   face-distortion-in-transit complaint. Shaped like `fal_start_frame_field`

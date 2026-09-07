@@ -2643,6 +2643,7 @@ class OpenAIClient:
         cast: Optional[list[Character]] = None,
         lessons: Optional[list[str]] = None,
         frame_people: Optional[list[Optional[list[str]]]] = None,
+        stage_anyway: Optional[list[bool]] = None,
     ) -> tuple[list[tuple[str, int, str]], list[Character]]:
         """Vision-analyze consecutive frames and plan each clip between them.
 
@@ -2676,6 +2677,13 @@ class OpenAIClient:
         has said who is who, the model is told not to re-decide, and code
         uses the tags for the same/different and arrangement-swap rulings
         instead of the model's own reading.
+
+        ``stage_anyway`` is one flag per PAIR (so ``len(frames) - 1``): True
+        keeps the planner's people choreography on a pair the unstageable
+        gate would otherwise replace with a camera move (--stage-people). It
+        suppresses only that gate — swap restaging and the offscreen-ending
+        repair still run, so an override cannot smuggle an unchecked prompt
+        into the movie.
 
         When ``default_duration`` is set (5 or 10) every clip is forced to that
         length instead of one chosen per pair.
@@ -2811,12 +2819,14 @@ class OpenAIClient:
             )
         plans = self._coerce_transition_plans(
             data, n - 1, default_duration, frame_people=tags,
+            stage_anyway=stage_anyway,
         )
         return plans, _merge_cast(cast, data.get("characters"))
 
     def _coerce_transition_plans(
         self, data: dict[str, Any], count: int, default_duration: Optional[int],
         frame_people: Optional[list[Optional[list[str]]]] = None,
+        stage_anyway: Optional[list[bool]] = None,
     ) -> list[tuple[str, int, str]]:
         """Normalise the model JSON into exactly `count` transition plans.
 
@@ -2875,11 +2885,29 @@ class OpenAIClient:
             # seconds of it is a slack shot at twice the price. Difficulty
             # rates how hard the pair is to STAGE, which is exactly the
             # question this branch has already answered with "don't".
-            if is_unstageable_pair(
+            #
+            # A human can say "try it anyway" on one pair (--stage-people /
+            # the panel's re-plan choice). The gate is judged from tags and
+            # headcounts and has never watched a render, so it can be wrong
+            # in both directions; this is the override for the direction the
+            # `--camera` override doesn't cover. It suppresses THIS gate
+            # only — the swap restaging and offscreen repair below still run
+            # on the result.
+            forced_people = bool(
+                stage_anyway and i < len(stage_anyway) and stage_anyway[i]
+            )
+            unstageable = is_unstageable_pair(
                 *orders(i), item.get("start_heads"), item.get("end_heads"),
                 self.config.unstageable_mover_budget,
                 self.config.unstageable_crowd_limit,
-            ):
+            )
+            if unstageable and forced_people:
+                logger.info(
+                    "Pair %d reads as unstageable, but staging through the "
+                    "people was explicitly requested — keeping the planned "
+                    "choreography.", i + 1,
+                )
+            if unstageable and not forced_people:
                 logger.info(
                     "Pair %d cannot be staged through its people (too many "
                     "movers or too crowded); using a %ds camera transition.",

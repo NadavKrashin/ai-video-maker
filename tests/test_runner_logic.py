@@ -552,7 +552,7 @@ class TestCastAcrossPlanningCalls:
 
         def fake_analyze(frames, style, default_duration=None,
                          global_context="", cast=None, lessons=None,
-                         frame_people=None):
+                         frame_people=None, stage_anyway=None):
             seen.append([c.epithet for c in (cast or [])])
             found = batches.pop(0) if batches else []
             merged = list(cast or []) + [
@@ -1468,7 +1468,7 @@ class TestFrameTagsSurviveStoryboardRuns:
 
         def fake_analyze(frames, style, default_duration=None,
                          global_context="", cast=None, lessons=None,
-                         frame_people=None):
+                         frame_people=None, stage_anyway=None):
             seen["frame_people"] = frame_people
             return [("m", 5, "s")] * (len(frames) - 1), list(cast or [])
 

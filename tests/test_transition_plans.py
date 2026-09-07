@@ -17,6 +17,7 @@ from ai_video_maker.clients.openai_client import (
     _realign_by_pair_index,
     camera_shift_prompt,
     is_arrangement_swap,
+    is_camera_transition,
     is_unstageable_pair,
     ends_offscreen,
     is_clothing_anchored,
@@ -1471,6 +1472,90 @@ class TestCameraShiftPromptFamily:
         for prompt in family:
             assert not ends_offscreen(prompt)
             assert len(prompt.split()) <= 35  # one continuous beat, no more
+
+
+class TestTheGateCanBeOverriddenPerPair:
+    """`stage_anyway` keeps the planner's choreography on a gated pair.
+
+    The gate decides from tags and headcounts and has never watched a render,
+    so it can be wrong in both directions. `--camera` covers "you called this
+    stageable and it mushed"; this covers the other one. What it must NOT do
+    is become a way to ship an unchecked prompt, so only THIS gate is
+    suppressed — the swap restaging and offscreen repair still run.
+    """
+
+    def _gated(self, motion="seven people walk out"):
+        """A pair the gate replaces: six people, roster changes."""
+        big = TestUnstageablePairs.SIX
+        return {"transitions": [{
+            "pair_index": 1, "difficulty": 5, "motion_prompt": motion,
+            "sound_prompt": "sea wind", "start_order": big,
+            "end_order": big[:2] + ["the newcomer"],
+        }]}
+
+    def test_without_the_override_the_gate_still_fires(self, config):
+        motion, _, _ = _plans(config, self._gated(), 1)[0]
+        assert is_camera_transition(motion)
+
+    def test_the_override_keeps_the_planned_choreography(self, config):
+        motion, _, _ = OpenAIClient(config)._coerce_transition_plans(
+            self._gated(), 1, None, stage_anyway=[True],
+        )[0]
+        assert not is_camera_transition(motion)
+        assert "walk" in motion
+
+    def test_a_false_flag_is_the_same_as_no_flag(self, config):
+        motion, _, _ = OpenAIClient(config)._coerce_transition_plans(
+            self._gated(), 1, None, stage_anyway=[False],
+        )[0]
+        assert is_camera_transition(motion)
+
+    def test_the_override_is_per_pair_not_global(self, config):
+        """Two gated pairs, one overridden: the other still gets the camera."""
+        big = TestUnstageablePairs.SIX
+        data = {"transitions": [
+            {"pair_index": i + 1, "difficulty": 5,
+             "motion_prompt": f"seven people walk out of {i}",
+             "sound_prompt": "s", "start_order": big,
+             "end_order": big[:2] + ["the newcomer"]}
+            for i in range(2)
+        ]}
+        plans = OpenAIClient(config)._coerce_transition_plans(
+            data, 2, None, stage_anyway=[True, False],
+        )
+        assert not is_camera_transition(plans[0][0])
+        assert is_camera_transition(plans[1][0])
+
+    def test_a_short_flag_list_does_not_crash_the_rest(self, config):
+        """Defensive: the list is built per segment and must not index-error."""
+        plans = OpenAIClient(config)._coerce_transition_plans(
+            self._gated(), 1, None, stage_anyway=[],
+        )
+        assert is_camera_transition(plans[0][0])
+
+    def test_an_overridden_pair_still_gets_its_ending_repaired(
+        self, config, monkeypatch
+    ):
+        """The override suppresses the GATE, not the rest of the coercion.
+
+        Otherwise "try anyway" would be a back door for shipping a prompt
+        that ends offscreen — the one thing nothing is allowed to do.
+        """
+        called = {}
+
+        def _fake(self, motion, duration, end_order):  # noqa: ANN001
+            called["yes"] = True
+            return motion + " and walk back into frame"
+
+        monkeypatch.setattr(
+            OpenAIClient, "_complete_offscreen_ending", _fake
+        )
+        motion, _, _ = OpenAIClient(config)._coerce_transition_plans(
+            self._gated("the six of them walk out past the camera"),
+            1, None, stage_anyway=[True],
+        )[0]
+        assert called.get("yes"), "the offscreen repair was skipped"
+        assert not is_camera_transition(motion)
 
 
 class TestUnstageablePairsAreReplacedInCoercion:

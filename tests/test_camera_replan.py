@@ -15,6 +15,7 @@ import pytest
 
 from ai_video_maker.clients.openai_client import is_camera_transition
 from ai_video_maker.models import Character, Frame, FramePerson, Storyboard, Transition
+from ai_video_maker.errors import PipelineError
 
 
 def _touch(path: Path, data: bytes = b"x") -> Path:
@@ -198,6 +199,98 @@ class TestForcingACameraTransition:
         saved = _saved(workspace, ["a", "b"])
         with pytest.raises(PipelineError):
             pipeline._reconcile_storyboard(saved, pairs)
+
+
+class TestForcingThePeopleInstead:
+    """--stage-people: the mirror override, for a pair the gate over-called.
+
+    Unlike forcing the camera (a template, so free and callless), this one
+    PLANS — it just tells the coercion not to throw the choreography away.
+    So what these assert is that the request reaches the planner correctly
+    and only for pairs that asked for it.
+    """
+
+    class _Recorder:
+        """Captures what the planner was asked, and plans something visible."""
+
+        def __init__(self):
+            self.calls = []
+
+        def analyze_frame_transitions(self, frames, style, **kwargs):
+            self.calls.append(kwargs)
+            return (
+                [("staged people motion", 10, "sound")] * (len(frames) - 1),
+                list(kwargs.get("cast") or []),
+            )
+
+    def _run(self, make_pipeline, workspace, **options):
+        pipeline = make_pipeline(analyze_frames=True, **options)
+        recorder = self._Recorder()
+        pipeline.__dict__["openai"] = recorder
+        pairs = _frame_pairs(workspace, ["a", "b", "c"])
+        saved = _saved(
+            workspace, ["a", "b", "c"],
+            people={
+                "a": [FramePerson(id="c1", x=0.3), FramePerson(id="c2", x=0.7)],
+                "b": [FramePerson(id="c1", x=0.7), FramePerson(id="c2", x=0.3)],
+                "c": [FramePerson(id="c1", x=0.5)],
+            },
+            cast=[Character(id="c1", epithet="the bald man"),
+                  Character(id="c2", epithet="the tall woman")],
+        )
+        return pipeline._reconcile_storyboard(saved, pairs), recorder
+
+    def test_the_named_pair_is_flagged_to_the_planner(
+        self, make_pipeline, workspace
+    ):
+        _, rec = self._run(
+            make_pipeline, workspace,
+            replan_clips=["a_to_b"], replan_stages_people=True,
+        )
+        assert rec.calls, "the planner was never called"
+        assert rec.calls[0]["stage_anyway"] == [True]
+
+    def test_without_the_flag_the_planner_is_told_nothing_of_the_sort(
+        self, make_pipeline, workspace
+    ):
+        _, rec = self._run(make_pipeline, workspace, replan_clips=["a_to_b"])
+        assert rec.calls[0]["stage_anyway"] == [False]
+
+    def test_only_the_requested_pair_is_flagged(self, make_pipeline, workspace):
+        """A pair dirty because its PHOTO changed must not be force-staged.
+
+        Same rule as the camera override: an approval is for the pairs the
+        human named, never for whatever else happened to be dirty.
+        """
+        pipeline = make_pipeline(
+            analyze_frames=True, replan_clips=["a_to_b"],
+            replan_stages_people=True,
+        )
+        rec = self._Recorder()
+        pipeline.__dict__["openai"] = rec
+        pairs = _frame_pairs(workspace, ["a", "b", "c"])
+        saved = _saved(workspace, ["a", "b", "c"])
+        # Dirty b_to_c by changing c's styled image.
+        _touch(workspace.styled_images_dir / "c.png", b"changed")
+        pipeline._reconcile_storyboard(saved, pairs)
+        flags = [f for call in rec.calls for f in call["stage_anyway"]]
+        # a_to_b asked for it; b_to_c only became dirty.
+        assert flags == [True, False]
+
+    def test_replan_all_can_stage_people(self, make_pipeline, workspace):
+        _, rec = self._run(
+            make_pipeline, workspace,
+            replan_all=True, replan_stages_people=True,
+        )
+        assert rec.calls[0]["stage_anyway"] == [True, True]
+
+    def test_asking_for_both_overrides_is_refused(self, make_pipeline, workspace):
+        """They ask for opposite things; guessing which one wins is worse."""
+        with pytest.raises(PipelineError, match="Pass one"):
+            self._run(
+                make_pipeline, workspace, replan_clips=["a_to_b"],
+                replan_as_camera=True, replan_stages_people=True,
+            )
 
 
 class TestCameraTransitionsAreVisibleToThePanel:

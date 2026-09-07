@@ -197,6 +197,13 @@ the `ADMIN_API_TOKEN` from `.env`:
   64px square is exactly the size at which a clean crop and a mush crop
   look identical. The face tagger is the one exception: there a click means
   "place a tag here", so it keeps tagging.
+  **The Cast and Cast faces sections fold away** (click the header) and each
+  browser remembers the choice — a real order arrived with a 69-entry cast,
+  which is a screen and a half of text inputs sitting between you and
+  everything below. Folding never hides a problem: the counts a folded card
+  would have warned about (names written from clothing, names too alike,
+  drifted faces, frames styled against older references) ride on the header
+  as chips, which stay visible either way.
   **Jobs sit directly under the step tiles** — clicking a step is what creates
   one, and its log is where you look when a run misbehaves.
   **Photos that will be skipped** get their own alert: a storyboard frame
@@ -866,7 +873,7 @@ it:
 python pipeline.py storyboard myfilm --replan-clip 003_to_004 --camera
 ```
 
-or the clip's **Use camera move** button in the panel. It replaces that
+or **Re-plan prompt → Force a camera move** on the clip card. It replaces that
 pair's choreography with the same deterministic wording the gate uses, picked
 by the pair's own rosters. **Free and instant** — the prompt is a template,
 so there is no AI call — and always a 5-second clip. The sound prompt is
@@ -874,6 +881,26 @@ kept, the clip is marked outdated rather than re-rendered, and no other pair
 is touched. `--camera` applies only to pairs you name with `--replan-clip` /
 `--replan-all`: a pair that is merely dirty because its photo changed still
 goes through the planner.
+
+**Asking for the people instead.** The gate can be wrong in the other
+direction too — a pair it calls unstageable may be exactly the moment whose
+point is what the people *do*, and a camera move throws that away. Say so:
+
+```bash
+python pipeline.py storyboard myfilm --replan-clip 003_to_004 --stage-people
+```
+
+or **Re-plan prompt → Stage the people anyway**. This one *plans*, so unlike
+forcing the camera it costs a vision call; what the flag does is stop the
+coercion from throwing the planner's choreography away. It suppresses **only**
+that gate — a swap is still restaged and an ending that empties the frame is
+still repaired — so "try anyway" can't become a way to ship an unchecked
+prompt. Same "named pairs only" rule as `--camera`, and asking for both at
+once is refused rather than silently resolved.
+
+Expect distortion on a genuinely crowded pair: that is what the gate exists
+to prevent, and the honest way to use this is one pair, then look at the
+render before doing it to more.
 
 The gate acts when a pair is planned, so storyboards written before it keep
 their many-mover choreography until re-planned. Those pairs are surfaced —
@@ -1201,7 +1228,7 @@ which are project-less).
 | `serve` | — (no project argument) `--host`, `--port`, `--no-watch` |
 | `ingest` | `<order>` (id / folder / unique fragment), `--force`, `--dry-run` |
 | `init` | — |
-| `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--replan-all` (rewrite every prompt from the current cast + tags), `--no-tag` (skip the identity proposal), `--replan-clip ID` (repeatable; fresh motion prompt for that pair), `--camera` (with either re-plan flag: make those pairs camera transitions — free, no AI call), `--restyle-frame NAME` (repeatable; re-style that frame, e.g. `2.png`, marking adjacent clips outdated), `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
+| `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--replan-all` (rewrite every prompt from the current cast + tags), `--no-tag` (skip the identity proposal), `--replan-clip ID` (repeatable; fresh motion prompt for that pair), `--camera` (with either re-plan flag: make those pairs camera transitions — free, no AI call), `--stage-people` (the opposite override: keep the people choreography on pairs the gate would make camera moves), `--restyle-frame NAME` (repeatable; re-style that frame, e.g. `2.png`, marking adjacent clips outdated), `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
 | `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 5\|10`, `--add-audio`, `--no-audio` |
 | `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-file PATH`, `--music-url URL` |
 | `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--music-url URL`, `--add-audio`, `--no-audio`, `--final`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter` |

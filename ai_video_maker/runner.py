@@ -990,6 +990,22 @@ class Pipeline:
             {f"{a.id}_to_{b.id}" for a, b in pairs} & requested
             if self.options.replan_as_camera else set()
         )
+        # The mirror override: plan these pairs through their PEOPLE even
+        # where the unstageable gate would have replaced the choreography
+        # with a camera move. Same "explicitly requested only" rule as
+        # `camera_forced` and for the same reason — the gate is the default
+        # and a pair must never lose it by accident. Contradicting the two is
+        # a caller error, not something to silently resolve.
+        if self.options.replan_as_camera and self.options.replan_stages_people:
+            raise PipelineError(
+                "--camera and --stage-people ask for opposite things "
+                "(a camera move instead of the people, and the people "
+                "instead of a camera move). Pass one."
+            )
+        stage_forced = (
+            {f"{a.id}_to_{b.id}" for a, b in pairs} & requested
+            if self.options.replan_stages_people else set()
+        )
         dirty: list[int] = []
         stale_tids: list[str] = []
         for i, (a, b) in enumerate(pairs):
@@ -1033,7 +1049,17 @@ class Pipeline:
             global_context=saved.global_motion_prompt if saved else "",
             cast=cast_now,
             frame_people=frame_people,
+            stage_anyway={
+                i for i, (a, b) in enumerate(pairs)
+                if f"{a.id}_to_{b.id}" in stage_forced
+            },
         )
+        if stage_forced:
+            logger.info(
+                "Staging through the people on %d pair(s) the gate would "
+                "have made camera transitions: %s",
+                len(stage_forced), ", ".join(sorted(stage_forced)),
+            )
 
         # Forced camera transitions, written straight in. The wording comes
         # from the same deterministic family the gate uses, picked by the
@@ -1127,6 +1153,7 @@ class Pipeline:
         global_context: str = "",
         cast: Optional[list[Character]] = None,
         frame_people: Optional[list[Optional[list[str]]]] = None,
+        stage_anyway: Optional[set[int]] = None,
     ) -> tuple[dict[int, tuple[str, int, str]], list[Character]]:
         """Vision-plan the dirty pairs only: {pair index: (motion, dur, sound)}.
 
@@ -1141,6 +1168,11 @@ class Pipeline:
         storyboard's), extended by any new people the planning calls
         discovered. Each call receives the cast as it stands so epithets stay
         identical across separately planned segments.
+
+        ``stage_anyway`` names pair indices whose people must be choreographed
+        even where the unstageable gate would replace them with a camera move
+        (--stage-people). Indices are GLOBAL; each planning call is handed the
+        slice for its own segment, since the gate runs per call.
         """
         cast = list(cast or [])
         if not dirty:
@@ -1184,6 +1216,9 @@ class Pipeline:
                     lessons=lessons,
                     # Tags for exactly the frames in this segment.
                     frame_people=tags[run[0]: run[-1] + 2],
+                    # Same, for the gate override: one flag per PAIR in this
+                    # segment, in the segment's own order.
+                    stage_anyway=[i in (stage_anyway or set()) for i in run],
                 )
                 for offset, i in enumerate(run):
                     plans[i] = seg_plans[offset]

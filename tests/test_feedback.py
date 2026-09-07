@@ -543,7 +543,7 @@ class TestLessonsReachThePlanner:
 
         def fake_analyze(frames, style, default_duration=None,
                          global_context="", cast=None, lessons=None,
-                         frame_people=None):
+                         frame_people=None, stage_anyway=None):
             seen["lessons"] = list(lessons or [])
             return [("planned", 5, "sound")] * (len(frames) - 1), list(cast or [])
 

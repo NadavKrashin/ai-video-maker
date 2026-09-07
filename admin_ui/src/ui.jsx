@@ -2,7 +2,8 @@
 // the confirmation modal every mutating action goes through.
 import React, { useEffect, useState } from 'react';
 import {
-  Anchor, Badge, Button, Group, Image, List, Modal, Stack, Text, TextInput
+  Anchor, Badge, Button, Card, Group, Image, List, Modal, Stack,
+  Text, TextInput, UnstyledButton
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 
@@ -155,5 +156,64 @@ export function ZoomableImage({ zoomTitle, zoomImages, style, ...props }) {
           images: zoomImages || [{ src: props.src, label: props.alt }]
         });
       }} />
+  );
+}
+
+// ---------------------------------------------------------------------------
+// A card whose body folds away, remembering the choice per browser.
+//
+// The Cast and Cast faces sections grow with the movie — a real order came in
+// with a 69-entry cast, which is a screen and a half of text inputs sitting
+// between you and everything below them. Folding is the fix.
+//
+// Two rules it has to keep. Collapsing must never hide the fact that
+// something needs attention, so anything the open card would warn about is
+// summarised as a `badges` chip on the header, which stays visible either
+// way. And the body stays MOUNTED when folded (hidden, not conditionally
+// rendered) so a half-typed epithet is still there when you open it again.
+
+const _sectionKey = (id) => `avm_section_open_${id}`;
+
+const _readOpen = (id, fallback) => {
+  // Storage throws outright in some contexts (private windows, thumbnailers),
+  // so every read is guarded and the default is what a first visit sees.
+  try {
+    const raw = localStorage.getItem(_sectionKey(id));
+    return raw === null ? fallback : raw === '1';
+  } catch { return fallback; }
+};
+
+export function CollapsibleCard({
+  id, title, badges, actions, children, defaultOpen = true
+}) {
+  const [open, setOpen] = useState(() => _readOpen(id, defaultOpen));
+  const toggle = () => {
+    setOpen((was) => {
+      try { localStorage.setItem(_sectionKey(id), was ? '0' : '1'); }
+      catch { /* a forgotten preference is not worth an error */ }
+      return !was;
+    });
+  };
+  return (
+    <Card withBorder padding="md">
+      <Group gap="sm" wrap="nowrap" mb={open ? 4 : 0}>
+        <UnstyledButton onClick={toggle} style={{ flex: 1, minWidth: 0 }}
+          title={open ? 'Collapse this section' : 'Expand this section'}>
+          <Group gap={6} wrap="nowrap">
+            <Text size="sm" c="dimmed" style={{ width: 10 }}>
+              {open ? '▾' : '▸'}
+            </Text>
+            <Text size="sm" fw={500}>{title}</Text>
+            {badges}
+          </Group>
+        </UnstyledButton>
+        {actions}
+      </Group>
+      {/* display:none rather than Mantine's <Collapse>: Collapse renders
+          closed on first mount even with in={true}, and an animation is not
+          worth debugging for a fold. Hiding this way keeps the subtree
+          MOUNTED, so a half-typed epithet survives a fold and unfold. */}
+      <div style={{ display: open ? undefined : 'none' }}>{children}</div>
+    </Card>
   );
 }

@@ -5,12 +5,14 @@
 // goes through a confirmation modal that says exactly what will happen.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Alert, Badge, Button, Card, Checkbox, Divider, Group, Image, Modal,
+  Alert, Badge, Button, Card, Checkbox, Divider, Group, Image, Menu, Modal,
   NumberInput, Paper, ScrollArea, SegmentedControl, Select, Stack, Text,
   Textarea, TextInput, Title, UnstyledButton
 } from '@mantine/core';
 import { api, fileUrl } from './api.js';
-import { COST, ConfirmModal, ZoomableImage, notify, stepChip, usd } from './ui.jsx';
+import {
+  COST, CollapsibleCard, ConfirmModal, ZoomableImage, notify, stepChip, usd
+} from './ui.jsx';
 
 // A transition's start_frame/end_frame is the styled image path in practice
 // ("styled_images/img1.png"), but may also be a frame id — handle both.
@@ -393,7 +395,7 @@ function SpendCard({ project, cost }) {
   );
 }
 
-function TransitionCard({ project, tr, framesById, clip, edited, placeholder, verdict, planBehind, endsOffscreen, unstageable, isCamera, selected, onToggleSelect, onEdit, onRegenerate, onReplan, onReplanAsCamera, onRedoAudio, onFeedback, busy, replanBusy, audioBusy, mediaV }) {
+function TransitionCard({ project, tr, framesById, clip, edited, placeholder, verdict, planBehind, endsOffscreen, unstageable, isCamera, selected, onToggleSelect, onEdit, onRegenerate, onReplan, onReplanAsCamera, onReplanStagingPeople, onRedoAudio, onFeedback, busy, replanBusy, audioBusy, mediaV }) {
   const startImg = frameName(framesById, tr.start_frame);
   const endImg = frameName(framesById, tr.end_frame);
   const clipFile = tr.output_path.split('/').pop();
@@ -490,18 +492,44 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, ve
         <TextInput label="Sound prompt (optional)" style={{ flex: 1 }} miw={220}
           value={tr.sound_prompt || ''}
           onChange={(e) => onEdit({ ...tr, sound_prompt: e.target.value })} />
-        <Button variant="default" size="xs" loading={replanBusy}
-          onClick={() => onReplan(tr.id)}
-          title="Ask the AI planner to write a fresh motion prompt for this pair (small OpenAI call; the clip is not re-rendered)">
-          Re-plan prompt
-        </Button>
-        {!isCamera && (
-          <Button variant="default" size="xs" loading={replanBusy}
-            onClick={() => onReplanAsCamera(tr.id)}
-            title="Replace the choreography with the camera move: people hold still, the camera travels to the new setting and settles on the end frame. Free and instant — use it when people distort while travelling between the frames.">
-            Use camera move
-          </Button>
-        )}
+        {/* One button, three ways to re-plan. The gate that decides between
+            people and camera judges from tags and headcounts and has never
+            watched a render, so a human needs to be able to overrule it in
+            EITHER direction — not just the camera one. */}
+        <Menu shadow="md" width={330} position="bottom-start">
+          <Menu.Target>
+            <Button variant="default" size="xs" loading={replanBusy}>
+              Re-plan prompt ▾
+            </Button>
+          </Menu.Target>
+          <Menu.Dropdown>
+            <Menu.Item onClick={() => onReplan(tr.id)}>
+              <Text size="xs" fw={500}>Let the planner decide</Text>
+              <Text size="xs" c="dimmed">
+                A fresh look at the two frames. Pairs with too many people
+                moving still come back as a camera move.
+              </Text>
+            </Menu.Item>
+            {!isCamera && (
+              <Menu.Item onClick={() => onReplanAsCamera(tr.id)}>
+                <Text size="xs" fw={500}>Force a camera move</Text>
+                <Text size="xs" c="dimmed">
+                  People hold still, the camera travels and settles on the end
+                  frame. Free and instant — no AI call. Use it when people
+                  distorted travelling between the frames.
+                </Text>
+              </Menu.Item>
+            )}
+            <Menu.Item onClick={() => onReplanStagingPeople(tr.id)}>
+              <Text size="xs" fw={500}>Stage the people anyway</Text>
+              <Text size="xs" c="dimmed">
+                Choreograph the people even if this pair reads as too crowded
+                to stage. Use it when a camera move is not what this moment
+                needs{unstageable ? ' — this pair is flagged as one' : ''}.
+              </Text>
+            </Menu.Item>
+          </Menu.Dropdown>
+        </Menu>
         {clip?.rendered && (
           <Button variant="default" size="xs" loading={audioBusy}
             onClick={() => onRedoAudio(tr.id)}
@@ -760,11 +788,27 @@ function CastFacesCard({
   });
   const outdated = snap.storyboard?.outdated_styling || [];
 
+  const drifted = Object.values(findings)
+    .filter((f) => f.odd_frames?.length).length;
+
   return (
-    <Card withBorder padding="md">
-      <Group gap="sm" mb={4}>
-        <Text size="sm" fw={500}>Cast faces</Text>
-        <div style={{ flex: 1 }} />
+    <CollapsibleCard id="cast-faces" title="Cast faces"
+      badges={<>
+        <Badge size="xs" variant="light" color="gray">{cast.length}</Badge>
+        {/* Both of these are why you would open this card, so neither may
+            disappear when it is folded. */}
+        {drifted > 0 && (
+          <Badge size="xs" variant="light" color="orange">
+            {drifted} drifted
+          </Badge>
+        )}
+        {outdated.length > 0 && (
+          <Badge size="xs" variant="light" color="yellow">
+            {outdated.length} styled against older faces
+          </Badge>
+        )}
+      </>}
+      actions={<>
         <Button size="compact-xs" variant="default" disabled={locked}
           onClick={onRebuild}
           title="Re-cut every reference from the current tags. Free — the faces come from frames that are already styled.">
@@ -775,7 +819,7 @@ function CastFacesCard({
           title="One vision call compares every tagged appearance of each person and reports where they are drawn as somebody else. Nothing is re-styled.">
           Find drifted faces…
         </Button>
-      </Group>
+      </>}>
       <Text size="xs" c="dimmed" mb="xs">
         One canonical face per person, cut from the photo where their face is
         largest. Styling a photo of them sends these along, so the same person
@@ -844,7 +888,7 @@ function CastFacesCard({
           );
         })}
       </Stack>
-    </Card>
+    </CollapsibleCard>
   );
 }
 
@@ -1921,6 +1965,31 @@ export default function ProjectDetail({ name, onBack }) {
     });
   };
 
+  // The other half of the same override. The gate turns a pair into a camera
+  // move from tags and headcounts alone; this is how you say "I have looked
+  // at these two frames and I want the people". Unlike forcing the camera it
+  // PLANS, so it costs a call — and the plan still goes through the swap and
+  // offscreen-ending repairs, so this cannot smuggle a broken prompt through.
+  const replanStagingPeople = (clipId) => {
+    if (needsSave()) return;
+    ask({
+      title: `Stage the people on ${clipId}?`,
+      lines: [
+        'Asks the planner for a fresh motion prompt for this pair, and keeps the people choreography even if the pair reads as too crowded to stage (which normally turns it into a camera move).',
+        'Worth trying when the moment is about what the people DO and a camera move would throw that away. The usual outcome on a genuinely crowded pair is distortion, so look at the render before doing it to more pairs.',
+        'The prompt is still checked the usual way — a swap gets restaged and an ending that leaves the frame empty gets repaired.',
+        'One small vision call. The clip is NOT re-rendered; it gets marked "outdated" so you can regenerate it when the new prompt looks right.'
+      ],
+      cost: 'openai',
+      label: 'Stage the people',
+      action: () => run(
+        'storyboard',
+        { replan_clips: [clipId], replan_stages_people: true },
+        `stage people on ${clipId}`,
+      )
+    });
+  };
+
   // The batch you want after tagging (or after rewriting cast epithets):
   // both are plan-time inputs, so nothing already planned uses them until
   // its pair is planned again. One job re-plans every pair — a single vision
@@ -2680,8 +2749,24 @@ export default function ProjectDetail({ name, onBack }) {
               });
             });
             return (
-              <Card withBorder padding="md">
-                <Text size="sm" fw={500}>Cast</Text>
+              <CollapsibleCard id="cast" title="Cast"
+                badges={<>
+                  <Badge size="xs" variant="light" color="gray">
+                    {(storyboard.characters || []).length}
+                  </Badge>
+                  {/* Folded, the alerts below are out of sight — so the
+                      counts ride on the header, which never is. */}
+                  {fragile.size > 0 && (
+                    <Badge size="xs" variant="light" color="orange">
+                      {fragile.size} name{fragile.size > 1 ? 's' : ''} by clothing
+                    </Badge>
+                  )}
+                  {indistinct.size > 0 && (
+                    <Badge size="xs" variant="light" color="orange">
+                      {indistinct.size} alike
+                    </Badge>
+                  )}
+                </>}>
                 <Text size="xs" c="dimmed" mb="xs">
                   How motion prompts name each person — the video model sees
                   only pixels, so every mention uses these exact words. Name
@@ -2725,7 +2810,7 @@ export default function ProjectDetail({ name, onBack }) {
                       onChange={(e) => editCharacter(c.id, e.target.value)} />
                   ))}
                 </Stack>
-              </Card>
+              </CollapsibleCard>
             );
           })()}
           {(storyboard.characters || []).length > 0 && (
@@ -2837,7 +2922,8 @@ export default function ProjectDetail({ name, onBack }) {
               selected={selected.has(tr.id)} onToggleSelect={toggleSelected}
               onEdit={editTransition}
               onRegenerate={regenerate} onReplan={replanPrompt}
-              onReplanAsCamera={replanAsCamera} onRedoAudio={redoAudio}
+              onReplanAsCamera={replanAsCamera}
+              onReplanStagingPeople={replanStagingPeople} onRedoAudio={redoAudio}
               onFeedback={openFeedback}
               busy={busyAction === `render ${tr.id}`}
               replanBusy={busyAction === `re-plan ${tr.id}`

@@ -225,6 +225,15 @@ def build_parser() -> argparse.ArgumentParser:
                          "always a 5-second clip. Use it on a pair that mushed "
                          "when rendered even though the gate judged it "
                          "stageable.")
+    sp.add_argument("--stage-people", action="store_true",
+                    help="With --replan-clip / --replan-all: plan those pairs "
+                         "through their PEOPLE even if the unstageable gate "
+                         "would have replaced the choreography with a camera "
+                         "move. The mirror of --camera: the gate judges from "
+                         "tags and headcounts and has never seen a render, so "
+                         "this is how you say 'try it anyway'. Spends a vision "
+                         "call, and the prompt still goes through swap "
+                         "restaging and offscreen-ending repair.")
     sp.add_argument("--restyle-frame", action="append", metavar="NAME",
                     help="Re-style this frame from scratch (styled png name, "
                          "e.g. beach.png) even though its source is unchanged "

@@ -72,6 +72,16 @@ class RunOptions:
     # mushed when rendered. Free — the wording is a template, so no vision
     # call — and always a 5s clip.
     replan_as_camera: bool = False
+    # storyboard: plan the pairs named by --replan-clip / --replan-all through
+    # their PEOPLE even when the unstageable gate would have replaced the
+    # choreography with a camera move. The mirror image of
+    # `replan_as_camera`: the gate decides from tags and headcounts and has
+    # never seen a render, so this is the override for a pair it called
+    # unstageable that a human thinks is worth staging. Costs a vision call
+    # (unlike forcing the camera, which is a template), and the rest of the
+    # coercion — swap restaging, offscreen-ending repair — still applies, so
+    # what comes back is a normal planned prompt and not an unchecked one.
+    replan_stages_people: bool = False
     # faces: also ask the vision model which frames draw a cast member as a
     # different person. Off by default because rebuilding the reference sheet
     # is free and this is the one part of it that costs a call.
@@ -137,6 +147,7 @@ class RunOptions:
             tag_frames=not get("no_tag", False),
             replan_all=bool(get("replan_all")),
             replan_as_camera=bool(get("camera")),
+            replan_stages_people=bool(get("stage_people")),
             audit_faces=bool(get("audit")),
             feedback_clip=get("clip_id"),
             feedback_note=get("note"),
