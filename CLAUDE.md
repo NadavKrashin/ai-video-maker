@@ -1295,6 +1295,25 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   for). An unknown value is a PipelineError, not a silent fall-back to the
   overlay — the ending is the part a customer reads word by word. Pinned by
   the placement tests in TestPresentationSegments.
+- A LETTER'S LENGTH COMES FROM ITS TEXT, NOT FROM A SPEED (user call,
+  2026-09-25, with a real 81-word blessing timed at ~14s: "it needs at least
+  5/10 more seconds"). `letter_seconds_per_screen` sets a SPEED, so every
+  letter gets the same seconds per line and a long one scrolls past before
+  it can be read — and a scroll cannot be paused or re-read.
+  `reading_seconds()` (media/letter.py) prices the text at
+  `letter_reading_words_per_minute` (200, calibrated to land that blessing
+  at 23.7s — inside the 5-10s the user asked for), and `_letter_pace()`
+  takes the MAX of that and the travel at the configured pace. A FLOOR, never
+  a ceiling: nothing is ever sped up, so every existing short letter renders
+  exactly as before (the 12-word case measured identical) and only a letter
+  with more to say changes. Words are counted ignoring emoji and bare
+  punctuation — a line of hearts is not reading time. Applies to the
+  letter's OWN section only (after_photos / on_last_photo); `over_photos`
+  stays paced by `_fit_credits_and_letter` because there the montage
+  decides, and slowing the letter there would silently stretch the photos —
+  the user scoped the request to the standalone shapes. The rate is in each
+  section's recipe, so changing it re-renders. Pinned by
+  TestReadingTimeSlowsALongLetter.
 - THE CREDITS PHOTOS ARE NEVER GREYED OUT under a scrolling letter (user
   call, 2026-07-28). `_letter_overlay_cmd` used to lay a fixed `black@0.55`
   drawbox over the montage for text contrast; the photos are the product,

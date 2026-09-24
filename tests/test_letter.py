@@ -240,3 +240,49 @@ class TestRenderLetterImage:
         left, _, right, _ = cols
         # single short word centred: ink stays well inside the margins
         assert 1920 * 0.14 < left and right < 1920 * 0.86
+
+
+class TestReadingTimeSlowsALongLetter:
+    """A scroll can't be paused, so its length must come from the text.
+
+    Calibrated on a real 81-word blessing the user timed at ~14s and wanted
+    5-10 seconds longer; the floor gives it ~24s. A short letter must keep
+    the timing it always had — the floor is a floor, never a ceiling.
+    """
+
+    def test_words_ignore_emoji_and_bare_punctuation(self):
+        from ai_video_maker.media.letter import count_words
+        assert count_words("אמא ואבא אוהבים אותך") == 4
+        # A line of emoji and a lone "!!!" buy no reading time.
+        assert count_words("שלום ❤️🎈🎂 !!! עולם") == 2
+        assert count_words("") == 0
+
+    def test_reading_seconds_scales_with_the_text(self):
+        from ai_video_maker.media.letter import reading_seconds
+        assert reading_seconds(" ".join(["word"] * 200), 200.0) == pytest.approx(60.0)
+        assert reading_seconds("just four short words", 200.0) == pytest.approx(1.2)
+        # 0 turns the floor off rather than dividing by zero.
+        assert reading_seconds("anything at all", 0) == 0.0
+
+    def test_the_floor_only_ever_slows_down(self):
+        from ai_video_maker.runner import _letter_pace
+        # Travel that already takes longer than reading it: untouched.
+        seconds, pps = _letter_pace(3000.0, 150.0, reading_secs=5.0)
+        assert seconds == pytest.approx(20.0)
+        assert pps == pytest.approx(150.0)
+        # A letter with more to say than its travel allows: stretched, and
+        # the pace drops to match rather than the travel changing.
+        seconds, pps = _letter_pace(3000.0, 150.0, reading_secs=40.0)
+        assert seconds == pytest.approx(40.0)
+        assert pps == pytest.approx(75.0)
+
+    def test_a_real_blessing_gets_the_seconds_the_user_asked_for(self):
+        """The 81-word letter that prompted this: ~14s -> 5-10s longer."""
+        from ai_video_maker.media.letter import reading_seconds
+        from ai_video_maker.runner import _letter_pace
+        text = " ".join(["מילה"] * 79)
+        travel, base = 2202.0, 1080 / 7.0
+        before = travel / base
+        after, _ = _letter_pace(travel, base, reading_seconds(text, 200.0))
+        assert before == pytest.approx(14.3, abs=0.2)
+        assert 5.0 <= after - before <= 10.0

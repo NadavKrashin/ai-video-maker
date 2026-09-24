@@ -88,6 +88,7 @@ from .media.letter import (
     find_letter_font,
     letter_state,
     read_letter,
+    reading_seconds,
     render_letter_image,
     save_letter,
 )
@@ -203,6 +204,26 @@ def _fit_credits_and_letter(
     letter_len = letter_travel_px / base_pps
     section = max(credits_len, letter_len)
     return section / n_photos, letter_travel_px / section
+
+
+def _letter_pace(
+    travel_px: float, base_pps: float, reading_secs: float
+) -> tuple[float, float]:
+    """(seconds, pixels_per_second) for a letter that has the screen to itself.
+
+    The configured pace sets a SPEED, which means a long letter and a short
+    one give the reader the same seconds per line — and the long one goes by
+    before it can be read. So the letter is slowed to whichever is longer:
+    its travel at the configured pace, or the time the text actually takes to
+    read. A floor, never a ceiling: nothing is ever sped UP, so a short
+    letter keeps the timing it has always had.
+
+    Only for the letter's own section. The overlay shape is paced by
+    `_fit_credits_and_letter` instead, because there the montage decides.
+    """
+    at_pace = travel_px / base_pps if base_pps > 0 else reading_secs
+    seconds = max(at_pace, reading_secs, 0.5)
+    return seconds, travel_px / seconds
 
 
 # How each placement reads in status / the panel's confirmation. Kept next
@@ -2364,6 +2385,7 @@ class Pipeline:
             emoji_font=self.config.letter_emoji_font_path,
             font_size=self.config.letter_font_size,
             pace=self.config.letter_seconds_per_screen,
+            wpm=self.config.letter_reading_words_per_minute,
             dim=self.config.letter_overlay_dim,
         )
         if self._segment_fresh(dst, [self.workspace.letter_file, photo], recipe):
@@ -2379,9 +2401,13 @@ class Pipeline:
             )
             png = seg_dir / "letter.png"
             image.save(png)
-            pps = height / self.config.letter_seconds_per_screen
             travel = image.height + height  # enters from below, exits above
-            seconds = travel / pps
+            seconds, pps = _letter_pace(
+                travel,
+                height / self.config.letter_seconds_per_screen,
+                reading_seconds(
+                    text, self.config.letter_reading_words_per_minute),
+            )
             background = seg_dir / "letter_bg.mp4"
             render_photo_still(photo, background, width, height, seconds)
             render_letter_overlay(
@@ -2409,6 +2435,7 @@ class Pipeline:
             emoji_font=self.config.letter_emoji_font_path,
             font_size=self.config.letter_font_size,
             pace=self.config.letter_seconds_per_screen,
+            wpm=self.config.letter_reading_words_per_minute,
         )
         if self._segment_fresh(dst, [self.workspace.letter_file], recipe):
             logger.info("Reusing closing letter (unchanged).")
@@ -2422,9 +2449,16 @@ class Pipeline:
             )
             png = seg_dir / "letter.png"
             image.save(png)
+            # pad=True puts a blank screen above and below, so the scroll
+            # travels image.height - height from all-blank to all-blank.
+            seconds, pps = _letter_pace(
+                image.height - height,
+                height / self.config.letter_seconds_per_screen,
+                reading_seconds(
+                    text, self.config.letter_reading_words_per_minute),
+            )
             render_letter_scroll(
-                png, dst, width, height, image.height,
-                pixels_per_second=height / self.config.letter_seconds_per_screen,
+                png, dst, width, height, image.height, pixels_per_second=pps,
             )
         except Exception as exc:  # noqa: BLE001 - extras must not kill combine
             logger.error("Closing letter failed (%s); combining without it.", exc)
@@ -2433,10 +2467,7 @@ class Pipeline:
         self._record_segment_recipe(dst, recipe)
         logger.info(
             "Closing letter: %d chars scrolled over ~%.0fs (font: %s).",
-            len(text),
-            (image.height - height)
-            / (height / self.config.letter_seconds_per_screen),
-            Path(font).name,
+            len(text), seconds, Path(font).name,
         )
         return dst
 

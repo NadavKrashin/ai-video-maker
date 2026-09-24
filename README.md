@@ -1210,6 +1210,17 @@ no API cost:
   long lines wrap. Font is auto-detected (override with `letter_font_path`),
   size via `letter_font_size` (default 64), pace via
   `letter_seconds_per_screen` (default 7.0 — higher is slower).
+  **A letter that has the screen to itself is slowed to the time it takes to
+  READ** (`letter_reading_words_per_minute`, default 200 — LOWER is slower):
+  a pace-per-screen sets a speed, so a long letter and a short one give the
+  reader the same seconds per line and the long one scrolls past unread. The
+  reading time is a FLOOR, never a ceiling — nothing is ever sped up, so a
+  short letter keeps exactly the timing it always had. A real 81-word
+  blessing goes from 14.3s to 23.7s. Set `0` to turn the floor off and go
+  back to the plain pace. It applies to `after_photos` / `on_last_photo`
+  only; under `over_photos` the montage still decides the pace (both end
+  together), so a rushed letter there wants a longer montage or a switch to
+  one of the other two placements.
 - `--letter-placement` (config: `letter_placement`, default `over_photos`):
   **where** the letter plays, which matters once `--credits-photos` is on
   too. Some customers want to read the letter and look at the photos

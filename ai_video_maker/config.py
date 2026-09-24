@@ -181,6 +181,17 @@ class Config(BaseModel):
     letter_emoji_font_path: str = ""
     letter_font_size: int = 64
     letter_seconds_per_screen: float = 7.0  # scroll pace per screen height
+    # How fast a viewer is assumed to READ, when the letter has the screen to
+    # itself (after_photos / on_last_photo). A scroll can't be paused or
+    # re-read, and a pace-per-screen gives a long letter and a short one the
+    # same seconds per line — so a letter with more to say is slowed until it
+    # lasts at least this long: words / rate. Taken as a FLOOR against
+    # letter_seconds_per_screen, so a short letter keeps the timing it always
+    # had and nothing ever scrolls faster than configured. LOWER = SLOWER.
+    # Calibrated on a real 81-word blessing the user timed: 14.3s at the
+    # plain pace, which they wanted 5-10s longer; 200 wpm gives it 24.3s.
+    # 0 turns the floor off entirely (pure pace, the pre-2026-09-25 shape).
+    letter_reading_words_per_minute: float = 200.0
     # WHERE the letter plays, when the end-credits montage is on too. Some
     # customers want to read the letter and look at the photos separately
     # rather than through each other, so the overlay is a choice, not the
