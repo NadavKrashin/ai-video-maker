@@ -5,11 +5,19 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from .costs import Pricing
 from .errors import ConfigError
 from .video_models import VideoModel, get_video_model, model_for_id, model_keys
+
+
+# Where the closing letter plays relative to the end-credits montage.
+# Named here so the CLI, the API and the renderer all validate against one
+# list instead of three copies drifting apart.
+LETTER_PLACEMENTS: tuple[str, ...] = (
+    "over_photos", "after_photos", "on_last_photo",
+)
 
 
 class Config(BaseModel):
@@ -173,6 +181,20 @@ class Config(BaseModel):
     letter_emoji_font_path: str = ""
     letter_font_size: int = 64
     letter_seconds_per_screen: float = 7.0  # scroll pace per screen height
+    # WHERE the letter plays, when the end-credits montage is on too. Some
+    # customers want to read the letter and look at the photos separately
+    # rather than through each other, so the overlay is a choice, not the
+    # only shape:
+    #   over_photos   - the letter scrolls over the montage, both paced to
+    #                   end together (the original behaviour, still default)
+    #   after_photos  - the montage plays out at its own pace, then the
+    #                   letter scrolls alone on the dark background
+    #   on_last_photo - same, but the letter scrolls over a held still of
+    #                   the movie's last photo instead of a black screen
+    # With no montage the first two are the same thing; on_last_photo still
+    # puts the photo behind the text (and falls back to dark when the
+    # storyboard records no original photos).
+    letter_placement: str = "over_photos"
     # How much to darken the photo montage under a scrolling letter, 0-1.
     # 0 (the default) plays the photos at their true brightness — the user
     # explicitly does not want them greyed out; the letter's own drop shadow
@@ -324,6 +346,21 @@ class Config(BaseModel):
     # with the instructions they refine for the model's attention, and a
     # planning call already carries ~20 frames; newest lessons win.
     max_lessons_in_prompt: int = 25
+
+    @field_validator("letter_placement")
+    @classmethod
+    def _known_letter_placement(cls, value: str) -> str:
+        """Refuse a typo rather than silently falling back to the overlay.
+
+        A misspelt placement would otherwise build the ending nobody asked
+        for and say nothing about it — and the ending is the part a customer
+        reads word by word.
+        """
+        if value not in LETTER_PLACEMENTS:
+            raise ValueError(
+                f"letter_placement must be one of {', '.join(LETTER_PLACEMENTS)}"
+            )
+        return value
 
     @classmethod
     def load(cls, path: Path, override_path: Path | None = None) -> "Config":

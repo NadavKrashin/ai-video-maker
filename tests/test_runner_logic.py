@@ -884,6 +884,114 @@ class TestPresentationSegments:
         assert added is True and segments[-1].name == "letter.mp4"
         assert "scroll" in calls and "overlay" not in calls
 
+    def test_letter_after_photos_plays_the_montage_out_first(
+        self, make_pipeline, workspace, monkeypatch
+    ):
+        """The customer asked to read the letter and see the photos apart.
+
+        Not one overlaid section: the stills play at their own configured
+        pace and the letter follows on its own dark screen.
+        """
+        calls = self._stub_renderers(monkeypatch)
+        p = make_pipeline(
+            credits_photos=True, closing_letter=True,
+            letter_placement="after_photos",
+        )
+        clips = self._project(workspace)
+        workspace.letter_file.write_text("שלום", encoding="utf-8")
+        segments, added = p._presentation_segments(clips)
+        assert added is True
+        assert [s.name for s in segments] == [
+            "a_to_b.mp4", "b_to_c.mp4",
+            "credits_000_1.50s.mp4", "credits_001_1.50s.mp4",
+            "credits_002_1.50s.mp4", "letter.mp4",
+        ]
+        assert "scroll" in calls and "overlay" not in calls
+
+    def test_letter_on_last_photo_holds_that_photo_behind_it(
+        self, make_pipeline, workspace, monkeypatch
+    ):
+        calls = self._stub_renderers(monkeypatch)
+        p = make_pipeline(
+            credits_photos=True, closing_letter=True,
+            letter_placement="on_last_photo",
+        )
+        clips = self._project(workspace)
+        workspace.letter_file.write_text("שלום", encoding="utf-8")
+        segments, added = p._presentation_segments(clips)
+        assert added is True
+        assert segments[-1].name == "letter_on_photo.mp4"
+        # The montage is still its own run of stills in front of it.
+        assert [s.name for s in segments[2:-1]] == [
+            "credits_000_1.50s.mp4", "credits_001_1.50s.mp4",
+            "credits_002_1.50s.mp4",
+        ]
+        assert "overlay" in calls and "scroll" not in calls
+
+    def test_on_last_photo_works_without_the_montage(
+        self, make_pipeline, workspace, monkeypatch
+    ):
+        # The placement is about what is BEHIND the letter, so it still
+        # applies when the credits montage is off.
+        calls = self._stub_renderers(monkeypatch)
+        p = make_pipeline(
+            closing_letter=True, letter_placement="on_last_photo",
+        )
+        clips = self._project(workspace)
+        workspace.letter_file.write_text("שלום", encoding="utf-8")
+        segments, added = p._presentation_segments(clips)
+        assert added is True
+        assert [s.name for s in segments] == [
+            "a_to_b.mp4", "b_to_c.mp4", "letter_on_photo.mp4",
+        ]
+        assert "overlay" in calls
+
+    def test_on_last_photo_falls_back_to_dark_without_photos(
+        self, make_pipeline, workspace, monkeypatch
+    ):
+        """An idea-based movie has no original photos to hold."""
+        calls = self._stub_renderers(monkeypatch)
+        p = make_pipeline(
+            closing_letter=True, letter_placement="on_last_photo",
+        )
+        _write_frames(workspace, range(1, 4))
+        _storyboard(workspace, 3).save(workspace.default_storyboard_json)
+        clips = [_touch(workspace.clips_dir / "001_to_002.mp4")]
+        workspace.letter_file.write_text("שלום", encoding="utf-8")
+        segments, added = p._presentation_segments(clips)
+        assert added is True and segments[-1].name == "letter.mp4"
+        assert "scroll" in calls and "overlay" not in calls
+
+    def test_placement_option_beats_config(self, make_pipeline):
+        p = make_pipeline(letter_placement="after_photos")
+        p.config.letter_placement = "over_photos"
+        assert p._letter_placement() == "after_photos"
+
+    def test_unknown_placement_is_refused(self, make_pipeline, workspace, monkeypatch):
+        # A typo must not quietly build the ending nobody asked for.
+        self._stub_renderers(monkeypatch)
+        p = make_pipeline(closing_letter=True, letter_placement="on_the_moon")
+        clips = self._project(workspace)
+        workspace.letter_file.write_text("שלום", encoding="utf-8")
+        with pytest.raises(PipelineError, match="on_the_moon"):
+            p._presentation_segments(clips)
+
+    def test_changed_setting_redoes_the_letter_on_photo_section(
+        self, make_pipeline, workspace, monkeypatch
+    ):
+        # Same trap as every other section: no file touched, new ending.
+        # (Switching PLACEMENT is safe by construction — each shape writes
+        # its own segment file — so what needs a recipe is the settings.)
+        p = make_pipeline(
+            credits_photos=True, closing_letter=True,
+            letter_placement="on_last_photo",
+        )
+        clips = self._project(workspace)
+        calls = self._built(p, workspace, clips, monkeypatch)
+        p.config.letter_overlay_dim = 0.5
+        p._presentation_segments(clips)
+        assert "overlay" in calls
+
     def test_letter_without_file_skips(self, make_pipeline, workspace, monkeypatch):
         self._stub_renderers(monkeypatch)
         p = make_pipeline(closing_letter=True)
@@ -1212,6 +1320,13 @@ class TestSnapshotLetter:
 
     def test_no_letter_file(self, pipeline):
         assert pipeline.snapshot()["letter"] == {"exists": False, "chars": 0}
+
+    def test_placement_is_reported_beside_it(self, pipeline):
+        # Its own key: "letter" is the FILE's state, and the same shape is
+        # what PUT /api/projects/<n>/letter answers with.
+        assert pipeline.snapshot()["letter_placement"] == "over_photos"
+        pipeline.config.letter_placement = "on_last_photo"
+        assert pipeline.snapshot()["letter_placement"] == "on_last_photo"
 
     def test_written_letter_is_counted(self, pipeline, workspace):
         workspace.letter_file.write_text("dear you\n", encoding="utf-8")

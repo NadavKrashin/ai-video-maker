@@ -32,7 +32,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
-from .config import Config
+from .config import LETTER_PLACEMENTS, Config
 from .constants import VALID_DURATIONS
 from .errors import InvalidProjectName, PipelineError
 from .logging_setup import logger, setup_logging
@@ -303,6 +303,15 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Scroll the project's letter.txt (Hebrew-safe) over "
                          "a dark background at the very end, credits-style. "
                          "Overrides the closing_letter config key.")
+    sp.add_argument("--letter-placement", default=None,
+                    choices=list(LETTER_PLACEMENTS),
+                    help="Where the closing letter plays: over_photos "
+                         "scrolls it over the end-credits montage (both end "
+                         "together), after_photos lets the montage finish "
+                         "first and then scrolls the letter on a dark "
+                         "screen, on_last_photo does the same but holds the "
+                         "movie's last photo behind the text. Overrides the "
+                         "letter_placement config key for this run.")
     sp.add_argument("--intro", action=argparse.BooleanOptionalAction,
                     default=None,
                     help="Prepend the shared intro video (intro.mp4 at the "

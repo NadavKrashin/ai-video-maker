@@ -1275,6 +1275,26 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   `application/octet-stream` and bare extensions) because the server checks
   content anyway. The same trap is live for PHOTO uploads
   (`_PHOTO_EXTENSIONS` in server.py) — fix it the same way if it bites.
+- THE LETTER OVER THE PHOTOS IS ONE ENDING, NOT THE ENDING (user report,
+  2026-09-24: clients want to focus on the letter and the photos
+  separately). `letter_placement` (config, `--letter-placement`, panel
+  picker in the Combine step) chooses between `over_photos` (the original
+  overlay, still the default — an existing project's ending does not
+  change), `after_photos` (the montage plays out at its own configured pace,
+  then the letter scrolls alone on dark) and `on_last_photo` (same running
+  order, letter over a held still of the LAST photo — the user's own "so it
+  won't be black"). The sequential shapes deliberately do NOT go through
+  `_fit_credits_and_letter`: that function exists to make two things end
+  together, and stretching either one is exactly what the customer objected
+  to. `on_last_photo` needs a photo even with the montage off (it is about
+  what sits BEHIND the text), so the sources are read whenever it is asked
+  for, and an idea-based movie with no `source_path` falls back to dark with
+  a warning rather than failing the combine. Placement rides in each
+  section's recipe, so switching it re-renders the ending even though no
+  project file was touched (the trap `_SEGMENT_RENDERER_VERSION` exists
+  for). An unknown value is a PipelineError, not a silent fall-back to the
+  overlay — the ending is the part a customer reads word by word. Pinned by
+  the placement tests in TestPresentationSegments.
 - THE CREDITS PHOTOS ARE NEVER GREYED OUT under a scrolling letter (user
   call, 2026-07-28). `_letter_overlay_cmd` used to lay a fixed `black@0.55`
   drawbox over the montage for text contrast; the photos are the product,

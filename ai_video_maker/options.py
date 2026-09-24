@@ -112,6 +112,9 @@ class RunOptions:
     credits_photos: Optional[bool] = None
     closing_letter: Optional[bool] = None
     intro_clip: Optional[bool] = None
+    # Where the closing letter plays: over the photo montage, after it, or
+    # after it over a held still of the last photo. None -> config.
+    letter_placement: Optional[str] = None
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> "RunOptions":
@@ -167,4 +170,5 @@ class RunOptions:
             credits_photos=presentation("credits_photos"),
             closing_letter=get("letter"),
             intro_clip=presentation("intro"),
+            letter_placement=get("letter_placement"),
         )

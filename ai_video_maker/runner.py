@@ -46,7 +46,7 @@ from .clients.openai_client import (
     is_unstageable_pair,
 )
 from .clients.video import VideoClient
-from .config import Config
+from .config import LETTER_PLACEMENTS, Config
 from .constants import VALID_DURATIONS
 from .costs import KIND_CLIP, KIND_SFX, CostLedger, estimate_usd
 from .errors import PipelineCancelled, PipelineError, StoryboardError
@@ -203,6 +203,15 @@ def _fit_credits_and_letter(
     letter_len = letter_travel_px / base_pps
     section = max(credits_len, letter_len)
     return section / n_photos, letter_travel_px / section
+
+
+# How each placement reads in status / the panel's confirmation. Kept next
+# to the renderer so a new placement can't ship without a sentence.
+_LETTER_PLACEMENT_WORDING = {
+    "over_photos": "over the end-credits photos (both end together)",
+    "after_photos": "after the end-credits photos, on a dark screen",
+    "on_last_photo": "after the end-credits photos, over the last photo",
+}
 
 
 def _consecutive_runs(indices: list[int]) -> list[list[int]]:
@@ -1910,8 +1919,12 @@ class Pipeline:
                 logger.info("[dry-run] would append the original photos as "
                             "an end-credits montage")
             if letter:
-                logger.info("[dry-run] would append the scrolling closing "
-                            "letter from %s", self.workspace.letter_file)
+                logger.info(
+                    "[dry-run] would append the scrolling closing letter "
+                    "from %s, playing %s",
+                    self.workspace.letter_file,
+                    _LETTER_PLACEMENT_WORDING[self._letter_placement()],
+                )
             return
 
         if final_video.exists() and not self.force and not force_rebuild:
@@ -1981,6 +1994,24 @@ class Pipeline:
         )
         return intro, credits, letter
 
+    def _letter_placement(self) -> str:
+        """Where the closing letter plays: CLI wins over config.
+
+        An unknown value is refused loudly. The ending is the part a
+        customer reads word by word, so quietly falling back to the overlay
+        on a typo would ship the shape somebody explicitly did not want.
+        """
+        placement = (
+            self.options.letter_placement
+            or self.config.letter_placement
+        )
+        if placement not in LETTER_PLACEMENTS:
+            raise PipelineError(
+                f"Unknown letter placement {placement!r}. Choose one of: "
+                + ", ".join(LETTER_PLACEMENTS)
+            )
+        return placement
+
     def _original_photo_sources(self) -> list[tuple[str, Path]]:
         """(frame id, original photo path) per storyboard frame, in order.
 
@@ -2019,7 +2050,11 @@ class Pipeline:
         intro, credits, letter = self._presentation_flags()
         if not (intro or credits or letter) or not clips:
             return clips, False
-        sources = self._original_photo_sources() if credits else []
+        placement = self._letter_placement() if letter else "over_photos"
+        # on_last_photo needs a photo even when the montage is off — the
+        # letter still plays over one, it just has no montage in front of it.
+        wants_photos = credits or (letter and placement == "on_last_photo")
+        sources = self._original_photo_sources() if wants_photos else []
         if credits and not sources:
             logger.warning(
                 "credits_photos is on, but this project's storyboard records "
@@ -2054,16 +2089,21 @@ class Pipeline:
                 segments.insert(0, section)
                 added = True
 
-        if credits and letter:
-            # The letter scrolls OVER the photo montage (dimmed for
-            # readability), both paced to end together.
+        if credits and letter and placement == "over_photos":
+            # The letter scrolls OVER the photo montage, both paced to end
+            # together.
             section = self._render_credits_letter_overlay(
                 seg_dir, sources, letter_text, width, height
             )
             if section is not None:
                 segments.append(section)
                 added = True
-        elif credits:
+            return segments, added
+
+        # Everything else plays the two one after the other: the montage
+        # first (at its own configured pace, nothing stretched to fit a
+        # letter), then the letter on its own screen.
+        if credits:
             stills = self._render_credit_stills(
                 seg_dir, sources, self.config.credits_seconds_per_photo,
                 width, height,
@@ -2071,10 +2111,24 @@ class Pipeline:
             segments += stills
             added = True
             logger.info("End credits: %d original photo(s) appended.", len(stills))
-        elif letter:
-            section = self._render_letter_standalone(
-                seg_dir, letter_text, width, height
-            )
+        if letter:
+            backdrop = sources[-1][1] if (
+                placement == "on_last_photo" and sources
+            ) else None
+            if placement == "on_last_photo" and backdrop is None:
+                logger.warning(
+                    "letter_placement is on_last_photo, but this project's "
+                    "storyboard records no original photos — scrolling the "
+                    "letter on the dark background instead."
+                )
+            if backdrop is not None:
+                section = self._render_letter_on_photo(
+                    seg_dir, letter_text, backdrop, width, height
+                )
+            else:
+                section = self._render_letter_standalone(
+                    seg_dir, letter_text, width, height
+                )
             if section is not None:
                 segments.append(section)
                 added = True
@@ -2284,6 +2338,63 @@ class Pipeline:
         logger.info(
             "Credits + letter: %d photo(s) under a ~%.0fs scrolling letter "
             "(font: %s).", len(sources), travel / pps, Path(font).name,
+        )
+        return dst
+
+    def _render_letter_on_photo(
+        self,
+        seg_dir: Path,
+        text: str,
+        photo: Path,
+        width: int,
+        height: int,
+    ) -> Optional[Path]:
+        """The letter scrolling over a held still of the movie's last photo.
+
+        The same overlay renderer as the credits version, but the background
+        is one photo held for exactly as long as the letter takes rather
+        than a montage — so the photos have already had their turn and the
+        letter gets a screen of its own that simply isn't black.
+        """
+        dst = seg_dir / "letter_on_photo.mp4"
+        recipe = self._segment_recipe(
+            "letter_on_photo",
+            text=text, photo=photo.name, size=(width, height),
+            font=self.config.letter_font_path,
+            emoji_font=self.config.letter_emoji_font_path,
+            font_size=self.config.letter_font_size,
+            pace=self.config.letter_seconds_per_screen,
+            dim=self.config.letter_overlay_dim,
+        )
+        if self._segment_fresh(dst, [self.workspace.letter_file, photo], recipe):
+            logger.info("Reusing closing letter over the last photo (unchanged).")
+            return dst
+        try:
+            font = find_letter_font(self.config.letter_font_path)
+            image = render_letter_image(
+                text, width, height, font, self.config.letter_font_size,
+                pad=False, transparent=True,
+                emoji_font_path=find_emoji_font(
+                    self.config.letter_emoji_font_path),
+            )
+            png = seg_dir / "letter.png"
+            image.save(png)
+            pps = height / self.config.letter_seconds_per_screen
+            travel = image.height + height  # enters from below, exits above
+            seconds = travel / pps
+            background = seg_dir / "letter_bg.mp4"
+            render_photo_still(photo, background, width, height, seconds)
+            render_letter_overlay(
+                background, png, dst, pps, self.config.letter_overlay_dim
+            )
+        except Exception as exc:  # noqa: BLE001 - extras must not kill combine
+            logger.error("Closing letter failed (%s); combining without it.", exc)
+            self.failed.record("letter", "letter", str(exc))
+            return None
+        self._record_segment_recipe(dst, recipe)
+        logger.info(
+            "Closing letter: %d chars scrolled over ~%.0fs on %s (font: %s).",
+            len(text), seconds, photo.name, Path(font).name,
         )
         return dst
 
@@ -2826,6 +2937,14 @@ class Pipeline:
             # produces no letter (see _letter_text), so status and the panel
             # have to be able to say whether there is one at all.
             "letter": letter_state(ws.letter_file),
+            # Where the letter plays when combine is run without a per-run
+            # choice, so the panel's picker starts from this project's truth
+            # rather than assuming the studio default. Its own key, not part
+            # of "letter": that one is the FILE's state, and it is also what
+            # PUT /api/projects/<n>/letter answers with — one name meaning
+            # two shapes is how a panel ends up reading a field that isn't
+            # there.
+            "letter_placement": self.config.letter_placement,
             # Estimated money spent on this project (see cost_report). Built
             # from what snapshot already knows, so it costs no extra I/O.
             "cost": self.cost_report(
@@ -4078,6 +4197,9 @@ class Pipeline:
         letter = snap["letter"]
         if letter["chars"]:
             print(f"  Closing letter   : {letter['chars']} chars in {ws.letter_file}")
+            wording = _LETTER_PLACEMENT_WORDING.get(snap["letter_placement"])
+            if wording:
+                print(f"                     plays {wording}")
         elif letter["exists"]:
             print(f"  Closing letter   : {ws.letter_file} is empty — nothing to scroll")
 

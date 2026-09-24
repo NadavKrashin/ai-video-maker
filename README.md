@@ -166,9 +166,9 @@ the `ADMIN_API_TOKEN` from `.env`:
   reviewing and editing every transition (motion prompt, duration, sound
   prompt, global motion prompt), rendering all clips or regenerating one,
   per-clip audio redo, uploading the music track, combine/finalize with
-  intro/credits/letter toggles, **writing the closing letter itself** (a
-  Hebrew-safe text box in the Combine step, saved as the project's
-  `letter.txt`), **publishing the finished movie into the order's Cloudinary
+  intro/credits/letter toggles and a **where the letter plays** picker,
+  **writing the closing letter itself** (a Hebrew-safe text box in the
+  Combine step, saved as the project's `letter.txt`), **publishing the finished movie into the order's Cloudinary
   folder** (step 5 — the modal names the exact file, e.g. `final_v2.mp4`,
   before anything is uploaded, and nothing there is ever replaced), and `run`
   for the whole chain, plus a **Needs fixing** toggle and a **Feedback** button
@@ -227,7 +227,8 @@ the `ADMIN_API_TOKEN` from `.env`:
   phone uploads often have, is still accepted), the closing
   letter (`PUT /api/projects/<name>/letter` with `{"text": "…"}`; the text
   comes back in the project detail as `letter_text`, and its summary as
-  `letter: {exists, chars}`), a publish preview
+  `letter: {exists, chars}` with `letter_placement` alongside it), a
+  publish preview
   (`GET /api/projects/<name>/publish/preview` — read-only; returns the next
   free version and the exact `public_id`/`filename`, plus what the order
   folder already holds), and
@@ -1205,18 +1206,34 @@ no API cost:
   existing `letter.txt` is never overwritten by an ingest. With no letter
   written the flag is a no-op: combine warns and builds the movie without
   one (`pipeline.py status` and the panel both show whether there is a
-  letter). **When
-  `--credits-photos` is also on, the letter scrolls OVER the photo montage**
-  at their normal brightness — a drop shadow behind the text is what keeps
-  it readable, so nothing greys the photos out (`letter_overlay_dim`,
-  default `0`, darkens them instead if you ever want that trade). Both are
-  paced to end together: photos never flash faster than configured and the
-  letter never scrolls faster than configured. With the letter alone it
-  scrolls over a plain dark background. Empty lines become paragraph gaps;
+  letter). Empty lines become paragraph gaps;
   long lines wrap. Font is auto-detected (override with `letter_font_path`),
   size via `letter_font_size` (default 64), pace via
   `letter_seconds_per_screen` (default 7.0 — higher is slower).
-  **Emoji** (a heart at the end of a blessing is the usual one) are drawn by
+- `--letter-placement` (config: `letter_placement`, default `over_photos`):
+  **where** the letter plays, which matters once `--credits-photos` is on
+  too. Some customers want to read the letter and look at the photos
+  separately rather than through each other, so the overlay is one shape of
+  ending among three:
+  - `over_photos` — the letter scrolls OVER the photo montage at the photos'
+    normal brightness; a drop shadow behind the text is what keeps it
+    readable, so nothing greys the photos out (`letter_overlay_dim`, default
+    `0`, darkens them instead if you ever want that trade). The two are
+    paced to end together: photos never flash faster than configured and the
+    letter never scrolls faster than configured.
+  - `after_photos` — the montage plays out at its own configured pace and
+    finishes, then the letter scrolls on a plain dark background. Nothing is
+    stretched to fit anything else, so the ending is simply longer.
+  - `on_last_photo` — the same running order, but the letter scrolls over a
+    held still of the movie's **last photo** instead of a black screen. This
+    one applies even with the montage off (it is about what sits behind the
+    text); with no original photos recorded — an idea-based movie — it falls
+    back to the dark background and says so.
+
+  With the montage off, `over_photos` and `after_photos` both mean the letter
+  alone on dark. The panel's Combine step has the same choice as a picker,
+  defaulting to whatever the project's config says.
+- **Emoji** (a heart at the end of a blessing is the usual one) are drawn by
   the system's colour-emoji font — Apple Color Emoji on macOS, Noto Color
   Emoji on Linux — because the Hebrew text font has no glyph for them and
   would draw an empty box. Override with `letter_emoji_font_path`. If no
@@ -1266,7 +1283,7 @@ which are project-less).
 | `flag` | `--clip ID` (required; which rendered clip), `--clear` (tick it off instead) — plus an optional positional note |
 | `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 5\|10`, `--add-audio`, `--no-audio` |
 | `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-file PATH`, `--music-url URL` |
-| `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--music-url URL`, `--add-audio`, `--no-audio`, `--final`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter` |
+| `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--music-url URL`, `--add-audio`, `--no-audio`, `--final`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter`, `--letter-placement {over_photos,after_photos,on_last_photo}` |
 | `publish` | `--dry-run` (print the name only), `-y/--yes` |
 | `status` | — |
 | `tag` | `--retag`, `--dry-run`, `-y/--yes` |

@@ -69,3 +69,28 @@ class TestProjectOverrides:
         override = _write(tmp_path / "project.json", {"duration": "not-a-number"})
         with pytest.raises(ConfigError, match="overrides"):
             Config.load(base, override_path=override)
+
+
+class TestLetterPlacement:
+    """Where the closing letter plays is a validated enum, not free text."""
+
+    def test_default_is_the_overlay(self, tmp_path):
+        # Existing movies must keep the ending they already had.
+        cfg = Config.load(_write(tmp_path / "config.json", _BASE))
+        assert cfg.letter_placement == "over_photos"
+
+    def test_each_shape_loads(self, tmp_path):
+        for placement in ("over_photos", "after_photos", "on_last_photo"):
+            cfg = Config.load(_write(
+                tmp_path / "config.json", {**_BASE, "letter_placement": placement}
+            ))
+            assert cfg.letter_placement == placement
+
+    def test_a_typo_is_refused(self, tmp_path):
+        # Falling back to the overlay would build the ending nobody asked
+        # for and say nothing about it.
+        path = _write(
+            tmp_path / "config.json", {**_BASE, "letter_placement": "on_the_moon"}
+        )
+        with pytest.raises(ConfigError, match="letter_placement"):
+            Config.load(path)

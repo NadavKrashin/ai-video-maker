@@ -1274,6 +1274,17 @@ function TriToggle({ value, onChange, label, title, note = '' }) {
   );
 }
 
+// Where the closing letter plays. Some customers want to read the letter
+// and look at the photos separately rather than through each other, so the
+// overlay is one shape of ending among three (see config.letter_placement).
+const LETTER_PLACEMENTS = [
+  { value: 'over_photos', label: 'Over the photos (both end together)' },
+  { value: 'after_photos', label: 'After the photos, on a dark screen' },
+  { value: 'on_last_photo', label: 'After the photos, over the last photo' },
+];
+const placementLabel = (v) =>
+  LETTER_PLACEMENTS.find((p) => p.value === v)?.label || v;
+
 function CombinePanel({
   ask, locked, info, onUploadMusic, onRemoveMusic, onFetchMusicUrl, musicBusy,
   letterText, onSaveLetter, letterBusy
@@ -1281,6 +1292,8 @@ function CombinePanel({
   const [intro, setIntro] = useState(null);
   const [credits, setCredits] = useState(null);
   const [letter, setLetter] = useState(null);
+  // null = whatever the project's config says (shown in the picker).
+  const [placement, setPlacement] = useState(null);
   const start = (finalize) => {
     // The delivery preset takes everything this project HAS: the letter is
     // opt-in per project (most orders have none), so it joins only when
@@ -1296,6 +1309,9 @@ function CombinePanel({
       if (credits !== null) o.credits_photos = credits;
       if (letter !== null) o.closing_letter = letter;
     }
+    // The placement is a property of the ENDING, not of which button was
+    // pressed, so a picked one rides along with Finalize too.
+    if (placement !== null) o.letter_placement = placement;
     const extras = [
       o.intro_clip && 'intro', o.credits_photos && 'photo credits',
       o.closing_letter && 'closing letter'
@@ -1311,6 +1327,9 @@ function CombinePanel({
         // here instead, where the decision is being made.
         ...(o.closing_letter && !info.letterChars
           ? ['No letter is written for this project yet, so the movie will be built WITHOUT one — write it below first.']
+          : []),
+        ...(o.closing_letter && info.letterChars
+          ? [`The letter plays: ${placementLabel(o.letter_placement || info.letterPlacement).toLowerCase()}.`]
           : []),
         'Pure ffmpeg on your machine — nothing is sent to any API.'
       ],
@@ -1341,6 +1360,16 @@ function CombinePanel({
           Finalize…</Button>
         <Button disabled={locked} onClick={() => start(false)}>Combine…</Button>
       </Group>
+      <Select mt="sm" size="xs" style={{ maxWidth: 420 }}
+        label="Where the letter plays"
+        description={'Over the photos, the two share one section and end '
+          + 'together. After them, the montage finishes first and the letter '
+          + 'gets its own screen — dark, or holding the last photo.'}
+        value={placement}
+        placeholder={`Project setting — ${placementLabel(info.letterPlacement)}`}
+        clearable
+        data={LETTER_PLACEMENTS}
+        onChange={setPlacement} />
       <LetterEditor text={letterText} onSave={onSaveLetter} busy={letterBusy} />
       <MusicBed info={info} onUpload={onUploadMusic} onRemove={onRemoveMusic}
         onFetchUrl={onFetchMusicUrl} busy={musicBusy}
@@ -1673,6 +1702,8 @@ export default function ProjectDetail({ name, onBack }) {
     customMusic: Boolean(snap.custom_music),
     // 0 when no letter is written: the Closing letter toggle is a no-op then.
     letterChars: snap.letter?.chars || 0,
+    // Where the letter plays when combine is run without a per-run choice.
+    letterPlacement: snap.letter_placement || 'over_photos',
     // Delivery state from published.json (no network): {count, latest,
     // changed_since, publishable}.
     published: snap.published || {},
