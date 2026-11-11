@@ -22,7 +22,14 @@ function frameName(framesById, frameRef) {
   return f ? f.output_path.split('/').pop() : '';
 }
 
-const CLIP_PRICE = '≈ $0.35 (5s) – $0.70 (10s) per clip';
+// What one clip costs on the model THIS project renders with. It was a
+// hard-coded Kling 2.5 string, so every confirmation modal quoted the 2.5
+// price whichever model was picked. The rate is refreshed from each
+// snapshot (one project page is open at a time, so a module-level value
+// is enough).
+let clipRate = 0.07;
+const clipPrice = () =>
+  `≈ $${(clipRate * 5).toFixed(2)} (5s) – $${(clipRate * 10).toFixed(2)} (10s) per clip`;
 
 // State timestamps are stored in UTC. Rendering the raw string put an
 // in-flight render three hours in the past on an IDT machine, which read as
@@ -1237,7 +1244,7 @@ function RenderPanel({
       title: `Render ${info.missing} missing clip(s)?`,
       lines: info.missing > 0 ? [
         `Generates the ${info.missing} clip(s) that don't exist yet with the video model (${info.rendered} already rendered are untouched).`,
-        CLIP_PRICE,
+        clipPrice(),
         'Existing clips are never replaced by this — regenerating a specific clip is a per-clip action.'
       ] : [
         'Every clip already exists — nothing will be rendered (use a clip\'s own "Regenerate" button to redo one).'
@@ -1542,7 +1549,7 @@ function RunAllPanel({ ask, locked, info }) {
       title: 'Run the whole pipeline?',
       lines: [
         'Storyboard (if missing) → render ALL missing clips → audio (if enabled) → final video, as one unattended job.',
-        `Right now that means up to ${info.missing || info.total || 'all'} clip render(s). ${CLIP_PRICE}.`,
+        `Right now that means up to ${info.missing || info.total || 'all'} clip render(s). ${clipPrice()}.`,
         'The usual review stops are skipped — confirmation gates auto-proceed on the server. Use the steps above when you want to check the storyboard first.'
       ],
       cost: 'both', danger: true,
@@ -1714,6 +1721,7 @@ export default function ProjectDetail({ name, onBack }) {
   }, [activeJobId, load]);
 
   if (!snap) return <Text c="dimmed">Loading {name}…</Text>;
+  clipRate = Number(snap.video_model?.usd_per_second) || clipRate;
 
   const framesById = Object.fromEntries((storyboard?.frames || []).map((f) => [f.id, f]));
   const totalFrames = (storyboard?.frames || []).length;
@@ -1859,7 +1867,7 @@ export default function ProjectDetail({ name, onBack }) {
         ...(outdated.length
           ? [`${outdated.length} outdated — REPLACED with the current motion prompt: ${outdated.join(', ')}`]
           : []),
-        `${CLIP_PRICE} — up to ${todo.length} clip(s) this run.`,
+        `${clipPrice()} — up to ${todo.length} clip(s) this run.`,
         'Every other rendered clip is left untouched.',
         ...(outdated.length
           ? ['Regenerated clips lose their SFX, so run Audio and Combine again afterwards.']
@@ -2002,7 +2010,7 @@ export default function ProjectDetail({ name, onBack }) {
         exists
           ? `Re-renders this one clip with its current motion prompt and REPLACES clips/${clipId}.mp4.`
           : 'Renders this one clip with its current motion prompt.',
-        CLIP_PRICE,
+        clipPrice(),
         exists ? 'Its "outdated" mark (if any) is cleared; its SFX will need redoing afterwards.' : 'No other clip is touched.'
       ],
       cost: 'fal', danger: exists,

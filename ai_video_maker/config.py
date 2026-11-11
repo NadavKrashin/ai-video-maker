@@ -59,7 +59,11 @@ class Config(BaseModel):
     # (2026-11-11): it keeps real faces far better, at the cost of a less
     # cartoon look — which is the trade the user asked for.
     openai_image_model: str = "gpt-image-2.6-sunburst"
-    openai_text_model: str = "gpt-5.1"
+    # gpt-5.1 is deprecated (removed 2027-04-01); gpt-6-sol is its named
+    # replacement. On the same 29 pairs it wrote prompts half as long and a
+    # cast a third the size, and handed about twice as many pairs to the
+    # camera — adopted by the user on 2026-11-11 knowing that.
+    openai_text_model: str = "gpt-6-sol"
     # The canvas the image model draws on, "WIDTHxHEIGHT". The long-standing
     # 1536x1024 is 3:2, so every styled frame is then centre-cropped to 16:9
     # by normalize_image — about 8% comes off the top and 8% off the bottom

@@ -647,8 +647,8 @@ The admin panel has the same in its **Spending** tab, and each project view
 shows a "Spent on this project" card that expands into the individual calls.
 
 **These are estimates, not invoices.** Nothing here reads a provider's billing
-API: each call is priced from the `pricing` block in `config.json` (`$0.35`
-for a 5s clip, `$0.70` for 10s, `$0.19` per styled image, OpenAI text priced
+API: each call is priced from the `pricing` block in `config.json` (on the default Kling 3.0 Pro, `$0.56`
+for a 5s clip and `$1.12` for 10s; `$0.19` per styled image, OpenAI text priced
 from the token usage the API reports). Correct those numbers when a provider
 changes its rates and every total follows.
 
@@ -1012,15 +1012,20 @@ field is filled in together:
 
 | `video_model` | Model | Frame fields | Cast faces | Price (audio off) |
 |---|---|---|---|---|
-| `kling-2.5-turbo-pro` | Kling 2.5 Turbo Pro (default) | `image_url` / `tail_image_url` | **no** | $0.07/s |
+| `kling-2.5-turbo-pro` | Kling 2.5 Turbo Pro | `image_url` / `tail_image_url` | **no** | $0.07/s |
 | `kling-3-standard` | Kling 3.0 Standard | `start_image_url` / `end_image_url` | **yes** (1) | $0.084/s |
-| `kling-3-pro` | Kling 3.0 Pro | `start_image_url` / `end_image_url` | **yes** (1) | $0.112/s |
+| `kling-3-pro` | Kling 3.0 Pro (**studio default** since 2026-11-11) | `start_image_url` / `end_image_url` | **yes** (1) | $0.112/s |
 | `kling-o3-pro` | Kling O3 Pro | `image_url` / `end_image_url` | **no** | $0.112/s |
 | `kling-4` | Kling 4.0 at 1080p | `start_image_url` / `end_image_url` | **no** | $0.235/s |
 
 Prices and field names were read from each model's fal page on 2026-11-11.
-Only Kling 2.5 has actually been rendered from here; the rest are marked
-"untested" in the panel. Kling 3 and O3 generate audio by default and charge
+Kling 2.5, 3.0 Standard, 3.0 Pro and O3 Pro have been rendered from here
+(3.0 Standard comes back at 720p); Kling 4.0 has not and is marked
+"untested" in the panel. The shared `config.json` names `kling-3-pro` and
+sets `fal_max_elements: 0`, so no cast face is sent with a clip yet: a face
+element combined with an end frame has not been tried. To try it on one
+movie, pin Kling 3.0 Pro for that project in the panel (a project's own pin
+uses the preset's element settings) and render a single clip. Kling 3 and O3 generate audio by default and charge
 about 50% more for it, so their presets send `generate_audio: false` — the
 pipeline adds its own sound in the audio step. `kling-3-turbo-pro` is
 **retired**: that endpoint has no end-frame input, so a clip rendered with it
@@ -1559,7 +1564,7 @@ bed costs nothing — it is your own file). Requires `ffmpeg`/`ffprobe` on your
 |-----|---------|
 | `pricing.openai_image_usd` | Price of one styled/generated frame (default `0.19`). |
 | `pricing.openai_text_input_usd_per_1m` / `pricing.openai_text_output_usd_per_1m` | Text/vision token prices (defaults `1.25` / `10.0` per 1M). |
-| `pricing.clip_usd_per_second` | Video model price per second (default `0.07` → `$0.35` for 5s, `$0.70` for 10s). |
+| `pricing.clip_usd_per_second` | Video model price per second. Follows the chosen `video_model` unless you set it (Kling 3.0 Pro: `0.112` → `$0.56` for 5s, `$1.12` for 10s; Kling 2.5: `0.07`). |
 | `pricing.sfx_usd` | Price of one video→audio pass (default `0.02`). |
 | `learning_enabled` | `true` (default): rules learned from clip feedback are appended to planning/style prompts. `false` stops sending them (nothing is deleted). |
 | `max_lessons_in_prompt` | How many active rules ride along with one call (default `25`, newest win). |

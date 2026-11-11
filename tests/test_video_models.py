@@ -241,10 +241,28 @@ class TestPickingAModelActuallyChangesTheModel:
         path.write_text(json.dumps(override), encoding="utf-8")
         return Config.load(REPO / "config.json", path)
 
-    def test_the_live_shared_config_alone_is_still_kling_two_five(self):
+    def test_the_live_shared_config_renders_on_kling_three_pro(self):
+        # The studio default since the first bake-off (user's choice).
         config = Config.load(REPO / "config.json")
+        assert config.fal_model_id == "fal-ai/kling-video/v3/pro/image-to-video"
+        assert config.fal_end_frame_field == "end_image_url"
+        assert config.pricing.clip_usd_per_second == 0.112
+        assert config.fal_model_arguments == {"generate_audio": False}
+
+    def test_the_live_config_sends_no_face_elements_yet(self):
+        # Kling 3 CAN take them, but a face element together with an end
+        # frame has never been rendered from here, and the clips the user
+        # approved were made without one. Off until one clip proves it.
+        config = Config.load(REPO / "config.json")
+        assert config.fal_max_elements == 0
+        assert not config.elements_enabled()
+
+    def test_a_project_can_still_go_back_to_two_five(self, tmp_path):
+        config = self._pinned(tmp_path, {"video_model": "kling-2.5-turbo-pro"})
         assert config.fal_model_id.endswith("v2.5-turbo/pro/image-to-video")
         assert config.fal_end_frame_field == "tail_image_url"
+        assert config.pricing.clip_usd_per_second == 0.07
+        assert config.fal_model_arguments == {}
 
     def test_a_project_pin_beats_the_inherited_request_shape(self, tmp_path):
         config = self._pinned(tmp_path, {"video_model": "kling-3-pro"})
@@ -270,10 +288,10 @@ class TestPickingAModelActuallyChangesTheModel:
         assert config.pricing.clip_usd_per_second == 0.5
         assert config.fal_start_frame_field == "start_image_url"
 
-    def test_a_project_without_a_pin_is_untouched(self, tmp_path):
+    def test_a_project_without_a_pin_follows_the_shared_model(self, tmp_path):
         config = self._pinned(tmp_path, {"duration": 10})
-        assert config.fal_model_id.endswith("v2.5-turbo/pro/image-to-video")
-        assert config.pricing.clip_usd_per_second == 0.07
+        assert config.fal_model_id == "fal-ai/kling-video/v3/pro/image-to-video"
+        assert config.pricing.clip_usd_per_second == 0.112
 
 
 class TestModelArguments:
