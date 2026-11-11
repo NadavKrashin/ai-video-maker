@@ -265,6 +265,25 @@ class Config(BaseModel):
     # Fade the final video's last moments to black (audio fades with it).
     # Applied after music muxing so the bed fades too. 0 disables.
     end_fade_seconds: float = 1.5
+    # --- The delivery encode: the last pass over the finished movie. ---
+    # x264 quality for the file the customer receives (lower = bigger). The
+    # old fixed 18 is near-lossless and produced 100-500 MB movies — one was
+    # refused by Cloudinary for its size; a Kling clip re-encoded at 21 came
+    # out a fifth the size with no visible difference. 20 is the cautious
+    # side of that.
+    final_crf: int = 20
+    # Put the index at the front of the file so a phone starts playing
+    # before the download finishes. Free; no reason to turn it off.
+    final_faststart: bool = True
+    # Normalise the whole movie's loudness (EBU R128) so two customers'
+    # movies do not differ by whatever level their music track happened to be
+    # mastered at. -16 LUFS is the usual target for phone/web playback. OFF
+    # until it has been listened to: it changes how every movie sounds.
+    audio_normalize: bool = False
+    audio_target_lufs: float = -16.0
+    # Dip the music a few dB whenever the clip's own sound effects play, and
+    # let it come back after. OFF until it has been listened to.
+    music_ducking: bool = False
 
     # --- Cloudinary order intake (the animoments web frontend) ------------- #
     # After payment the web app uploads each order's photos to its own folder:
@@ -444,6 +463,22 @@ class Config(BaseModel):
                 "openai_image_quality must be one of: "
                 + ", ".join(repr(q) for q in IMAGE_QUALITIES)
             )
+        return value
+
+    @field_validator("final_crf")
+    @classmethod
+    def _sane_final_crf(cls, value: int) -> int:
+        """Outside 14-28 is a typo, not a preference: below is a file several
+        times larger for nothing, above is visibly blocky on a paid movie."""
+        if not 14 <= value <= 28:
+            raise ValueError("final_crf must be between 14 and 28")
+        return value
+
+    @field_validator("audio_target_lufs")
+    @classmethod
+    def _sane_lufs(cls, value: float) -> float:
+        if not -30.0 <= value <= -9.0:
+            raise ValueError("audio_target_lufs must be between -30 and -9")
         return value
 
     @field_validator("letter_placement")

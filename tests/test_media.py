@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from PIL import Image
 
 from ai_video_maker.media.ffmpeg import (
@@ -300,3 +302,84 @@ class TestClipFrameSampling:
         assert "-frames:v" in cmd and cmd[cmd.index("-frames:v") + 1] == "1"
         assert "scale='min(512,iw)':-2" in " ".join(cmd)
         assert cmd[-1] == "f.jpg"
+
+
+class TestDeliveryEncode:
+    """The one re-encode that produces the file a customer receives."""
+
+    def _cmd(self, **kw):
+        from ai_video_maker.media.ffmpeg import _delivery_cmd
+        return _delivery_cmd(Path("in.mp4"), Path("out.mp4"), **kw)
+
+    def test_crf_and_faststart_reach_the_command(self):
+        cmd = self._cmd(crf=20, faststart=True)
+        assert cmd[cmd.index("-crf") + 1] == "20"
+        assert cmd[cmd.index("-movflags") + 1] == "+faststart"
+
+    def test_no_audio_means_no_audio_filters_or_codec(self):
+        cmd = self._cmd(crf=20, target_lufs=-16.0, fade_seconds=1.5, fade_start=8)
+        assert "-af" not in cmd and "-c:a" not in cmd
+        assert "fade=t=out:st=8.000:d=1.500" in cmd[cmd.index("-vf") + 1]
+
+    def test_loudness_is_normalised_before_the_fade(self):
+        # The other order would have the normaliser pull the fade-out back up.
+        cmd = self._cmd(has_audio=True, target_lufs=-16.0,
+                        fade_seconds=1.5, fade_start=8)
+        af = cmd[cmd.index("-af") + 1]
+        assert af.index("loudnorm=I=-16") < af.index("afade=t=out")
+        assert cmd[cmd.index("-ar") + 1] == "48000"
+
+    def test_normalising_is_opt_in(self):
+        cmd = self._cmd(has_audio=True, fade_seconds=1.5, fade_start=8)
+        assert "loudnorm" not in cmd[cmd.index("-af") + 1]
+
+    def test_nothing_to_filter_means_no_filter_flags(self):
+        cmd = self._cmd(has_audio=True, crf=20)
+        assert "-vf" not in cmd and "-af" not in cmd
+
+    def test_the_fade_only_command_is_unchanged_in_substance(self):
+        from ai_video_maker.media.ffmpeg import _end_fade_cmd
+        cmd = _end_fade_cmd(Path("in.mp4"), Path("out.mp4"), 8.0, 1.5, True)
+        assert cmd[cmd.index("-crf") + 1] == "18"
+        assert "-movflags" not in cmd and "loudnorm" not in " ".join(cmd)
+
+
+class TestMusicDucking:
+    def _graph(self, **kw):
+        from ai_video_maker.media.ffmpeg import _mux_music_cmd
+        cmd = _mux_music_cmd(
+            Path("v.mp4"), Path("m.mp3"), Path("o.mp4"),
+            music_volume=0.85, sfx_volume=0.35, loop=False, **kw,
+        )
+        return cmd[cmd.index("-filter_complex") + 1]
+
+    def test_off_by_default_the_mix_is_what_it_always_was(self):
+        graph = self._graph(mix_with_existing=True)
+        assert "sidechaincompress" not in graph
+        assert graph == (
+            "[0:a]volume=0.35[s];[1:a]volume=0.85,apad[m];"
+            "[s][m]amix=inputs=2:duration=first:dropout_transition=0[a]"
+        )
+
+    def test_ducking_keys_the_music_on_the_sfx(self):
+        graph = self._graph(mix_with_existing=True, duck=True)
+        assert "asplit=2[s][key]" in graph
+        assert "[m][key]sidechaincompress" in graph
+        assert "[s][md]amix" in graph
+
+    def test_no_sfx_track_means_nothing_to_duck_under(self):
+        graph = self._graph(mix_with_existing=False, duck=True)
+        assert "sidechaincompress" not in graph
+
+
+class TestDeliveryConfig:
+    def test_defaults(self, config):
+        assert config.final_crf == 20 and config.final_faststart is True
+        assert config.audio_normalize is False and config.music_ducking is False
+
+    @pytest.mark.parametrize("crf", [5, 13, 29, 51])
+    def test_an_absurd_crf_is_refused(self, crf):
+        from ai_video_maker.config import Config
+        with pytest.raises(ValueError):
+            Config(style_prompt="s", scratch_style_prompt="s",
+                   motion_prompt="m", final_crf=crf)

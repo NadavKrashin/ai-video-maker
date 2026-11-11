@@ -1,6 +1,6 @@
 // AI Video Maker admin panel — a browser UI over the pipeline's admin API
 // (`pipeline.py serve`), which also serves this app's build at /.
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Button, Card, Container, Group, PasswordInput, SegmentedControl, Text, Title
 } from '@mantine/core';
@@ -47,16 +47,46 @@ function Settings({ onConnected }) {
   );
 }
 
+const TABS = ['orders', 'projects', 'spending', 'learning'];
+
+// '#/project/<name>' -> that project; '#/<tab>' -> that tab; anything else
+// (including a hash from an old bookmark) -> orders.
+function readRoute() {
+  const hash = (window.location.hash || '').replace(/^#\/?/, '');
+  const [head, ...rest] = hash.split('/');
+  if (head === 'project' && rest.length) {
+    let name = rest.join('/');
+    try { name = decodeURIComponent(name); } catch { /* keep it raw */ }
+    return { tab: 'project', project: name };
+  }
+  return { tab: TABS.includes(head) ? head : 'orders', project: '' };
+}
+
 export default function App() {
   const [connected, setConnected] = useState(hasSettings());
-  const [tab, setTab] = useState('orders');
-  const [project, setProject] = useState('');
+  // The tab and the open project live in the URL hash (#/projects,
+  // #/project/<name>), so a refresh keeps your place, the browser's back
+  // button works, and a project can be bookmarked or sent as a link. The
+  // hash is never sent to the server, so nothing changes for the API.
+  const [route, setRoute] = useState(readRoute);
+  useEffect(() => {
+    const onHash = () => setRoute(readRoute());
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+  const { tab, project } = route;
+  const go = (nextTab, nextProject = '') => {
+    const hash = nextTab === 'project'
+      ? `#/project/${encodeURIComponent(nextProject)}` : `#/${nextTab}`;
+    if (window.location.hash !== hash) window.location.hash = hash;
+    setRoute({ tab: nextTab, project: nextProject });
+  };
 
   if (!connected) {
     return <Settings onConnected={() => setConnected(true)} />;
   }
 
-  const openProject = (name) => { setProject(name); setTab('project'); };
+  const openProject = (name) => go('project', name);
 
   return (
     <LightboxProvider>
@@ -67,7 +97,7 @@ export default function App() {
           </Title>
           <SegmentedControl
             value={tab === 'project' ? 'projects' : tab}
-            onChange={(value) => { setTab(value); setProject(''); }}
+            onChange={(value) => go(value)}
             data={[
               { label: 'Orders', value: 'orders' },
               { label: 'Projects', value: 'projects' },
@@ -84,7 +114,7 @@ export default function App() {
         {tab === 'spending' && <SpendingTab onOpenProject={openProject} />}
         {tab === 'learning' && <LearningTab onOpenProject={openProject} />}
         {tab === 'project' && project && (
-          <ProjectDetail name={project} onBack={() => setTab('projects')} />
+          <ProjectDetail key={project} name={project} onBack={() => go('projects')} />
         )}
       </Container>
     </LightboxProvider>

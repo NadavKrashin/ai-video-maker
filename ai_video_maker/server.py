@@ -293,6 +293,14 @@ def apply_in_flight(
 
 # --------------------------------- jobs ------------------------------------- #
 
+# States in which a job still owns the worker (or will). Anything in one of
+# these when the process dies was cut off mid-flight.
+_ACTIVE_STATES = ("queued", "running", "cancelling")
+# How much of the job list and of each job's log is kept across restarts.
+_HISTORY_MAX_JOBS = 200
+_HISTORY_LOG_LINES = 300
+
+
 @dataclass
 class Job:
     id: str
@@ -328,6 +336,31 @@ class Job:
             "finished_at": self.finished_at,
         }
 
+    def to_record(self) -> dict[str, Any]:
+        """What is written to the history file. The log is kept (its tail),
+        because "what did that job say before the server restarted" is the
+        question the history exists to answer."""
+        return {
+            **self.summary(),
+            "options": self.options,
+            "log": self.log[-_HISTORY_LOG_LINES:],
+        }
+
+    @classmethod
+    def from_record(cls, data: dict[str, Any]) -> "Job":
+        return cls(
+            id=str(data["id"]), project=str(data.get("project", "")),
+            command=str(data.get("command", "")),
+            options=dict(data.get("options") or {}),
+            state=str(data.get("state", "failed")),
+            error=str(data.get("error", "")),
+            failures=int(data.get("failures", 0) or 0),
+            log=[str(line) for line in (data.get("log") or [])],
+            created_at=str(data.get("created_at", "")),
+            started_at=str(data.get("started_at", "")),
+            finished_at=str(data.get("finished_at", "")),
+        )
+
 
 class _JobLogHandler(logging.Handler):
     """Mirror pipeline log lines into the running job (single-worker safe)."""
@@ -344,13 +377,35 @@ class _JobLogHandler(logging.Handler):
 
 
 class JobRunner:
-    """Serial background executor for pipeline commands."""
+    """Serial background executor for pipeline commands.
 
-    def __init__(self, config_path: Path, *, start: bool = True) -> None:
+    With ``history_path`` the job list survives a restart. Jobs lived only in
+    memory, so a deploy or a crash erased the queue AND the log of whatever
+    was running — the panel then showed a project with nothing in progress
+    and no trace that anything had been. On startup the history is read
+    back, and any job that was queued or running when the process died is
+    marked ``interrupted``.
+
+    Interrupted jobs are NEVER re-run automatically. Re-running spends
+    money, and "the server restarted" is not a human deciding to spend it —
+    the same rule as never auto-re-rendering a clip. Re-running is safe when
+    a human does it: finished files are skipped, and a clip that was already
+    submitted to the video provider is fetched, not bought again.
+    """
+
+    def __init__(
+        self,
+        config_path: Path,
+        *,
+        start: bool = True,
+        history_path: Optional[Path] = None,
+    ) -> None:
         self._config_path = config_path
         self._queue: "queue.Queue[Job]" = queue.Queue()
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
+        self._history_path = history_path
+        self._restore_history()
         self._thread = threading.Thread(
             target=self._loop, name="job-runner", daemon=True
         )
@@ -378,8 +433,75 @@ class JobRunner:
             job = Job(id=uuid.uuid4().hex[:12], project=project,
                       command=command, options=options, then=then)
             self._jobs[job.id] = job
+        self._persist()
         self._queue.put(job)
         return job
+
+    def _restore_history(self) -> None:
+        """Read the history file back. Never raises: a corrupt or unreadable
+        history must not stop the server from starting."""
+        path = self._history_path
+        if path is None or not path.exists():
+            return
+        try:
+            records = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Job history %s is unreadable (%s); starting "
+                           "with an empty list.", path, exc)
+            return
+        interrupted = 0
+        for record in records if isinstance(records, list) else []:
+            try:
+                job = Job.from_record(record)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if job.state in _ACTIVE_STATES:
+                job.state = "interrupted"
+                job.error = (
+                    "The server restarted while this job was "
+                    + ("waiting in the queue" if not job.started_at
+                       else "running")
+                    + ". Nothing was re-run automatically. Run it again to "
+                    "continue: finished files are skipped, and a clip already "
+                    "submitted to the video provider is fetched rather than "
+                    "bought again."
+                )
+                job.finished_at = job.finished_at or _now()
+                interrupted += 1
+            self._jobs[job.id] = job
+        if interrupted:
+            logger.warning(
+                "%d job(s) were interrupted by the last restart; they are "
+                "listed as 'interrupted' and were not re-run.", interrupted,
+            )
+            self._persist()
+
+    def _persist(self) -> None:
+        """Write the newest jobs to the history file (atomic, best-effort).
+
+        Best-effort on purpose: a full disk or a read-only folder must cost
+        the history, never the job that is running.
+        """
+        path = self._history_path
+        if path is None:
+            return
+        with self._lock:
+            jobs = sorted(
+                self._jobs.values(), key=lambda j: j.created_at, reverse=True
+            )[:_HISTORY_MAX_JOBS]
+            records = [job.to_record() for job in jobs]
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(records, indent=1), encoding="utf-8")
+            tmp.replace(path)
+        except OSError as exc:
+            logger.warning("Could not save the job history (%s).", exc)
+
+    def active(self) -> list[Job]:
+        """Jobs that are queued, running or being cancelled right now."""
+        with self._lock:
+            return [j for j in self._jobs.values() if j.state in _ACTIVE_STATES]
 
     def get(self, job_id: str) -> Optional[Job]:
         with self._lock:
@@ -405,7 +527,8 @@ class JobRunner:
             elif job.state == "running":
                 job.cancel_event.set()
                 job.state = "cancelling"
-            return job
+        self._persist()
+        return job
 
     def list(self, project: Optional[str] = None, limit: int = 50) -> list[Job]:
         with self._lock:
@@ -436,6 +559,7 @@ class JobRunner:
             if job.state != "queued":  # cancelled while waiting in the queue
                 return
             job.state, job.started_at = "running", _now()
+        self._persist()
         handler = _JobLogHandler(job)
         handler.setFormatter(logging.Formatter("%(asctime)s | %(message)s"))
         try:
@@ -469,6 +593,7 @@ class JobRunner:
         finally:
             job.finished_at = _now()
             logger.removeHandler(handler)
+            self._persist()
         if job.state == "done" and job.then and not job.cancel_event.is_set():
             self.enqueue(
                 job.then.get("project", job.project),
@@ -643,7 +768,11 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
             "print(secrets.token_urlsafe(32))\""
         )
     config = Config.load(config_path)
-    jobs = JobRunner(config_path)
+    # Next to the lessons, in the one folder that survives deploys and is
+    # never listed as a project.
+    jobs = JobRunner(
+        config_path, history_path=PROJECTS_DIR / "_learning" / "jobs.json"
+    )
     throttle = _AuthThrottle()
     # Before anything can serve a request that carries ?token=.
     _install_access_log_redaction()
@@ -778,7 +907,14 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
 
     @app.get("/api/health")
     async def health() -> dict[str, Any]:
-        return {"ok": True}
+        """Liveness, plus whether a job is in flight.
+
+        ``busy`` is what lets a deploy refuse to restart the server under a
+        running render. It is the only thing this unauthenticated route says
+        about the work: a count, never a project or command name.
+        """
+        active = len(jobs.active())
+        return {"ok": True, "busy": active > 0, "active_jobs": active}
 
     @app.get("/api/orders", dependencies=guarded)
     async def list_orders() -> dict[str, Any]:

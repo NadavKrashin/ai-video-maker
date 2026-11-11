@@ -54,6 +54,8 @@ const jobColor = (state) =>
     : state === 'failed' ? 'red'
       // Ran to the end, but some items failed — never green.
       : state === 'partial' ? 'orange'
+      // Cut off by a server restart. Never re-run automatically.
+      : state === 'interrupted' ? 'orange'
         : state === 'cancelled' ? 'gray'
           : state === 'cancelling' ? 'yellow'
             : 'blue';
@@ -406,12 +408,13 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, ve
   const startImg = frameName(framesById, tr.start_frame);
   const endImg = frameName(framesById, tr.end_frame);
   const clipFile = tr.output_path.split('/').pop();
+  const anchorId = `clip-${tr.id}`;
   const framePair = [
     ...(startImg ? [{ src: fileUrl(project, 'styled', startImg, mediaV), label: `start · ${tr.start_frame}` }] : []),
     ...(endImg ? [{ src: fileUrl(project, 'styled', endImg, mediaV), label: `end · ${tr.end_frame}` }] : [])
   ];
   return (
-    <Card withBorder padding="md">
+    <Card withBorder padding="md" id={anchorId}>
       <Group gap="xs" mb="sm">
         <Checkbox size="xs" checked={selected}
           onChange={() => onToggleSelect(tr.id)}
@@ -1212,7 +1215,8 @@ function VideoModelPicker({ locked, current, models, onPick, costs }) {
                   <Table.Td ta="right" fw={r.current ? 700 : 400}>{usd(r.movie_usd)}</Table.Td>
                   <Table.Td ta="right" c={r.delta_usd > 0 ? 'orange' : r.delta_usd < 0 ? 'green' : 'dimmed'}>
                     {r.delta_usd == null || r.current ? '—'
-                      : `${r.delta_usd > 0 ? '+' : '−'}${usd(Math.abs(r.delta_usd))}`}
+                      : r.delta_usd === 0 ? 'same'
+                        : `${r.delta_usd > 0 ? '+' : '−'}${usd(Math.abs(r.delta_usd))}`}
                   </Table.Td>
                 </Table.Tr>
               ))}
@@ -1585,6 +1589,121 @@ const TAGS_EDIT = '__frame_people__';
 // that is where the work actually is: the planner names the cast and takes a
 // first guess at who is in each photo, a human corrects both, and only a
 // re-plan carries those corrections into the prompts.
+// Everything on this page that is waiting on a decision, in one place.
+//
+// The page had grown about a dozen separate badges and alerts — outdated
+// plans, offscreen endings, missing frames, stale clips, marks, pending
+// renders — each correct, each somewhere else. Knowing a project was clean
+// meant scrolling all of it. This lists what is open, worst first, and each
+// row jumps to where it is fixed. It adds no new state: every count comes
+// from the snapshot the page already has.
+function AttentionCard({ items, onGo }) {
+  if (!items.length) {
+    return (
+      <Alert color="green" variant="light" py="xs">
+        Nothing needs attention on this project right now.
+      </Alert>
+    );
+  }
+  return (
+    <Card withBorder padding="sm">
+      <Text fw={600} size="sm" mb={6}>
+        Needs attention · {items.length}
+      </Text>
+      <Stack gap={4}>
+        {items.map((item) => (
+          <UnstyledButton key={item.key} onClick={() => onGo(item)}
+            style={{ borderRadius: 6, padding: '4px 6px' }}
+            title="Go to where this is fixed">
+            <Group gap="xs" wrap="nowrap" align="flex-start">
+              <Badge variant="light" color={item.color} style={{ flexShrink: 0 }}>
+                {item.count}
+              </Badge>
+              <div>
+                <Text size="sm">{item.label}</Text>
+                {item.hint && <Text size="xs" c="dimmed">{item.hint}</Text>}
+              </div>
+            </Group>
+          </UnstyledButton>
+        ))}
+      </Stack>
+    </Card>
+  );
+}
+
+// Watch the rendered clips one after another and judge each with a key.
+//
+// The real work on a movie is "watch every clip, decide, move on", and the
+// page made that a scroll through thirty cards with a mouse. Here a clip
+// plays, a key marks it (or ticks it off), and the next one starts. The mark
+// is the same free, clearable "needs fixing" worklist as the button on the
+// card — this never renders, re-plans or spends anything.
+function ReviewQueue({ project, clips, startAt, mediaV, flagBusy, onFlag, onClose }) {
+  const [index, setIndex] = useState(startAt || 0);
+  const clip = clips[Math.min(index, clips.length - 1)];
+  const last = index >= clips.length - 1;
+  const step = useCallback((delta) => {
+    setIndex((i) => Math.max(0, Math.min(clips.length - 1, i + delta)));
+  }, [clips.length]);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      // Never steal keys from a field (none here today, but a note box would
+      // be the obvious next addition).
+      if (['INPUT', 'TEXTAREA'].includes(e.target?.tagName)) return;
+      if (e.key === 'ArrowRight' || e.key === 'n') { step(1); e.preventDefault(); }
+      else if (e.key === 'ArrowLeft' || e.key === 'p') { step(-1); e.preventDefault(); }
+      else if (e.key === 'f' && clip) { onFlag(clip.id, true); e.preventDefault(); }
+      else if (e.key === 'g' && clip) {
+        if (clip.needs_fix) onFlag(clip.id, false);
+        step(1); e.preventDefault();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [clip, step, onFlag]);
+
+  if (!clip) return null;
+  return (
+    <Modal opened onClose={onClose} size="xl" centered
+      title={`Review clips · ${index + 1} of ${clips.length}`}>
+      <Group justify="space-between" mb="xs">
+        <Group gap="xs">
+          <Text fw={700}>{clip.id}</Text>
+          {clip.needs_fix && <Badge color="red" variant="filled">needs fixing</Badge>}
+          {clip.stale && <Badge color="orange" variant="light">outdated</Badge>}
+        </Group>
+        <Text size="xs" c="dimmed">
+          → next · ← back · F needs fixing · G good, next
+        </Text>
+      </Group>
+      {/* `key` restarts the player for each clip; without it the element is
+          reused and keeps showing the previous clip's last frame. */}
+      <video key={clip.id} controls autoPlay
+        style={{ width: '100%', borderRadius: 8, background: '#000' }}
+        src={fileUrl(project, 'clips', `${clip.id}.mp4`, mediaV)} />
+      {clip.prompt && (
+        <Text size="xs" c="dimmed" mt="xs" lineClamp={3}>{clip.prompt}</Text>
+      )}
+      <Group justify="space-between" mt="md">
+        <Button variant="default" disabled={index === 0} onClick={() => step(-1)}>
+          ← Previous
+        </Button>
+        <Group gap="xs">
+          <Button color="red" variant={clip.needs_fix ? 'filled' : 'light'}
+            loading={flagBusy === clip.id}
+            onClick={() => onFlag(clip.id, !clip.needs_fix)}>
+            {clip.needs_fix ? '✓ Fixed' : 'Needs fixing'}
+          </Button>
+          <Button onClick={() => (last ? onClose() : step(1))}>
+            {last ? 'Done' : 'Next →'}
+          </Button>
+        </Group>
+      </Group>
+    </Modal>
+  );
+}
+
 const STEPS = [
   { id: 'storyboard', n: 1, name: 'Storyboard', caption: 'Style photos & plan each clip' },
   { id: 'people', n: 2, name: 'People', caption: 'Check who is who, then re-plan' },
@@ -1632,6 +1751,8 @@ export default function ProjectDetail({ name, onBack }) {
   // hooks than during the previous render", which looks exactly like the
   // project page crashing on open.
   const [flagBusy, setFlagBusy] = useState('');
+  // The clip-review queue: null = closed, a number = the clip to start on.
+  const [reviewAt, setReviewAt] = useState(null);
   const [letterBusy, setLetterBusy] = useState(false);
   const [confirm, setConfirm] = useState(null);
   // Which transition the feedback form is open for (null = closed), and what
@@ -2088,6 +2209,76 @@ export default function ProjectDetail({ name, onBack }) {
   // nothing it could destroy. Deliberately NOT the Feedback button: that one
   // costs two model calls and teaches the planner a studio-wide rule, which
   // is far too much ceremony for "come back to this one".
+  // Rendered clips in movie order, with what the review queue shows.
+  const reviewClips = (storyboard?.transitions || [])
+    .map((t) => ({ t, c: clipsById[t.output_path.split('/').pop()?.replace(/\.mp4$/, '')] }))
+    .filter(({ c }) => c?.rendered)
+    .map(({ t, c }) => ({
+      id: t.id, prompt: t.motion_prompt, stale: c.stale, needs_fix: c.needs_fix
+    }));
+
+  // One row per kind of open item, worst first. `clip` rows jump to the
+  // first affected clip; `panel` rows open the step where it is fixed.
+  const attention = (() => {
+    const sb = snap.storyboard || {};
+    const clips = snap.clips || [];
+    const first = (ids) => (ids && ids.length ? ids[0] : '');
+    const interrupted = (snap.jobs || []).filter((j) => j.state === 'interrupted');
+    const rows = [
+      { key: 'interrupted', count: interrupted.length, color: 'orange',
+        label: 'job(s) were cut off by a server restart',
+        hint: 'Nothing was re-run. Run the action again to continue; finished work is skipped.',
+        panel: '' },
+      { key: 'failed', count: (snap.failed_jobs || []).length, color: 'red',
+        label: 'failure(s) in the last run', panel: '' },
+      { key: 'missing', count: (snap.missing_frames || []).length, color: 'orange',
+        label: 'photo(s) have no styled frame and will be left out of the movie',
+        panel: 'storyboard' },
+      { key: 'placeholder', count: (sb.placeholder_transitions || []).length, color: 'red',
+        label: 'clip(s) still carry the generic fallback prompt',
+        hint: 'Planning failed for these. Re-run the storyboard before rendering.',
+        clip: first(sb.placeholder_transitions) },
+      { key: 'offscreen', count: (sb.ends_offscreen || []).length, color: 'red',
+        label: 'prompt(s) end with someone out of frame', clip: first(sb.ends_offscreen) },
+      { key: 'unstageable', count: (sb.unstageable_pairs || []).length, color: 'red',
+        label: 'pair(s) have too many people moving and need a camera transition',
+        clip: first(sb.unstageable_pairs) },
+      { key: 'plans', count: (sb.outdated_plans || []).length, color: 'yellow',
+        label: 'prompt(s) were written before the current tags or cast',
+        panel: 'people' },
+      { key: 'epithets', color: 'yellow',
+        count: (sb.fragile_epithets || []).length + (sb.indistinct_epithets || []).length,
+        label: 'cast name(s) are clothing-based or too alike to tell apart',
+        panel: 'people' },
+      { key: 'needsfix', count: info.needsFix.length, color: 'red',
+        label: 'clip(s) you marked as needing a fix', clip: first(info.needsFix) },
+      { key: 'stale', count: info.outdated, color: 'orange',
+        label: 'rendered clip(s) are outdated',
+        hint: 'Their prompt, length or frames changed after they were rendered.',
+        clip: first(clips.filter((c) => c.rendered && c.stale).map((c) => c.id)) },
+      { key: 'model', color: 'yellow',
+        count: clips.filter((c) => c.rendered && c.model_changed).length,
+        label: 'clip(s) were rendered with a different video model than the one selected now',
+        clip: first(clips.filter((c) => c.rendered && c.model_changed).map((c) => c.id)) },
+      { key: 'pending', count: (snap.pending_renders || []).length, color: 'blue',
+        label: 'render(s) already paid for are waiting to be collected', panel: 'render' },
+      { key: 'final', count: snap.final_video_outdated ? 1 : 0, color: 'orange',
+        label: 'the final movie is older than its clips — combine again', panel: 'combine' },
+    ];
+    return rows.filter((r) => r.count > 0);
+  })();
+
+  const goToAttention = (item) => {
+    if (item.clip) {
+      const el = document.getElementById(`clip-${item.clip}`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
+    }
+    if (item.panel) setOpenPanel(item.panel);
+  };
+
   const toggleNeedsFix = async (clipId, marked, note = '') => {
     setFlagBusy(clipId);
     try {
@@ -2626,6 +2817,27 @@ export default function ProjectDetail({ name, onBack }) {
           </Badge>
         )}
       </Group>
+
+      <AttentionCard items={attention} onGo={goToAttention} />
+      {reviewClips.length > 0 && (
+        <Group gap="xs">
+          <Button size="xs" variant="light" onClick={() => setReviewAt(0)}
+            title="Play the rendered clips one after another and mark the ones that need fixing, with the keyboard.">
+            Review {reviewClips.length} rendered clip{reviewClips.length === 1 ? '' : 's'}
+          </Button>
+          {reviewClips.some((c) => c.needs_fix) && (
+            <Text size="xs" c="dimmed">
+              {reviewClips.filter((c) => c.needs_fix).length} marked as needing a fix
+            </Text>
+          )}
+        </Group>
+      )}
+      {reviewAt !== null && (
+        <ReviewQueue project={name} clips={reviewClips} startAt={reviewAt}
+          mediaV={mediaV} flagBusy={flagBusy}
+          onFlag={(id, marked) => toggleNeedsFix(id, marked)}
+          onClose={() => setReviewAt(null)} />
+      )}
 
       <Card withBorder padding="sm">
         <Group gap="xs" align="stretch">

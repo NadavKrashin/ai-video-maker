@@ -1032,6 +1032,15 @@ pipeline adds its own sound in the audio step. `kling-3-turbo-pro` is
 does not land on the next photo. A project still pinned to it loads, but
 cannot render until another model is picked.
 
+**Finding your way around the panel.** The address bar follows you
+(`#/projects`, `#/project/<name>`), so a refresh keeps your place and a
+project can be bookmarked. The top of each project page lists everything that
+is waiting on a decision — outdated clips, prompts that end off screen,
+photos left out, clips you marked, renders waiting to be collected — worst
+first, and each row jumps to where it is fixed. **Review N rendered clips**
+plays the clips one after another: `→`/`←` move, `F` marks a clip as needing
+a fix, `G` passes it and moves on. Marking is free and can be undone.
+
 **What a model costs for your movie.** The Render step's picker lists every
 model with what *this* storyboard's clips would cost on it and the difference
 from the model in use (`snapshot()["video_model_costs"]`). Clip rendering
@@ -1555,6 +1564,11 @@ bed costs nothing — it is your own file). Requires `ffmpeg`/`ffprobe` on your
 | `sfx_extra_arguments` | Extra model-specific args merged into each SFX call. |
 | `sfx_fade_seconds` | Fade each clip's SFX in/out at its edges so hard cuts aren't abrupt (the music bed carries the dip). Sync-preserving; `0` disables. Default `0.2`. |
 | `sfx_volume` | `0..1`, how loud the per-clip SFX sits **under** the music (default `0.35`). |
+| `final_crf` | x264 quality of the delivered movie, `14`-`28` (default `20`; it was a fixed `18`). Lower is bigger. Measured on one finished 186s movie: 18 = 167 MB, 20 = 146 MB, 22 = 119 MB, 24 = 97 MB, all visually indistinguishable in an SSIM check (0.989 or better). Raise it if movies hit your Cloudinary size limit. |
+| `final_faststart` | `true` (default): the file's index is written at the front, so a phone starts playing before the download finishes. |
+| `audio_normalize` | `false` (default). `true` normalises the whole movie to `audio_target_lufs` (EBU R128) in the final pass, so movies do not differ in loudness by whatever level the supplied music was mastered at. |
+| `audio_target_lufs` | Loudness target when `audio_normalize` is on (default `-16`, the usual phone/web level; allowed `-30` to `-9`). |
+| `music_ducking` | `false` (default). `true` dips the music a few dB whenever a clip's own sound effects play and lets it come back after, instead of mixing both at fixed levels. Only matters when clips have SFX. |
 | `music_volume` | `0..1`, how loud the background bed plays (default `0.85`). |
 | `music_loop` | `false` (default): the track plays once; if the video is longer, the rest continues with SFX only. `true`: the track repeats for the whole video. A track longer than the video is trimmed either way. |
 

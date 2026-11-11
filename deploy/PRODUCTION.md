@@ -196,6 +196,24 @@ a self-hosted runner must never run untrusted PR code).
 | Rotate the token | edit `.env`, restart the server, re-enter it in the panel |
 | Roll back | `git revert` the bad commit on `main`, push (deploys the revert) |
 
+## Restarts and running jobs
+
+A restart kills whatever job is running. Two things soften that:
+
+- **`deploy.sh` refuses to restart a busy server.** It asks
+  `/api/health` first (`"busy": true` while any job is queued or running)
+  and exits before pulling or rebuilding anything. Wait for the job, or run
+  `FORCE_DEPLOY=1 bash deploy/deploy.sh` when you have looked and mean it. A
+  deploy triggered by a push to `main` fails the same way and can be re-run
+  from the Actions tab once the job has finished.
+- **The job list survives.** It is saved to `projects/_learning/jobs.json`
+  (newest 200 jobs, last 300 log lines each). After a restart, a job that
+  was queued or running shows as **interrupted**, with its log. Nothing is
+  re-run automatically — re-running spends credits, and a restart is not a
+  decision to spend them. Run the same action again from the panel: finished
+  files are skipped, and a clip that was already submitted to the video
+  provider is fetched, not bought twice.
+
 ## What is deliberately NOT automated
 
 `projects/` holds the customers' real movies and is not in git. Rendering and

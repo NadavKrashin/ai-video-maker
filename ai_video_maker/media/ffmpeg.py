@@ -310,6 +310,7 @@ def _mux_music_cmd(
     sfx_volume: float,
     mix_with_existing: bool,
     loop: bool,
+    duck: bool = False,
 ) -> list[str]:
     """Build the ffmpeg command for mux_music (pure; unit-testable).
 
@@ -321,7 +322,19 @@ def _mux_music_cmd(
     """
     music_input = (["-stream_loop", "-1"] if loop else []) + ["-i", str(music)]
     pad = "" if loop else ",apad"
-    if mix_with_existing:
+    if mix_with_existing and duck:
+        # The SFX track keys a compressor on the music: when something
+        # happens on screen the bed dips a few dB and comes back, instead of
+        # the two fighting at fixed levels. The SFX is split because one copy
+        # is the sidechain key and the other is what you hear.
+        filter_graph = (
+            f"[0:a]volume={sfx_volume},asplit=2[s][key];"
+            f"[1:a]volume={music_volume}{pad}[m];"
+            f"[m][key]sidechaincompress=threshold=0.03:ratio=5:"
+            f"attack=20:release=450[md];"
+            f"[s][md]amix=inputs=2:duration=first:dropout_transition=0[a]"
+        )
+    elif mix_with_existing:
         filter_graph = (
             f"[0:a]volume={sfx_volume}[s];"
             f"[1:a]volume={music_volume}{pad}[m];"
@@ -345,6 +358,7 @@ def mux_music(
     music_volume: float,
     sfx_volume: float = 1.0,
     loop: bool = False,
+    duck: bool = False,
 ) -> None:
     """Mix a music track into `video`'s audio, in place.
 
@@ -367,6 +381,7 @@ def mux_music(
         sfx_volume=max(0.0, min(1.0, sfx_volume)),
         mix_with_existing=has_audio_stream(video),
         loop=loop,
+        duck=duck,
     )
 
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -585,43 +600,104 @@ def render_letter_overlay(
         )
 
 
-def _end_fade_cmd(
-    video: Path, dst: Path, start: float, seconds: float, has_audio: bool
+def _delivery_cmd(
+    video: Path,
+    dst: Path,
+    *,
+    crf: int = 18,
+    fade_start: float = 0.0,
+    fade_seconds: float = 0.0,
+    has_audio: bool = False,
+    target_lufs: Optional[float] = None,
+    faststart: bool = False,
 ) -> list[str]:
-    """Build the ffmpeg command fading the video's ending to black (pure)."""
-    cmd = [
-        "ffmpeg", "-y", "-i", str(video),
-        "-vf", f"fade=t=out:st={start:.3f}:d={seconds:.3f}",
-    ]
+    """Build the ONE re-encode that turns the assembled movie into the file a
+    customer receives (pure; unit-testable).
+
+    Everything that needs a full re-encode rides in this single pass, because
+    each extra generation costs quality and minutes: the closing fade to
+    black, the loudness normalisation, the delivery bitrate (``crf``) and the
+    ``faststart`` flag that moves the index to the front of the file so a
+    phone starts playing before the download finishes.
+    """
+    cmd = ["ffmpeg", "-y", "-i", str(video)]
+    if fade_seconds > 0:
+        cmd += ["-vf", f"fade=t=out:st={fade_start:.3f}:d={fade_seconds:.3f}"]
     if has_audio:
-        cmd += ["-af", f"afade=t=out:st={start:.3f}:d={seconds:.3f}"]
-    cmd += ["-c:v", "libx264", "-crf", "18", "-preset", "medium"]
+        filters = []
+        if target_lufs is not None:
+            # Single-pass EBU R128. Before the fade, so the fade-out is not
+            # "corrected" back up by the normaliser.
+            filters.append(f"loudnorm=I={target_lufs:g}:TP=-1.5:LRA=11")
+        if fade_seconds > 0:
+            filters.append(f"afade=t=out:st={fade_start:.3f}:d={fade_seconds:.3f}")
+        if filters:
+            cmd += ["-af", ",".join(filters)]
+    cmd += ["-c:v", "libx264", "-crf", str(crf), "-preset", "medium",
+            "-pix_fmt", "yuv420p"]
     if has_audio:
-        cmd += ["-c:a", "aac"]
+        # loudnorm resamples to 192 kHz internally; pin the rate back.
+        cmd += ["-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
+    if faststart:
+        cmd += ["-movflags", "+faststart"]
     return cmd + [str(dst)]
 
 
-def apply_end_fade(video: Path, seconds: float) -> None:
-    """Fade the last `seconds` of `video` to black (and its audio to silence),
-    in place. Run AFTER the music mux so the music bed fades too."""
+def _end_fade_cmd(
+    video: Path, dst: Path, start: float, seconds: float, has_audio: bool
+) -> list[str]:
+    """The fade-only delivery command (kept for callers that want just that)."""
+    return _delivery_cmd(
+        video, dst, fade_start=start, fade_seconds=seconds, has_audio=has_audio
+    )
+
+
+def apply_delivery_encode(
+    video: Path,
+    *,
+    fade_seconds: float = 0.0,
+    crf: int = 18,
+    target_lufs: Optional[float] = None,
+    faststart: bool = True,
+) -> None:
+    """Re-encode `video` in place into its delivery form. Run LAST, after the
+    music mux, so the music bed is faded and normalised with everything else.
+
+    A fade that does not fit (movie shorter than twice the fade) is dropped
+    with a warning; the rest of the pass still runs, because the bitrate and
+    the faststart flag are worth having on a short movie too.
+    """
     _require_ffmpeg()
     _require_ffmpeg("ffprobe")
-    duration = ffprobe_duration(video)
-    if not duration or duration <= 2 * seconds:
-        logger.warning(
-            "End fade skipped: %s is too short (%.1fs).", video.name, duration or 0
-        )
-        return
-    tmp = video.with_suffix(".fade.mp4")
-    cmd = _end_fade_cmd(
-        video, tmp, duration - seconds, seconds, has_audio_stream(video)
+    fade_start = 0.0
+    if fade_seconds > 0:
+        duration = ffprobe_duration(video)
+        if not duration or duration <= 2 * fade_seconds:
+            logger.warning(
+                "End fade skipped: %s is too short (%.1fs).",
+                video.name, duration or 0,
+            )
+            fade_seconds = 0.0
+        else:
+            fade_start = duration - fade_seconds
+    tmp = video.with_suffix(".delivery.mp4")
+    cmd = _delivery_cmd(
+        video, tmp, crf=crf, fade_start=fade_start, fade_seconds=fade_seconds,
+        has_audio=has_audio_stream(video), target_lufs=target_lufs,
+        faststart=faststart,
     )
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         tmp.unlink(missing_ok=True)
         raise RuntimeError(
-            f"ffmpeg end fade failed:\n{result.stderr.strip()[-1500:]}"
+            f"ffmpeg delivery encode failed:\n{result.stderr.strip()[-1500:]}"
         )
     tmp.replace(video)
+
+
+def apply_end_fade(video: Path, seconds: float) -> None:
+    """Fade the last `seconds` of `video` to black (and its audio to silence),
+    in place. Kept for callers that want only the fade."""
+    apply_delivery_encode(video, fade_seconds=seconds, crf=18, faststart=False)
 
 

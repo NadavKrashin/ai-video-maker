@@ -1001,6 +1001,38 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   `v=` cache-buster (`fileUrl`'s 4th argument, bumped by the panel's poll
   and once more when a job settles); without it a regenerated frame kept
   showing its previous version and looked like the button did nothing.
+- THE PANEL HAS URLS, ONE ATTENTION LIST AND A REVIEW QUEUE (2026-11-11).
+  (1) Tab and open project live in the URL HASH (`#/projects`,
+  `#/project/<name>`; `readRoute` in App.jsx): refresh keeps your place,
+  back works, a project can be bookmarked. Hash on purpose — it never
+  reaches the server, so `serve` needs no catch-all route and the API is
+  untouched. `ProjectDetail` is keyed by name so switching projects by URL
+  remounts instead of showing the previous project's unsaved edits.
+  (2) `AttentionCard` at the top of the project page lists every open item,
+  worst first, each row jumping to where it is fixed (clip cards carry
+  `id="clip-<id>"`). It adds NO state and NO endpoint: every count is read
+  from the snapshot. When adding a new "this is out of date" signal to the
+  snapshot, add its row to `attention` in ProjectDetail.jsx too — a signal
+  that is only a badge on a card somewhere is the problem this card exists
+  to end. (3) `ReviewQueue` plays the rendered clips in order with keys
+  (arrows, F = needs fixing, G = good/next). It only toggles the existing
+  clip-flag worklist; it never renders, re-plans or spends.
+  All three were checked in a real browser against real projects. To run
+  the panel locally on the MacBook: the in-app preview launcher CANNOT read
+  `~/Documents` (macOS privacy), so start `serve` from Bash with a throwaway
+  `ADMIN_API_TOKEN` in the environment and open the URL in the browser pane.
+- A CLIP IS VALUED AT THE MODEL THAT RENDERED IT (2026-11-11). The
+  "estimated from the files on disk" figure priced every clip at
+  `config.pricing.clip_usd_per_second`, so moving the studio default to
+  Kling 3 made every finished Kling 2.5 movie's estimate jump 60% — one real
+  project read 26.44 USD instead of 18.88. `_clip_rate` (runner.py) uses the
+  model id recorded in the clip's state; a clip with NO recorded model
+  predates that record and was Kling 2.5 (`_LEGACY_CLIP_USD_PER_SECOND`).
+  General shape of the trap: a price that follows the CURRENT setting must
+  never be applied to work that was bought under a previous one.
+  Still not done from the Phase 6 list: source photo beside the styled frame,
+  keeping the previous take of a re-rendered clip, a phone layout pass, and
+  server-sent events instead of the 3s poll.
 - DELETING A PROJECT IS THE ONE IRREVERSIBLE PANEL ACTION (user request,
   2026-08-16). `DELETE /api/projects/<n>?confirm=<n>` + a red button at the
   BOTTOM of the project page (deliberately far from the step tiles).
@@ -1188,6 +1220,23 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   reaches it exclusively through a Cloudflare Tunnel, with Cloudflare Access
   (email OTP) in front of the app's own token — two auth layers. Server
   logs: `~/Library/Logs/animoments/serve.log`.
+- JOBS SURVIVE A RESTART, AND A DEPLOY REFUSES TO CAUSE ONE MID-JOB
+  (2026-11-11). The JobRunner kept everything in memory, so a deploy or
+  crash erased the queue and the log of the running job. Now:
+  `projects/_learning/jobs.json` (newest 200 jobs, 300 log lines each,
+  atomic write, best-effort — a full disk costs the history, never the job),
+  restored on startup with anything that was queued/running marked
+  `interrupted`. INTERRUPTED JOBS ARE NEVER RE-RUN AUTOMATICALLY: re-running
+  spends money and "the server restarted" is not a human deciding to spend
+  it — same rule as never auto-re-rendering a clip. Nothing polls pending
+  fal renders either; that rule is unchanged. `/api/health` now also returns
+  `busy`/`active_jobs` (a count only — the route is unauthenticated, so it
+  must never name a project or command), and `deploy/deploy.sh` checks it
+  FIRST and exits before pulling anything; `FORCE_DEPLOY=1` overrides. An
+  unreachable server counts as not busy. `JobRunner(history_path=None)`
+  writes nothing, which is what keeps tests out of the real projects/.
+  Pinned by tests/test_server_job_history.py (the deploy guard is tested by
+  running the real script against fake `curl`/`git`).
 - CI (`.github/workflows/ci.yml`): offline tests + pyflakes + panel build on
   every push/PR to dev/main. CD (`deploy.yml`): push to `main` → the mini's
   self-hosted runner runs `deploy/deploy.sh` (refuses a dirty tree, ff-only
@@ -1497,5 +1546,22 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   font-gated and only execute where a colour font exists. Apple Color Emoji
   itself is confirmed working there. Pinned by TestSegments (plain text and
   Hebrew must survive segmentation) / TestRenderWithEmoji.
+- THE FINISHED MOVIE GETS EXACTLY ONE FULL RE-ENCODE, AT THE END
+  (2026-11-11). `apply_delivery_encode` (media/ffmpeg.py) replaced the
+  separate end-fade pass: fade, loudness, delivery bitrate and `+faststart`
+  ride in a single command, because every extra generation costs quality
+  and minutes. Order inside the audio chain matters: loudnorm BEFORE afade,
+  or the normaliser pulls the fade-out back up. It runs even with no fade
+  configured, and a failure is a warning — the movie already exists and
+  plays. `final_crf` defaults to 20 (was a fixed 18) and `final_faststart`
+  to on; `audio_normalize` and `music_ducking` are OFF until the user has
+  listened (they change how every movie sounds — same rule as every other
+  taste default here). MEASURED, not estimated, on Itay-Kid's 186s movie:
+  crf 18 = 167 MB, 20 = 146, 22 = 119, 24 = 97; loudnorm moved it from -18.6
+  to exactly -16.0 LUFS. My earlier "CRF 21 halves it" claim came from a raw
+  35 MB Kling clip and did NOT hold for an assembled movie — it is 13% at
+  20. If files must get much smaller the lever is 22-24, not 20.
+  `projects/_canvas_test/delivery/` has before/after files to listen to.
+  Pinned by TestDeliveryEncode / TestMusicDucking / TestDeliveryConfig.
 - ffmpeg concat: mixed silent/sounded clips must go through the concat-filter
   path with silent padding (`_combine_clips_mixed_audio`), never the demuxer.

@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from ai_video_maker.costs import (
     KIND_CLIP,
     KIND_IMAGE,
@@ -213,3 +215,58 @@ class TestLedgerFileShape:
         data = json.loads(path.read_text(encoding="utf-8"))
         assert list(data) == ["entries"]
         assert data["entries"][0]["kind"] == KIND_CLIP
+
+
+class TestClipsAreValuedAtTheModelThatRenderedThem:
+    """Switching the studio's video model must not re-price old movies."""
+
+    def _project(self, make_pipeline, workspace, **config):
+        from ai_video_maker.models import Frame, Storyboard, Transition
+        for n in ("a", "b", "c"):
+            (workspace.styled_images_dir / f"{n}.png").write_bytes(b"x")
+        Storyboard(
+            project_title="t", style="s",
+            frames=[Frame(id=n, description="", image_prompt="",
+                          output_path=f"styled_images/{n}.png")
+                    for n in ("a", "b", "c")],
+            transitions=[
+                Transition(id=f"{x}_to_{y}", start_frame=f"styled_images/{x}.png",
+                           end_frame=f"styled_images/{y}.png", motion_prompt="m",
+                           duration=10, output_path=f"clips/{x}_to_{y}.mp4")
+                for x, y in (("a", "b"), ("b", "c"))
+            ],
+        ).save(workspace.default_storyboard_json)
+        for name in ("a_to_b.mp4", "b_to_c.mp4"):
+            (workspace.clips_dir / name).write_bytes(b"clip")
+        return make_pipeline()
+
+    def _clip_usd(self, pipeline):
+        return sum(
+            pipeline._clip_rate(name) * 10 for name in ("a_to_b.mp4", "b_to_c.mp4")
+        )
+
+    def test_clips_with_no_recorded_model_are_priced_as_kling_two_five(
+        self, make_pipeline, workspace
+    ):
+        pipeline = self._project(make_pipeline, workspace)
+        pipeline.config.pricing.clip_usd_per_second = 0.112  # today's model
+        assert self._clip_usd(pipeline) == pytest.approx(1.40)
+
+    def test_a_clip_is_priced_by_the_model_recorded_for_it(
+        self, make_pipeline, workspace
+    ):
+        pipeline = self._project(make_pipeline, workspace)
+        pipeline.state.set(
+            "clip:a_to_b.mp4", "done",
+            model="fal-ai/kling-video/v3/pro/image-to-video",
+        )
+        assert pipeline._clip_rate("a_to_b.mp4") == pytest.approx(0.112)
+        assert pipeline._clip_rate("b_to_c.mp4") == pytest.approx(0.07)
+
+    def test_an_unknown_recorded_model_uses_the_configured_price(
+        self, make_pipeline, workspace
+    ):
+        pipeline = self._project(make_pipeline, workspace)
+        pipeline.config.pricing.clip_usd_per_second = 0.5
+        pipeline.state.set("clip:a_to_b.mp4", "done", model="someone/new-model")
+        assert pipeline._clip_rate("a_to_b.mp4") == pytest.approx(0.5)

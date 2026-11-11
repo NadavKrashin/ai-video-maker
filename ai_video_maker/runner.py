@@ -49,7 +49,16 @@ from .clients.video import VideoClient
 from .config import LETTER_PLACEMENTS, Config, config_for_model
 from .constants import VALID_DURATIONS
 from .costs import KIND_CLIP, KIND_SFX, CostLedger, estimate_usd
-from .video_models import get_video_model, movie_costs, selectable_models
+from .video_models import (
+    get_video_model,
+    model_for_id,
+    movie_costs,
+    selectable_models,
+)
+
+# What a second of video cost before renders recorded their model: Kling 2.5
+# Turbo Pro, the only model this studio used until 2026-11.
+_LEGACY_CLIP_USD_PER_SECOND = 0.07
 from .errors import PipelineCancelled, PipelineError, StoryboardError
 from .clip_flags import ClipFlagStore
 from .feedback import (
@@ -66,7 +75,7 @@ from .intake import parse_order_folder, read_order_record, write_order_record
 from .logging_setup import logger
 from .media.ffmpeg import (
     apply_edge_fades,
-    apply_end_fade,
+    apply_delivery_encode,
     combine_clips,
     ffprobe_duration,
     find_generated_clips,
@@ -2173,15 +2182,30 @@ class Pipeline:
         if self.audio_enabled:
             self._add_music(music_file)
 
-        # Last touch: fade the closing moments to black, audio included.
-        if self.config.end_fade_seconds > 0:
-            try:
-                apply_end_fade(final_video, self.config.end_fade_seconds)
-                logger.info(
-                    "Faded the last %.1fs to black.", self.config.end_fade_seconds
-                )
-            except Exception as exc:  # noqa: BLE001 - cosmetic, never fatal
-                logger.warning("End fade skipped: %s", exc)
+        # Last touch, and the only full re-encode of the finished movie: the
+        # closing fade, loudness, delivery bitrate and faststart in ONE pass.
+        try:
+            before = final_video.stat().st_size
+            apply_delivery_encode(
+                final_video,
+                fade_seconds=max(0.0, self.config.end_fade_seconds),
+                crf=self.config.final_crf,
+                target_lufs=(
+                    self.config.audio_target_lufs
+                    if self.config.audio_normalize else None
+                ),
+                faststart=self.config.final_faststart,
+            )
+            logger.info(
+                "Delivery encode done (crf %d%s%s): %.0f MB -> %.0f MB.",
+                self.config.final_crf,
+                ", loudness normalised" if self.config.audio_normalize else "",
+                ", faded out" if self.config.end_fade_seconds > 0 else "",
+                before / 1e6, final_video.stat().st_size / 1e6,
+            )
+        except Exception as exc:  # noqa: BLE001 - the movie already exists
+            # and plays; a failed polish pass must never lose it.
+            logger.warning("Delivery encode skipped: %s", exc)
 
     def _presentation_flags(self) -> tuple[bool, bool, bool]:
         """(intro_clip, credits_photos, closing_letter): CLI wins over config."""
@@ -2707,6 +2731,7 @@ class Pipeline:
                 self.config.music_volume,
                 self.config.sfx_volume,
                 loop=self.config.music_loop,
+                duck=self.config.music_ducking,
             )
             self.state.set(job_id, "done")
             self.summary.music_added = True
@@ -3414,6 +3439,24 @@ class Pipeline:
             "retired": bool(preset.retired) if preset else False,
             "note": preset.note if preset else "",
         }
+
+    def _clip_rate(self, clip_file: str) -> float:
+        """USD per second for one rendered clip, by the model that made it.
+
+        A render records its model id in state. A clip with NO recorded model
+        predates that record, and everything rendered back then was Kling 2.5
+        — so that is what it is priced at, not at whatever is selected now.
+        A recorded model this registry does not know falls back to the
+        configured price, which is the best remaining guess.
+        """
+        entry = self.state.get(f"clip:{clip_file}") or {}
+        model_id = str(entry.get("model") or "")
+        if not model_id:
+            return _LEGACY_CLIP_USD_PER_SECOND
+        preset = model_for_id(model_id)
+        if preset is not None:
+            return preset.usd_per_second
+        return self.config.pricing.clip_usd_per_second
 
     def video_model_costs(
         self, storyboard: Optional[Storyboard]
@@ -4130,11 +4173,24 @@ class Pipeline:
             seconds_by_clip.get(str(c.get("id", "")), self.config.duration)
             for c in rendered
         )
-        estimated = estimate_usd(
-            self.config.pricing,
-            images=images,
-            clip_seconds=clip_seconds,
-            sfx_clips=sum(1 for c in rendered if c.get("sfx")),
+        # Each clip is valued at the price of the model that RENDERED it, not
+        # the model selected today. Pricing them all at the current model
+        # made every finished Kling 2.5 movie's estimate jump 60% the moment
+        # the studio default moved to Kling 3 — for clips that were bought
+        # months earlier at the old price.
+        clip_usd = sum(
+            self._clip_rate(str(c.get("file") or f"{c.get('id', '')}.mp4"))
+            * seconds_by_clip.get(str(c.get("id", "")), self.config.duration)
+            for c in rendered
+        )
+        estimated = round(
+            estimate_usd(
+                self.config.pricing,
+                images=images,
+                clip_seconds=0,
+                sfx_clips=sum(1 for c in rendered if c.get("sfx")),
+            ) + clip_usd,
+            6,
         )
         return {
             **recorded,

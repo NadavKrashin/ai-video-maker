@@ -17,6 +17,21 @@ HEALTH_URL="http://127.0.0.1:8300/api/health"
 
 cd "$REPO"
 
+# Never restart the server under a running job. A restart kills the job
+# mid-flight: paid clip renders stay recoverable, but the queue is cut off
+# and someone has to notice and re-run it. Checked FIRST, before anything is
+# pulled or rebuilt, so a refused deploy leaves the machine exactly as it
+# was. An unreachable server is not busy (first install, or already down).
+# Override with FORCE_DEPLOY=1 when you have looked and mean it.
+if [[ "${FORCE_DEPLOY:-0}" != "1" ]]; then
+  health="$(curl -fsS --max-time 3 "$HEALTH_URL" 2>/dev/null || true)"
+  if [[ "$health" == *'"busy":true'* || "$health" == *'"busy": true'* ]]; then
+    echo "deploy: a pipeline job is running on this server — refusing to restart it." >&2
+    echo "deploy: wait for it to finish (panel > the project's job list), or re-run with FORCE_DEPLOY=1." >&2
+    exit 1
+  fi
+fi
+
 # Never clobber local work: production deploys only ever fast-forward a
 # clean tree. A dirty tree means someone is mid-edit on the machine.
 if [[ -n "$(git status --porcelain)" ]]; then
