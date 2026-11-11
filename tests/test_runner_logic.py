@@ -1924,3 +1924,73 @@ class TestUnstageablePairsAreVisible:
         sb = self._tagged_storyboard(workspace, self.SIX)
         sb.save(workspace.default_storyboard_json)
         assert p.snapshot()["storyboard"]["unstageable_pairs"] == []
+
+
+class TestRepeatedExitStagingIsVisible:
+    """The snapshot lists exit-past-camera prompts only when overused."""
+
+    EXIT = "the boy steps forward past the camera and out of frame, then steps back in and waves"
+
+    def _snapshot(self, make_pipeline, workspace, exits):
+        names = ["a", "b", "c", "d", "e"]
+        p = make_pipeline(analyze_frames=False)
+        _make_frame_pairs(workspace, names)
+        sb = _save_slug_storyboard(workspace, names)
+        for t in sb.transitions[:exits]:
+            t.motion_prompt = self.EXIT
+        sb.save(workspace.default_storyboard_json)
+        return p.snapshot()["storyboard"]["repeated_exit_staging"]
+
+    def test_two_exits_in_a_movie_are_not_flagged(self, make_pipeline, workspace):
+        assert self._snapshot(make_pipeline, workspace, 2) == []
+
+    def test_three_exits_are_all_listed(self, make_pipeline, workspace):
+        assert self._snapshot(make_pipeline, workspace, 3) == [
+            "a_to_b", "b_to_c", "c_to_d"
+        ]
+
+
+class TestReplanSurvivesAPhotoBeingAdded:
+    """A requested pair that no longer exists is stale, not a typo.
+
+    Real failure (am-101126-unaq, 2026-11-12): a photo was added, which
+    turned pair 15_to_17 into 15_to_16 + 16_to_17. The panel's "Re-plan
+    all" sent the pair names from the storyboard saved before that, and the
+    whole job died on "No such transition(s) to re-plan: 15_to_17" — so 27
+    of 29 prompts were never re-planned.
+    """
+
+    def test_a_pair_split_by_a_new_photo_is_skipped_not_fatal(
+        self, make_pipeline, workspace
+    ):
+        p = make_pipeline(analyze_frames=False, motion_prompt="fresh",
+                          replan_clips=["a_to_b", "b_to_c"], tag_frames=False)
+        _save_slug_storyboard(workspace, ["a", "b", "c"])
+        saved = Storyboard.load(workspace.default_storyboard_json)
+        pairs = _make_frame_pairs(workspace, ["a", "x", "b", "c"])
+        sb, replanned, _ = p._reconcile_storyboard(saved, pairs)
+        # a_to_b is gone; its replacements are new pairs and planned anyway,
+        # and the still-existing requested pair is re-planned as asked.
+        assert sorted(replanned) == ["a_to_x", "b_to_c", "x_to_b"]
+        assert {t.id: t.motion_prompt for t in sb.transitions}["b_to_c"] == "fresh"
+
+    def test_a_real_typo_still_fails_loudly(self, make_pipeline, workspace):
+        p = make_pipeline(analyze_frames=False, replan_clips=["nope_to_nada"])
+        _save_slug_storyboard(workspace, ["a", "b", "c"])
+        saved = Storyboard.load(workspace.default_storyboard_json)
+        pairs = _make_frame_pairs(workspace, ["a", "x", "b", "c"])
+        with pytest.raises(PipelineError, match="nope_to_nada"):
+            p._reconcile_storyboard(saved, pairs)
+
+    def test_replan_all_covers_the_pairs_as_they_are_now(
+        self, make_pipeline, workspace
+    ):
+        # What the panel's "Re-plan all" now sends.
+        p = make_pipeline(analyze_frames=False, motion_prompt="fresh",
+                          replan_all=True, tag_frames=False)
+        _save_slug_storyboard(workspace, ["a", "b", "c"])
+        saved = Storyboard.load(workspace.default_storyboard_json)
+        pairs = _make_frame_pairs(workspace, ["a", "x", "b", "c"])
+        sb, replanned, _ = p._reconcile_storyboard(saved, pairs)
+        assert sorted(replanned) == ["a_to_x", "b_to_c", "x_to_b"]
+        assert all(t.motion_prompt == "fresh" for t in sb.transitions)

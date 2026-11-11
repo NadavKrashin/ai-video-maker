@@ -37,6 +37,7 @@ from .clients.cloudinary_client import (
 )
 from .clients.download import download_file
 from .clients.openai_client import (
+    EXIT_STAGING_LIMIT,
     OpenAIClient,
     camera_shift_prompt,
     ends_offscreen,
@@ -44,6 +45,7 @@ from .clients.openai_client import (
     is_camera_transition,
     is_clothing_anchored,
     is_unstageable_pair,
+    overused_exit_staging,
 )
 from .clients.video import VideoClient
 from . import previous_takes
@@ -1039,6 +1041,23 @@ class Pipeline:
             set(all_tids) if self.options.replan_all
             else set(self.options.replan_clips or [])
         )
+        # A requested pair that no longer EXISTS is not a typo. Adding or
+        # removing a photo re-pairs the frames (15_to_17 becomes 15_to_16 +
+        # 16_to_17), but the panel builds its request from the storyboard
+        # saved BEFORE that, so it still names the old pair. Refusing the
+        # whole job for that made "Re-plan all" fail on a real order right
+        # after a photo was added, and nothing was re-planned at all. The
+        # pairs that replaced it are new, so they are planned anyway.
+        gone = (requested - all_tids) & {
+            t.id for t in (saved.transitions if saved else [])
+        }
+        if gone:
+            logger.info(
+                "Skipping %d requested pair(s) that no longer exist after a "
+                "photo was added or removed: %s. The pairs that replaced "
+                "them are planned as new.", len(gone), ", ".join(sorted(gone)),
+            )
+            requested -= gone
         unknown = requested - all_tids
         if unknown:
             raise PipelineError(
@@ -3208,6 +3227,18 @@ class Pipeline:
                         self.style_reference_plan(storyboard).items()
                     },
                 ),
+                # Prompts that send people out past the camera, listed
+                # only when the movie uses that move more than
+                # EXIT_STAGING_LIMIT times: the body-wipe is a trick once
+                # and a tic by the third time. Visible, never rewritten;
+                # the fix is re-planning or editing the ones that don't
+                # need it.
+                "repeated_exit_staging": [
+                    storyboard.transitions[i].id
+                    for i in overused_exit_staging(
+                        [t.motion_prompt for t in storyboard.transitions]
+                    )
+                ],
                 # Pairs already carrying a camera-family prompt. Exposed so
                 # the panel doesn't have to re-implement the recognition
                 # (`is_camera_transition` is strict-family on purpose, and a
@@ -4495,6 +4526,17 @@ class Pipeline:
                 f"{', '.join(unstageable[:6])}"
                 f"{' …' if len(unstageable) > 6 else ''}\n"
                 "     Re-plan them to get camera transitions instead."
+            )
+
+        # One staging leaned on across the movie (see EXIT_STAGING_LIMIT).
+        exits = (snap["storyboard"] or {}).get("repeated_exit_staging") or []
+        if exits:
+            print(
+                f"  !! {len(exits)} prompts send people out past the camera "
+                f"and back (more than {EXIT_STAGING_LIMIT} reads as a "
+                f"repeated trick): {', '.join(exits[:6])}"
+                f"{' …' if len(exits) > 6 else ''}\n"
+                "     Re-plan them, or edit the ones that don't need it."
             )
 
         for clip in snap["clips"]:

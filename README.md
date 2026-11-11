@@ -521,6 +521,7 @@ without you asking:
 | A **prompt that was never really planned** (a quota failure left the generic fallback) | “generic prompt” badge | Run `storyboard` again |
 | A **paid render** that was never collected | listed as a pending render | Collect it (free) before editing that clip |
 | The **final movie**, built before a clip was re-rendered | `status` says so | `combine --force` (free, local) |
+| **One staging used too often**: more than two prompts send someone out past the camera and back | a row in “Needs attention”; “exit past camera · used N×” on each clip; a `status` line | Re-plan those pairs, or edit the ones that don't need it |
 
 The rule behind all of them: tags, cast names and lessons are *plan-time*
 inputs — they change what the planner is told next time, never a prompt that
@@ -769,6 +770,26 @@ itself: a swapped pair is forced to a 10-second clip, and if its motion
 prompt has nobody crossing or leaving frame, a targeted rewrite restages it
 as an exit past the camera plus a walk back in. Prompt-side instructions
 alone kept missing these.
+
+**The same people in a new place stay in the picture.** Most pairs in a
+movie of one child growing up, or of one trip after another, are "the same
+person, somewhere else". The planner is told to keep them in frame with one
+real movement that ends in the end frame's pose (a turn, a wave, a crouch,
+landing a jump) and let the two photos carry the change of place. It rates
+such a pair as one beat, so it becomes a 5-second clip. It is told *not* to
+walk them out past the camera for this: a body filling the lens hides a cut
+behind it, and a real plan used that move on six pairs of one movie. The
+exit past the camera is kept for when somebody really has to get on or off
+screen, or to the other side of someone. If a movie still ends up with more
+than two such prompts, `status` and the panel say so. Nothing is rewritten
+for you.
+
+**“Re-plan all” survives added and removed photos.** Adding a photo
+re-pairs the frames around it (`15_to_17` becomes `15_to_16` + `16_to_17`).
+The panel now asks for "all pairs" instead of listing pair names from the
+saved storyboard, and `--replan-clip` skips a named pair that no longer
+exists after such a change (its replacements are planned as new). A name
+that never existed still fails loudly.
 
 <a id="keeping-a-face-the-same-face"></a>
 
