@@ -769,7 +769,7 @@ function LetterEditor({ text, onSave, busy }) {
   );
 }
 
-function StoryboardPanel({ ask, locked, info, onReplanAll }) {
+function StoryboardPanel({ ask, locked, info, onReplanAll, look, onLook, lookBusy }) {
   const [idea, setIdea] = useState('');
   const [frameCount, setFrameCount] = useState('');
   const [stylePrompt, setStylePrompt] = useState('');
@@ -785,6 +785,7 @@ function StoryboardPanel({ ask, locked, info, onReplanAll }) {
     if (duration) o.duration = Number(duration);
     if (!analyze) o.analyze_frames = false;
     if (force) o.force = true;
+    const lookName = look?.label || 'the current look';
     ask({
       title: 'Run storyboard?',
       lines: fromIdea ? [
@@ -792,10 +793,10 @@ function StoryboardPanel({ ask, locked, info, onReplanAll }) {
         'Then plans a motion prompt for every pair of frames.'
       ] : [
         force
-          ? `Re-styles ALL ${info.photoCount} photo(s) from scratch (force).`
+          ? `Re-styles ALL ${info.photoCount} photo(s) from scratch (force), in the “${lookName}” look.`
           : info.unstyledCount > 0
-            ? `Styles ${info.unstyledCount} new/changed photo(s) into the cartoon look (${info.photoCount - info.unstyledCount} already styled are reused).`
-            : 'All photos are already styled — they are reused as-is.',
+            ? `Styles ${info.unstyledCount} new/changed photo(s) in the “${lookName}” look (${info.photoCount - info.unstyledCount} already styled are reused as they are).`
+            : `All photos are already styled — they are reused as-is (tick “Force re-style all photos” to redo them in the “${lookName}” look).`,
         'Plans motion prompts only for new/changed pairs — existing prompts and your hand edits are kept.',
         'Then takes a first guess at who is in each untagged photo, so step 2 starts from something to correct rather than a blank slate (one extra vision call; photos you have already tagged are untouched).',
         'Nothing is deleted: if a re-plan affects an already-rendered clip, that clip is only marked "outdated".'
@@ -813,6 +814,21 @@ function StoryboardPanel({ ask, locked, info, onReplanAll }) {
         again after edits is safe. The result stops here for your review —
         nothing renders until you say so.
       </PanelIntro>
+      {look && (
+        <Group mb="sm" gap="sm" align="flex-end">
+          <div>
+            <Text size="sm" fw={500} mb={2}>Look</Text>
+            <SegmentedControl size="xs" disabled={locked || lookBusy}
+              value={look.value} onChange={onLook}
+              data={(look.choices || []).map((c) => ({ value: c.value, label: c.label }))} />
+          </div>
+          <Text size="xs" c="dimmed" style={{ flex: 1 }} miw={220}>
+            Saved for this project right away (free). Applies to photos styled
+            from now on — photos already styled keep their look unless you tick
+            “Force re-style all photos” below.
+          </Text>
+        </Group>
+      )}
       <Textarea
         label="Idea"
         description="Leave empty to storyboard from the project's photos; fill to invent frames from text"
@@ -1042,6 +1058,14 @@ function ProjectSettingsCard({ settings, locked, busy, onSave, onReset }) {
                 <Checkbox label={s.label} checked={Boolean(valueOf(s))}
                   disabled={locked}
                   onChange={(e) => edit(s.key, e.target.checked)} />
+              ) : s.kind === 'choice' ? (
+                <div>
+                  <Text size="xs" fw={500} mb={2}>{s.label}</Text>
+                  <SegmentedControl size="xs" disabled={locked}
+                    value={valueOf(s)}
+                    onChange={(v) => edit(s.key, v)}
+                    data={(s.choices || []).map((c) => ({ value: c.value, label: c.label }))} />
+                </div>
               ) : (
                 <NumberInput label={s.label} w={150} size="xs"
                   min={s.minimum ?? undefined} max={s.maximum ?? undefined}
@@ -2853,7 +2877,15 @@ export default function ProjectDetail({ name, onBack }) {
 
   const panels = {
     storyboard: <StoryboardPanel ask={ask} locked={locked} info={info}
-      onReplanAll={replanAll} />,
+      onReplanAll={replanAll}
+      look={(() => {
+        const s = (snap.settings || []).find((x) => x.key === 'style_realism');
+        if (!s) return null;
+        const chosen = (s.choices || []).find((c) => c.value === s.value);
+        return { value: s.value, label: chosen?.label, choices: s.choices };
+      })()}
+      lookBusy={busyAction === 'settings'}
+      onLook={(v) => saveSettings({ style_realism: v })} />,
     people: <PeoplePanel locked={locked} info={info}
       onPropose={askForTagSuggestions} onReplanAll={replanAll}
       onReplanOutdated={replanOutdated}

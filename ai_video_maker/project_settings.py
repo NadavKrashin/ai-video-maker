@@ -25,6 +25,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from .style_realism import STYLE_REALISM_LABELS, STYLE_REALISM_LEVELS
+
 
 @dataclass(frozen=True)
 class ProjectSetting:
@@ -32,19 +34,28 @@ class ProjectSetting:
 
     key: str
     label: str
-    kind: str                 # "int" | "bool"
+    kind: str                 # "int" | "bool" | "choice"
     help: str
     # Where the value takes effect, so the card can say what to run next
     # instead of leaving the user to guess why nothing changed.
     applies: str
     minimum: Optional[int] = None
     maximum: Optional[int] = None
+    # For kind "choice": (value, label) pairs, in the order to show them.
+    choices: tuple[tuple[str, str], ...] = ()
 
     def coerce(self, value: Any) -> Any:
         """Validate one incoming value. Raises ValueError with a reason."""
         if self.kind == "bool":
             if not isinstance(value, bool):
                 raise ValueError(f"{self.key} must be true or false")
+            return value
+        if self.kind == "choice":
+            allowed = [v for v, _ in self.choices]
+            if value not in allowed:
+                raise ValueError(
+                    f"{self.key} must be one of: {', '.join(allowed)}"
+                )
             return value
         # bool is a subclass of int in Python, and `True` arriving for a
         # threshold is a caller mistake worth naming rather than storing as 1.
@@ -80,10 +91,11 @@ PROJECT_SETTINGS: tuple[ProjectSetting, ...] = (
         maximum=30,
         applies="re-plan",
         help=(
-            "Above this many visible people in either frame, ANY change to who "
-            "is in the group hands the pair to the camera — in a crowd an "
-            "epithet stops picking anyone out. A group that stays the same on "
-            "both sides is never affected."
+            "Above this many people who matter in the shot (clearly visible "
+            "individuals; small background figures don't count) in either "
+            "frame, ANY change to who is in the group hands the pair to the "
+            "camera — in a crowd an epithet stops picking anyone out. A group "
+            "that stays the same on both sides is never affected."
         ),
     ),
     ProjectSetting(
@@ -108,6 +120,29 @@ PROJECT_SETTINGS: tuple[ProjectSetting, ...] = (
             "crisp face among several drifting ones can read worse than all of "
             "them drifting together) and ON rescues the most recurring face. "
             "Worth A/B-ing on a single clip."
+        ),
+    ),
+)
+
+# The look is a CHOICE rather than a bool so a further level can be added
+# without changing what is stored on disk.
+PROJECT_SETTINGS = PROJECT_SETTINGS + (
+    ProjectSetting(
+        key="style_realism",
+        label="Look",
+        kind="choice",
+        applies="restyle",
+        choices=tuple(
+            (level, STYLE_REALISM_LABELS[level]) for level in STYLE_REALISM_LEVELS
+        ),
+        help=(
+            "How cartoon the styled frames come out, on the same image model. "
+            "Lifelike keeps people closest to their real faces (the current "
+            "look). Classic cartoon renders skin, hair, clothes and light the "
+            "way the studio's earlier movies looked, without changing faces. "
+            "Frames already styled keep their look until re-styled: re-run "
+            "Storyboard with \u201cForce re-style all photos\u201d to redo every "
+            "photo in the new look (spends image credits)."
         ),
     ),
 )
@@ -164,6 +199,7 @@ def describe_settings(config: Any, pinned: dict[str, Any]) -> list[dict[str, Any
             "applies": s.applies,
             "minimum": s.minimum,
             "maximum": s.maximum,
+            "choices": [{"value": v, "label": label} for v, label in s.choices],
             "value": getattr(config, s.key),
             "pinned": s.key in pinned,
         }

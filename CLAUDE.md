@@ -169,8 +169,20 @@ Core design rules:
   at any size; it is exits/entrances/crossings that mush. Because tags list
   who MATTERS, not who is THERE (real frame 12: ten aboard, two tagged, and
   the plan staged the two as if alone), the planner now returns
-  `start_heads`/`end_heads` — a census of every visible figure — and the
-  gate takes the max of census and roster. `_tagged_people_block` stops
+  `start_heads`/`end_heads` and the gate takes the max of census and
+  roster. THE CENSUS COUNTS PEOPLE WHO MATTER IN THE SHOT, NOT EVERY FIGURE
+  (user call, 2026-11-12). It used to say "every visible human figure", so
+  on am-101126-unaq one boy in front of a ski slope full of tiny skiers
+  (pair 12) and one boy at Pisa with tourists behind a fence (pair 15) read
+  as crowds and lost their transitions. Worse, a FIRST plan always runs
+  untagged (the cast must exist before tagging), so the gate used the
+  planner's own roster, and listed background extras became fake movers.
+  Census AND roster now mean "clearly visible individuals, tagged or not;
+  distant background figures are scenery". Both boundaries are pinned:
+  ten people seated together with two tagged still count as ten, and a
+  posed family counts every member. `describe_unstageable` logs each
+  camera decision in numbers plus the roster's source (tags vs the
+  planner's reading). It is a prompt-side definition, so judge it on renders. `_tagged_people_block` stops
   prescribing exit-and-entrance on gated pairs, and `_MODE_A_SYSTEM` has a
   matching "TOO MANY PEOPLE TO CHOREOGRAPH" block (hint only; the code is
   the guarantee). The gate reports WHICH rule fired
@@ -763,6 +775,32 @@ Core design rules:
   quality: sunburst is billed per token ($30 / 1M image-output tokens) and
   the real per-image cost has NOT been measured, so image spend estimates
   are unverified until checked against an invoice.
+- ...AND THE LOOK IS NOW A PER-PROJECT CHOICE (user, 2026-11-12: "my
+  customers might want it the same cartoony style as before ... use the
+  latest model still, just change the prompt"). `style_realism`
+  (config.py; `style_realism.py`; panel: Storyboard step "Look" switch and
+  Project settings card) is "lifelike" (default) or "cartoon".
+  - LIFELIKE ADDS NOTHING. The default must reach the model byte-for-byte as
+    the approved prompt, per the bullet above, and a test pins it.
+  - "cartoon" APPENDS `CARTOON_LOOK_LAYER` after the base prompt and before
+    lessons and per-frame notes, which are more specific and must refine it.
+    It pushes RENDERING only (skin, hair, fabric, light, background) and
+    explicitly re-asserts every likeness rule. Never let a cartoon level buy
+    enlarged eyes, slimmed faces or exaggerated proportions; those were
+    rejected before realism ever was.
+  - It is a PROJECT setting, not a per-run flag, so a later
+    `--restyle-frame` lands in the same look as the rest of the movie.
+  - Like lessons, it is applied per call and never written into
+    `storyboard.style`, so switching looks never marks frames out of date.
+    Re-styling is the explicit, credit-spending "Force re-style all photos".
+  - It also applies to frames invented from an idea.
+  - CLI users set `"style_realism"` in `projects/<n>/config.json`, the same
+    file the panel writes; that is the parity. A per-run flag was rejected
+    because it would let one restyled frame drift into another look.
+  - Kind "choice" was added to `project_settings.py` for it.
+  - The cartoon layer has NOT been checked on a render yet. Style one photo
+    each way before trusting it on an order.
+  Pinned by tests/test_style_realism.py + TestTheLookFromThePanel.
 - Styling must preserve LIKENESS while being an unmistakable Pixar-style
   cartoon: the whole scene (people, clothing, background) renders as a
   stylized 3D animated film still — never near-photorealistic — but with

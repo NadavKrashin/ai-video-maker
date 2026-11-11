@@ -126,6 +126,7 @@ from .models import (
 )
 from .options import RunOptions
 from .project_settings import describe_settings, setting_keys
+from .style_realism import with_style_realism
 from .publish import (
     publish_state,
     published_versions,
@@ -789,6 +790,15 @@ class Pipeline:
         explicit ``--restyle-frame``, never as a surprise credit spend.
         """
         style_prompt = self.options.style_prompt or self.config.style_prompt
+        # The project's chosen look (Project settings -> "Look"). Added for
+        # the call only, right after the base and before the more specific
+        # lessons and per-frame notes, which refine it. Like lessons, it is
+        # never written into storyboard.style, so switching looks never
+        # makes existing frames read as out of date. Re-styling them is the
+        # explicit, credit-spending step.
+        style_prompt = with_style_realism(
+            style_prompt, self.config.style_realism
+        )
         # Lessons learned from earlier styled frames ride along with the
         # prompt for the CALL only — the storyboard keeps recording the plain
         # style prompt, so a new lesson never looks like a changed style and
@@ -1737,7 +1747,8 @@ class Pipeline:
 
             # Reinforce style consistency in every prompt.
             full_prompt = (
-                f"{frame.image_prompt}\n\nStyle: {storyboard.style}"
+                f"{frame.image_prompt}\n\nStyle: "
+                + with_style_realism(storyboard.style, self.config.style_realism)
             )
             if frame.negative_prompt:
                 full_prompt += f"\n\nAvoid: {frame.negative_prompt}"

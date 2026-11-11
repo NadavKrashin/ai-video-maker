@@ -940,8 +940,9 @@ _MODE_A_SYSTEM = (
     "TOO MANY PEOPLE TO CHOREOGRAPH: exit-and-entrance staging is for a FEW "
     "people — it does not scale. When more than {{MOVER_BUDGET}} people would "
     "have to leave or arrive between the two frames, or either frame holds "
-    "{{OVER_CROWD_LIMIT}} or more visible people and the roster or "
-    "arrangement changes, per-person "
+    "{{OVER_CROWD_LIMIT}} or more people who matter in the shot — clearly "
+    "visible individuals, never distant background figures — and the "
+    "roster or arrangement changes, per-person "
     "choreography cannot fit the beat budget, and the video model answers a "
     "many-body staging with ghost dissolves, bodies blending into each "
     "other, and people vanishing — a real movie staged seven exits and "
@@ -1214,12 +1215,20 @@ _TRANSITIONS_SCHEMA: dict[str, Any] = {
                     # not chosen by the model — prompt-side "prefer 5" biases
                     # produced all-5s and all-10s plans on real projects.
                     "difficulty": {"type": "integer", "enum": [1, 2, 3, 4, 5]},
-                    # A census of the pixels, not the cast: EVERY visible
-                    # human figure in each frame, including background
-                    # people nobody tagged. Confirmed tags list who MATTERS,
-                    # and a real frame held ten people with two tagged — the
-                    # plan staged those two as if they were alone and the
-                    # render collapsed the other eight. Code takes the
+                    # How many PEOPLE WHO MATTER IN THE SHOT each frame
+                    # holds — everyone clearly visible as an individual,
+                    # tagged or not — but NOT distant background figures.
+                    # Two real failures bound this definition. Too narrow:
+                    # a frame held ten people sitting together with two
+                    # tagged, the plan staged those two as if alone, and the
+                    # render collapsed the other eight — so untagged but
+                    # clearly visible people count. Too wide (2026-11-12,
+                    # user call): it used to say "every visible human
+                    # figure", so one boy in front of a ski slope or a row
+                    # of tiny tourists at Pisa read as a crowd and lost his
+                    # transition to a camera move. Kling struggles to keep
+                    # several RECOGNIZABLE people apart; it never has to
+                    # identify a speck in the background. Code takes the
                     # larger of this count and the roster when deciding
                     # whether a pair can be staged at all
                     # (is_unstageable_pair).
@@ -1806,6 +1815,25 @@ def unstageable_reason(
         return None
     budget = _MOVER_BUDGET if mover_budget is None else mover_budget
     limit = _CROWD_LIMIT if crowd_limit is None else crowd_limit
+    movers, crowd = _gate_measure(start_order, end_order, start_heads, end_heads)
+    if movers > budget:
+        return "movers"
+    if crowd <= limit:
+        return None
+    if movers > 0 or is_arrangement_swap(start_order, end_order):
+        return "crowd"
+    return None
+
+
+def _gate_measure(
+    start_order: list, end_order: list,
+    start_heads: Any = None, end_heads: Any = None,
+) -> tuple[int, int]:
+    """(movers, crowd) for a pair — the two numbers the gate decides on.
+
+    One function for both the decision and the explanation of it, so the
+    log line can never describe numbers the gate did not use.
+    """
     starts = [_person_tokens(n) for n in start_order]
     ends = [_person_tokens(n) for n in end_order]
     pairs = _match_people(starts, ends)
@@ -1813,17 +1841,43 @@ def unstageable_reason(
         movers = abs(len(starts) - len(ends))
     else:
         movers = (len(starts) - len(pairs)) + (len(ends) - len(pairs))
-    if movers > budget:
-        return "movers"
     crowd = max(
         len(starts), len(ends),
         _head_count(start_heads), _head_count(end_heads),
     )
-    if crowd <= limit:
-        return None
-    if movers > 0 or is_arrangement_swap(start_order, end_order):
-        return "crowd"
-    return None
+    return movers, crowd
+
+
+def describe_unstageable(
+    start_order: Any, end_order: Any,
+    start_heads: Any = None, end_heads: Any = None,
+    mover_budget: Optional[int] = None, crowd_limit: Optional[int] = None,
+) -> str:
+    """Why the gate turned this pair into a camera move, in numbers ("" = it didn't).
+
+    The log used to say "too many movers or too crowded" for every pair,
+    which is how a real order (am-101126-unaq) hid that pairs 12 and 15 —
+    one boy in each frame, with small skiers and tourists far behind him —
+    were gated on figures the planner had counted in the background.
+    """
+    reason = unstageable_reason(
+        start_order, end_order, start_heads, end_heads,
+        mover_budget, crowd_limit,
+    )
+    if reason is None:
+        return ""
+    budget = _MOVER_BUDGET if mover_budget is None else mover_budget
+    limit = _CROWD_LIMIT if crowd_limit is None else crowd_limit
+    movers, crowd = _gate_measure(start_order, end_order, start_heads, end_heads)
+    if reason == "movers":
+        return f"{movers} people leave or arrive (budget {budget})"
+    change = (
+        f"{movers} {'person' if movers == 1 else 'people'} leave or arrive"
+        if movers else "the group rearranges"
+    )
+    return (
+        f"{crowd} people clearly visible (limit {limit}) and {change}"
+    )
 
 
 def is_unstageable_pair(
@@ -2750,13 +2804,18 @@ class OpenAIClient:
             "order. pair_index anchors each item to its frames: the item with "
             "pair_index k animates frame k into frame k+1 (pair_index 1 = "
             "frame 001 into 002), and its motion_prompt must END at exactly "
-            "what frame k+1 shows. start_heads and end_heads are a CENSUS of "
-            "frame k and frame k+1: count every visible human figure, "
-            "including background people, crowds, and anyone not in the cast "
-            "or the confirmed tags (the tags say who matters; this count "
-            "says how full the frame is — both are wanted, and the census is "
-            "never limited by the tags). start_order and end_order list every "
-            "person visible in frame k and in frame k+1 respectively, LEFT TO "
+            "what frame k+1 shows. start_heads and end_heads count the PEOPLE "
+            "WHO MATTER IN THE SHOT in frame k and frame k+1: every person "
+            "clearly visible as an individual — large enough that their face "
+            "or body is recognizable, a real part of the picture — whether or "
+            "not they are in the cast or the confirmed tags. Do NOT count "
+            "distant background figures: passersby, skiers or swimmers far "
+            "off, tourists behind a fence, a crowd in the distance — those "
+            "are SCENERY, not people the clip has to keep track of. A family "
+            "posed together counts every member; one boy in front of a busy "
+            "ski slope counts 1. start_order and end_order list those same "
+            "people — everyone you counted, never the background figures — in "
+            "frame k and in frame k+1 respectively, LEFT TO "
             "RIGHT as they appear in that image, each by the same epithet the "
             "motion_prompt uses — fill these in by LOOKING at the two images "
             "before writing the motion. Rate difficulty by how much the two "
@@ -2887,11 +2946,15 @@ class OpenAIClient:
         """
         items = _realign_by_pair_index(data.get("transitions") or [], count)
 
+        def tagged(i: int) -> bool:
+            """Are both of pair i's frames tagged by a human?"""
+            tags = frame_people or []
+            return i + 1 < len(tags) and tags[i] is not None and tags[i + 1] is not None
+
         def orders(i: int) -> tuple[Any, Any]:
             """(start_order, end_order) for pair i — tags first, model second."""
-            tags = frame_people or []
-            if i + 1 < len(tags) and tags[i] is not None and tags[i + 1] is not None:
-                return tags[i], tags[i + 1]
+            if tagged(i):
+                return frame_people[i], frame_people[i + 1]
             item = items[i] if i < len(items) and isinstance(items[i], dict) else {}
             return item.get("start_order"), item.get("end_order")
 
@@ -2947,10 +3010,21 @@ class OpenAIClient:
                     "choreography.", i + 1,
                 )
             if unstageable and not forced_people:
+                # Say WHY, in numbers, and whose roster it was. "Too many
+                # movers or too crowded" on every line is what hid that a
+                # real order's first plan — written before any tags existed —
+                # had counted small background figures as people.
                 logger.info(
-                    "Pair %d cannot be staged through its people (too many "
-                    "movers or too crowded); using a %ds camera transition.",
+                    "Pair %d -> %ds camera transition: %s (roster from %s).",
                     i + 1, min(VALID_DURATIONS),
+                    describe_unstageable(
+                        *orders(i), item.get("start_heads"),
+                        item.get("end_heads"),
+                        self.config.unstageable_mover_budget,
+                        self.config.unstageable_crowd_limit,
+                    ),
+                    "your tags" if tagged(i)
+                    else "the planner's own reading — frames not tagged yet",
                 )
                 plans.append((
                     camera_shift_prompt(*orders(i)),
