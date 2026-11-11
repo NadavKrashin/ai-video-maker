@@ -89,6 +89,16 @@ class Workspace:
         return self.root / "styled_images"
 
     @property
+    def cast_refs_dir(self) -> Path:
+        """One canonical styled portrait per cast member (see media/faces.py).
+
+        Cut for free out of frames already styled, so this directory is
+        DERIVED data: deleting it costs nothing but a rebuild, and nothing
+        downstream may fail because it is empty. Not created by mkdirs —
+        a project with no tagged people never grows one."""
+        return self.root / "cast_refs"
+
+    @property
     def storyboard_dir(self) -> Path:
         return self.root / "storyboard"
 
@@ -160,6 +170,14 @@ class Workspace:
         return self.root / "feedback.json"
 
     @property
+    def clip_flags_file(self) -> Path:
+        """Clips a human marked as needing a fix (see clip_flags.py).
+
+        Next to feedback.json because it is also content about this movie —
+        but it is a mutable worklist, not the append-only evidence log."""
+        return self.root / "clip_flags.json"
+
+    @property
     def letter_file(self) -> Path:
         """User-written closing-letter text (used when closing_letter is on)."""
         return self.root / "letter.txt"
@@ -179,6 +197,26 @@ class Workspace:
     @property
     def default_storyboard_json(self) -> Path:
         return self.storyboard_dir / "storyboard.json"
+
+    @property
+    def project_config_file(self) -> Path:
+        """Per-project config overrides, merged over the shared config.json.
+
+        Holds only the keys this ONE movie pins — the video model, the
+        experiment knobs from the panel's settings card, anything hand-added.
+        Absent for a project that follows the studio defaults, which is the
+        normal case."""
+        return self.root / "config.json"
+
+    @property
+    def face_audit_file(self) -> Path:
+        """The last face-consistency audit's findings (see cmd_faces).
+
+        Persisted because the audit is the one part of the cast-faces feature
+        that costs money: the panel must be able to show yesterday's answer
+        without buying it again. Derived and disposable — deleting it loses
+        nothing but the report."""
+        return self.storyboard_dir / "face_audit.json"
 
     @property
     def storyboard_md(self) -> Path:

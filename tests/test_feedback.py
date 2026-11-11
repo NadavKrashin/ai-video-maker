@@ -543,7 +543,7 @@ class TestLessonsReachThePlanner:
 
         def fake_analyze(frames, style, default_duration=None,
                          global_context="", cast=None, lessons=None,
-                         frame_people=None):
+                         frame_people=None, stage_anyway=None):
             seen["lessons"] = list(lessons or [])
             return [("planned", 5, "sound")] * (len(frames) - 1), list(cast or [])
 
@@ -619,7 +619,9 @@ class TestLessonsReachThePlanner:
         src = workspace.input_images_dir / "a.jpg"
         src.write_bytes(b"x")
         prompts: list[str] = []
-        p.openai.style_image = lambda s, prompt, dst: prompts.append(prompt)
+        p.openai.style_image = (
+            lambda s, prompt, dst, references=None: prompts.append(prompt)
+        )
         monkeypatch.setattr("ai_video_maker.runner.verify_dimensions",
                             lambda *a, **kw: True)
         p._style_images([src], {})

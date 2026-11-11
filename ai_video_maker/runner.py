@@ -38,6 +38,7 @@ from .clients.cloudinary_client import (
 from .clients.download import download_file
 from .clients.openai_client import (
     OpenAIClient,
+    camera_shift_prompt,
     ends_offscreen,
     indistinct_epithets,
     is_camera_transition,
@@ -45,9 +46,11 @@ from .clients.openai_client import (
     is_unstageable_pair,
 )
 from .clients.video import VideoClient
-from .config import Config
+from .config import LETTER_PLACEMENTS, Config
+from .constants import VALID_DURATIONS
 from .costs import KIND_CLIP, KIND_SFX, CostLedger, estimate_usd
 from .errors import PipelineCancelled, PipelineError, StoryboardError
+from .clip_flags import ClipFlagStore
 from .feedback import (
     MAX_NOTE_CHARS,
     SCOPE_MOTION,
@@ -73,11 +76,19 @@ from .media.ffmpeg import (
     render_photo_still,
     sample_clip_frames,
 )
+from .media.faces import (
+    annotate_prompt_with_elements,
+    elements_for_clip,
+    pick_reference_frame,
+    references_for_frame,
+    write_face_reference,
+)
 from .media.letter import (
     find_emoji_font,
     find_letter_font,
     letter_state,
     read_letter,
+    reading_seconds,
     render_letter_image,
     save_letter,
 )
@@ -97,9 +108,12 @@ from .models import (
     Transition,
     identity_fingerprint,
     outdated_identity_plans,
+    outdated_reference_frames,
+    reference_fingerprint,
     tagged_people,
 )
 from .options import RunOptions
+from .project_settings import describe_settings, setting_keys
 from .publish import (
     publish_state,
     published_versions,
@@ -192,6 +206,35 @@ def _fit_credits_and_letter(
     return section / n_photos, letter_travel_px / section
 
 
+def _letter_pace(
+    travel_px: float, base_pps: float, reading_secs: float
+) -> tuple[float, float]:
+    """(seconds, pixels_per_second) for a letter that has the screen to itself.
+
+    The configured pace sets a SPEED, which means a long letter and a short
+    one give the reader the same seconds per line — and the long one goes by
+    before it can be read. So the letter is slowed to whichever is longer:
+    its travel at the configured pace, or the time the text actually takes to
+    read. A floor, never a ceiling: nothing is ever sped UP, so a short
+    letter keeps the timing it has always had.
+
+    Only for the letter's own section. The overlay shape is paced by
+    `_fit_credits_and_letter` instead, because there the montage decides.
+    """
+    at_pace = travel_px / base_pps if base_pps > 0 else reading_secs
+    seconds = max(at_pace, reading_secs, 0.5)
+    return seconds, travel_px / seconds
+
+
+# How each placement reads in status / the panel's confirmation. Kept next
+# to the renderer so a new placement can't ship without a sentence.
+_LETTER_PLACEMENT_WORDING = {
+    "over_photos": "over the end-credits photos (both end together)",
+    "after_photos": "after the end-credits photos, on a dark screen",
+    "on_last_photo": "after the end-credits photos, over the last photo",
+}
+
+
 def _consecutive_runs(indices: list[int]) -> list[list[int]]:
     """Group sorted indices into maximal consecutive runs.
 
@@ -238,6 +281,7 @@ class Pipeline:
         # corrected on one order is corrected for every later one too.
         self.lessons = LessonStore(lessons_file())
         self.feedback_store = FeedbackStore(workspace.feedback_file)
+        self.clip_flags = ClipFlagStore(workspace.clip_flags_file)
         self.openai = OpenAIClient(config)
         # Every OpenAI call (including the condense/restage/reword ones the
         # runner never sees directly) prices itself into this project's ledger.
@@ -266,6 +310,18 @@ class Pipeline:
         # Guards summary counters when workers run in parallel (StateStore and
         # FailedJobStore guard themselves).
         self._lock = threading.Lock()
+        # Frames styled in THIS run that were drawn against cast references,
+        # and the fingerprint of the references used. Collected by
+        # _style_images and stamped onto the frames by _reconcile_storyboard,
+        # which rebuilds them from disk and would otherwise lose it — the same
+        # carry-over every other per-frame field needs.
+        self._styled_ref_stamps: dict[str, str] = {}
+        # Clip filename -> the cast face references to pin through that clip.
+        # Filled by _pairs_from_storyboard (which has the tags) and read by
+        # _generate_clips, so ClipPair keeps its shape and every other caller
+        # of it is untouched. Empty unless a model with an elements field is
+        # configured.
+        self._clip_elements: dict[str, list[Path]] = {}
 
     # ------------------------------ dispatch ----------------------------- #
     def execute(self, command: str) -> None:
@@ -282,14 +338,16 @@ class Pipeline:
             "combine": self.cmd_combine,
             "publish": self.cmd_publish,
             "status": self.cmd_status,
+            "flag": self.cmd_flag,
             "tag": self.cmd_tag,
+            "faces": self.cmd_faces,
             "feedback": self.cmd_feedback,
             "run": self.cmd_run,
         }
         handler = handlers.get(command)
         if handler is None:
             raise PipelineError(f"Unknown command: {command}")
-        if command in ("status", "feedback"):
+        if command in ("status", "feedback", "faces"):
             # Neither produces pipeline outputs, so neither gets a summary —
             # and crucially neither flushes the failure report, which would
             # delete the record of the last run that actually had problems.
@@ -598,7 +656,14 @@ class Pipeline:
             for f in (saved.frames if saved else [])
             if f.style_note
         }
-        frame_pairs = self._style_images(images, recorded_sources, style_notes)
+        # References come from the SAVED storyboard: the first styling of a
+        # project has no tags and so no references, and the tags added
+        # afterwards anchor the next styling of those people — which is a
+        # deliberate --restyle-frame, never a surprise re-spend.
+        frame_pairs = self._style_images(
+            images, recorded_sources, style_notes,
+            self.style_reference_plan(saved),
+        )
         if len(frame_pairs) < 2:
             logger.warning(
                 "Need at least 2 styled images to make a clip; have %d.",
@@ -634,6 +699,11 @@ class Pipeline:
             # feed the re-plan that follows it.
             if self._propose_tags(storyboard):
                 self._save_storyboard(storyboard)
+            # Free and derived from what was just written, so it needs no
+            # gate: the cast's canonical faces are cut straight out of the
+            # styled frames. They anchor the NEXT styling of these people and
+            # can be handed to a character-aware video model at render time.
+            self.build_cast_references(storyboard)
         return storyboard
 
     def _load_saved_storyboard_tolerant(self) -> Optional[Storyboard]:
@@ -683,6 +753,7 @@ class Pipeline:
         images: list[Path],
         recorded_sources: dict[str, str],
         style_notes: Optional[dict[str, str]] = None,
+        references: Optional[dict[str, tuple[list[Path], str]]] = None,
     ) -> list[tuple[Path, Path]]:
         """Style every input; return ordered (source, styled) pairs on disk.
 
@@ -758,6 +829,8 @@ class Pipeline:
             ):
                 redo.clear()
 
+        references = references or {}
+
         def prompt_for(dst: Path) -> str:
             rel = dst.relative_to(self.workspace.root).as_posix()
             note = style_notes.get(rel, "").strip()
@@ -781,8 +854,12 @@ class Pipeline:
                     self.summary.styled_created += 1
                 return
 
+            rel = dst.relative_to(self.workspace.root).as_posix()
+            ref_paths, ref_stamp = references.get(rel, ([], ""))
             try:
-                self.openai.style_image(src, prompt_for(dst), dst)
+                self.openai.style_image(
+                    src, prompt_for(dst), dst, references=ref_paths or None
+                )
                 if not verify_dimensions(dst, self.config.target_width, self.config.target_height):
                     # Remove the bad file: leaving it would make the next run
                     # skip this image as "done" (resume is existence-based).
@@ -791,7 +868,15 @@ class Pipeline:
                 with self._lock:
                     self.state.set(job_id, "done", output=str(dst))
                     self.summary.styled_created += 1
-                logger.info("Styled: %s", dst.name)
+                    # Only a frame that really was drawn against references
+                    # gets a stamp; the empty default is what keeps every
+                    # pre-existing frame quiet (see Frame.styled_refs).
+                    if ref_stamp:
+                        self._styled_ref_stamps[rel] = ref_stamp
+                logger.info(
+                    "Styled: %s%s", dst.name,
+                    f" (matched to {len(ref_paths)} cast face(s))" if ref_paths else "",
+                )
             except Exception as exc:  # noqa: BLE001
                 # A raw 400 payload says nothing about what to DO, and these
                 # are ordinary customer photos — a safety rejection is nearly
@@ -854,6 +939,15 @@ class Pipeline:
             for f in (saved.frames if saved else [])
             if f.style_note
         }
+        # Which cast references each frame was styled against. Carried over
+        # like the rest, then overridden for the frames THIS run re-styled —
+        # they were just drawn against a possibly different set.
+        saved_stamps = {
+            f.output_path: f.styled_refs
+            for f in (saved.frames if saved else [])
+            if f.styled_refs
+        }
+        saved_stamps.update(self._styled_ref_stamps)
         frames = [
             Frame(
                 id=self._frame_id(dst),
@@ -864,6 +958,7 @@ class Pipeline:
                 styled_hash=hashes[dst],
                 people=tagged.get(dst.relative_to(root).as_posix(), []),
                 style_note=saved_notes.get(dst.relative_to(root).as_posix(), ""),
+                styled_refs=saved_stamps.get(dst.relative_to(root).as_posix(), ""),
             )
             for src, dst in frame_pairs
         ]
@@ -913,6 +1008,37 @@ class Pipeline:
                 f"No such transition(s) to re-plan: {', '.join(sorted(unknown))}.\n"
                 "Valid ids: " + ", ".join(f"{a.id}_to_{b.id}" for a, b in pairs)
             )
+        # Pairs the caller wants turned into a camera transition outright
+        # (--camera alongside --replan-clip / --replan-all, or the panel's
+        # "Re-plan as camera move"). The gate already converts pairs it
+        # judges unstageable, but that judgement is made from tags and
+        # headcounts and it cannot see what a render looked like — so this
+        # is the human override for a pair that mushed anyway.
+        #
+        # It applies to EXPLICITLY requested pairs only. A pair that is dirty
+        # because its photo changed must never silently become a camera move.
+        # And the prompt is the deterministic template, so there is no vision
+        # call: forcing a camera transition is free and instant.
+        camera_forced = (
+            {f"{a.id}_to_{b.id}" for a, b in pairs} & requested
+            if self.options.replan_as_camera else set()
+        )
+        # The mirror override: plan these pairs through their PEOPLE even
+        # where the unstageable gate would have replaced the choreography
+        # with a camera move. Same "explicitly requested only" rule as
+        # `camera_forced` and for the same reason — the gate is the default
+        # and a pair must never lose it by accident. Contradicting the two is
+        # a caller error, not something to silently resolve.
+        if self.options.replan_as_camera and self.options.replan_stages_people:
+            raise PipelineError(
+                "--camera and --stage-people ask for opposite things "
+                "(a camera move instead of the people, and the people "
+                "instead of a camera move). Pass one."
+            )
+        stage_forced = (
+            {f"{a.id}_to_{b.id}" for a, b in pairs} & requested
+            if self.options.replan_stages_people else set()
+        )
         dirty: list[int] = []
         stale_tids: list[str] = []
         for i, (a, b) in enumerate(pairs):
@@ -929,7 +1055,11 @@ class Pipeline:
                 prior is not None
                 and prior.motion_prompt == self.config.motion_prompt
             )
-            if (saved is None or changed or prior is None or placeholder
+            if f"{a.id}_to_{b.id}" in camera_forced:
+                # Deterministic template — planning it would spend a call to
+                # produce something the code is about to overwrite anyway.
+                pass
+            elif (saved is None or changed or prior is None or placeholder
                     or f"{a.id}_to_{b.id}" in requested):
                 dirty.append(i)
             if changed:
@@ -952,7 +1082,38 @@ class Pipeline:
             global_context=saved.global_motion_prompt if saved else "",
             cast=cast_now,
             frame_people=frame_people,
+            stage_anyway={
+                i for i, (a, b) in enumerate(pairs)
+                if f"{a.id}_to_{b.id}" in stage_forced
+            },
         )
+        if stage_forced:
+            logger.info(
+                "Staging through the people on %d pair(s) the gate would "
+                "have made camera transitions: %s",
+                len(stage_forced), ", ".join(sorted(stage_forced)),
+            )
+
+        # Forced camera transitions, written straight in. The wording comes
+        # from the same deterministic family the gate uses, picked by the
+        # pair's own rosters (an untagged pair falls back to the generic
+        # travel-and-settle). ALWAYS 5s: a camera move is one continuous
+        # beat, and ten seconds of it is a slack shot at twice the price.
+        for i, (a, b) in enumerate(pairs):
+            tid = f"{a.id}_to_{b.id}"
+            if tid not in camera_forced:
+                continue
+            prior = saved_tr.get((a.output_path, b.output_path))
+            plans[i] = (
+                camera_shift_prompt(frame_people[i], frame_people[i + 1]),
+                min(VALID_DURATIONS),
+                prior.sound_prompt if prior else "",
+            )
+        if camera_forced:
+            logger.info(
+                "Camera transition forced on %d pair(s): %s",
+                len(camera_forced), ", ".join(sorted(camera_forced)),
+            )
 
         transitions: list[Transition] = []
         replanned: list[str] = []
@@ -1025,6 +1186,7 @@ class Pipeline:
         global_context: str = "",
         cast: Optional[list[Character]] = None,
         frame_people: Optional[list[Optional[list[str]]]] = None,
+        stage_anyway: Optional[set[int]] = None,
     ) -> tuple[dict[int, tuple[str, int, str]], list[Character]]:
         """Vision-plan the dirty pairs only: {pair index: (motion, dur, sound)}.
 
@@ -1039,6 +1201,11 @@ class Pipeline:
         storyboard's), extended by any new people the planning calls
         discovered. Each call receives the cast as it stands so epithets stay
         identical across separately planned segments.
+
+        ``stage_anyway`` names pair indices whose people must be choreographed
+        even where the unstageable gate would replace them with a camera move
+        (--stage-people). Indices are GLOBAL; each planning call is handed the
+        slice for its own segment, since the gate runs per call.
         """
         cast = list(cast or [])
         if not dirty:
@@ -1082,6 +1249,9 @@ class Pipeline:
                     lessons=lessons,
                     # Tags for exactly the frames in this segment.
                     frame_people=tags[run[0]: run[-1] + 2],
+                    # Same, for the gate override: one flag per PAIR in this
+                    # segment, in the segment's own order.
+                    stage_anyway=[i in (stage_anyway or set()) for i in run],
                 )
                 for offset, i in enumerate(run):
                     plans[i] = seg_plans[offset]
@@ -1378,6 +1548,22 @@ class Pipeline:
                 len(global_motion.split()),
             )
 
+        # Face elements are decided here, where the storyboard (and so the
+        # tags) is in hand, and stashed for _generate_clips by clip filename
+        # — the same shape as the styling stamps. Nothing is added to
+        # ClipPair, so every caller of that tuple is untouched.
+        self._clip_elements = {}
+        refs = self.cast_reference_paths(storyboard)
+        by_name = {
+            (self.workspace.root / f.output_path).name: f
+            for f in storyboard.frames
+        }
+        appearances: dict[str, int] = {}
+        for frame in storyboard.frames:
+            for person in frame.people:
+                appearances[person.id] = appearances.get(person.id, 0) + 1
+        epithets = {c.id: c.epithet for c in storyboard.characters}
+
         pairs: list[ClipPair] = []
         for a, b in self._bridge_pairs(frames_ordered):
             tr = tr_by_start.get(a.name)
@@ -1388,6 +1574,28 @@ class Pipeline:
                 tr.duration if tr else storyboard.duration_per_clip
             )
             sound = tr.sound_prompt if tr else ""
+
+            # A camera transition names nobody on purpose — there is no
+            # epithet for an element to attach to, and these are already the
+            # best-looking clips in a movie. Leave them exactly as they are.
+            chosen: list[str] = []
+            if refs and self.config.elements_enabled() and not is_camera_transition(motion):
+                chosen = elements_for_clip(
+                    [(p.id, p.x) for p in getattr(by_name.get(a.name), "people", [])],
+                    [(p.id, p.x) for p in getattr(by_name.get(b.name), "people", [])],
+                    set(refs),
+                    appearances,
+                    self.config.fal_max_elements,
+                    self.config.fal_elements_partial,
+                )
+            if chosen:
+                clip_name = self._clip_name(a, b).name
+                self._clip_elements[clip_name] = [refs[cid] for cid in chosen]
+                motion = annotate_prompt_with_elements(
+                    motion,
+                    [epithets.get(cid, "") for cid in chosen],
+                    self.config.fal_element_prompt_template,
+                )
             pairs.append((a, b, _with_global_motion(global_motion, motion), duration, sound))
         return pairs
 
@@ -1485,6 +1693,7 @@ class Pipeline:
                     self.video_client.generate_clip(
                         start, end, motion, duration, dst,
                         reword=self.openai.reword_motion_prompt,
+                        elements=self._clip_elements.get(dst.name),
                     )
                     # Booked on the finished clip, not on submission: a job
                     # that was submitted and billed but never collected shows
@@ -1506,7 +1715,15 @@ class Pipeline:
                             f"sfx:{dst.name}", f"fade:{dst.name}",
                             f"stale:{dst.name}",
                         )
-                        self.state.set(job_id, "done", output=str(dst))
+                        # WHICH model rendered it, so switching models later
+                        # doesn't leave a movie silently mixing two of them
+                        # with nothing to say which clip is which. Everything
+                        # else about staleness in this pipeline is visible;
+                        # this was the one gap.
+                        self.state.set(
+                            job_id, "done", output=str(dst),
+                            model=self.config.fal_model_id,
+                        )
                         self.summary.videos_created += 1
                     logger.info("Clip ready: %s", dst.name)
                 except PipelineCancelled:
@@ -1723,8 +1940,12 @@ class Pipeline:
                 logger.info("[dry-run] would append the original photos as "
                             "an end-credits montage")
             if letter:
-                logger.info("[dry-run] would append the scrolling closing "
-                            "letter from %s", self.workspace.letter_file)
+                logger.info(
+                    "[dry-run] would append the scrolling closing letter "
+                    "from %s, playing %s",
+                    self.workspace.letter_file,
+                    _LETTER_PLACEMENT_WORDING[self._letter_placement()],
+                )
             return
 
         if final_video.exists() and not self.force and not force_rebuild:
@@ -1794,6 +2015,24 @@ class Pipeline:
         )
         return intro, credits, letter
 
+    def _letter_placement(self) -> str:
+        """Where the closing letter plays: CLI wins over config.
+
+        An unknown value is refused loudly. The ending is the part a
+        customer reads word by word, so quietly falling back to the overlay
+        on a typo would ship the shape somebody explicitly did not want.
+        """
+        placement = (
+            self.options.letter_placement
+            or self.config.letter_placement
+        )
+        if placement not in LETTER_PLACEMENTS:
+            raise PipelineError(
+                f"Unknown letter placement {placement!r}. Choose one of: "
+                + ", ".join(LETTER_PLACEMENTS)
+            )
+        return placement
+
     def _original_photo_sources(self) -> list[tuple[str, Path]]:
         """(frame id, original photo path) per storyboard frame, in order.
 
@@ -1832,7 +2071,11 @@ class Pipeline:
         intro, credits, letter = self._presentation_flags()
         if not (intro or credits or letter) or not clips:
             return clips, False
-        sources = self._original_photo_sources() if credits else []
+        placement = self._letter_placement() if letter else "over_photos"
+        # on_last_photo needs a photo even when the montage is off — the
+        # letter still plays over one, it just has no montage in front of it.
+        wants_photos = credits or (letter and placement == "on_last_photo")
+        sources = self._original_photo_sources() if wants_photos else []
         if credits and not sources:
             logger.warning(
                 "credits_photos is on, but this project's storyboard records "
@@ -1867,16 +2110,21 @@ class Pipeline:
                 segments.insert(0, section)
                 added = True
 
-        if credits and letter:
-            # The letter scrolls OVER the photo montage (dimmed for
-            # readability), both paced to end together.
+        if credits and letter and placement == "over_photos":
+            # The letter scrolls OVER the photo montage, both paced to end
+            # together.
             section = self._render_credits_letter_overlay(
                 seg_dir, sources, letter_text, width, height
             )
             if section is not None:
                 segments.append(section)
                 added = True
-        elif credits:
+            return segments, added
+
+        # Everything else plays the two one after the other: the montage
+        # first (at its own configured pace, nothing stretched to fit a
+        # letter), then the letter on its own screen.
+        if credits:
             stills = self._render_credit_stills(
                 seg_dir, sources, self.config.credits_seconds_per_photo,
                 width, height,
@@ -1884,10 +2132,24 @@ class Pipeline:
             segments += stills
             added = True
             logger.info("End credits: %d original photo(s) appended.", len(stills))
-        elif letter:
-            section = self._render_letter_standalone(
-                seg_dir, letter_text, width, height
-            )
+        if letter:
+            backdrop = sources[-1][1] if (
+                placement == "on_last_photo" and sources
+            ) else None
+            if placement == "on_last_photo" and backdrop is None:
+                logger.warning(
+                    "letter_placement is on_last_photo, but this project's "
+                    "storyboard records no original photos — scrolling the "
+                    "letter on the dark background instead."
+                )
+            if backdrop is not None:
+                section = self._render_letter_on_photo(
+                    seg_dir, letter_text, backdrop, width, height
+                )
+            else:
+                section = self._render_letter_standalone(
+                    seg_dir, letter_text, width, height
+                )
             if section is not None:
                 segments.append(section)
                 added = True
@@ -2100,6 +2362,68 @@ class Pipeline:
         )
         return dst
 
+    def _render_letter_on_photo(
+        self,
+        seg_dir: Path,
+        text: str,
+        photo: Path,
+        width: int,
+        height: int,
+    ) -> Optional[Path]:
+        """The letter scrolling over a held still of the movie's last photo.
+
+        The same overlay renderer as the credits version, but the background
+        is one photo held for exactly as long as the letter takes rather
+        than a montage — so the photos have already had their turn and the
+        letter gets a screen of its own that simply isn't black.
+        """
+        dst = seg_dir / "letter_on_photo.mp4"
+        recipe = self._segment_recipe(
+            "letter_on_photo",
+            text=text, photo=photo.name, size=(width, height),
+            font=self.config.letter_font_path,
+            emoji_font=self.config.letter_emoji_font_path,
+            font_size=self.config.letter_font_size,
+            pace=self.config.letter_seconds_per_screen,
+            wpm=self.config.letter_reading_words_per_minute,
+            dim=self.config.letter_overlay_dim,
+        )
+        if self._segment_fresh(dst, [self.workspace.letter_file, photo], recipe):
+            logger.info("Reusing closing letter over the last photo (unchanged).")
+            return dst
+        try:
+            font = find_letter_font(self.config.letter_font_path)
+            image = render_letter_image(
+                text, width, height, font, self.config.letter_font_size,
+                pad=False, transparent=True,
+                emoji_font_path=find_emoji_font(
+                    self.config.letter_emoji_font_path),
+            )
+            png = seg_dir / "letter.png"
+            image.save(png)
+            travel = image.height + height  # enters from below, exits above
+            seconds, pps = _letter_pace(
+                travel,
+                height / self.config.letter_seconds_per_screen,
+                reading_seconds(
+                    text, self.config.letter_reading_words_per_minute),
+            )
+            background = seg_dir / "letter_bg.mp4"
+            render_photo_still(photo, background, width, height, seconds)
+            render_letter_overlay(
+                background, png, dst, pps, self.config.letter_overlay_dim
+            )
+        except Exception as exc:  # noqa: BLE001 - extras must not kill combine
+            logger.error("Closing letter failed (%s); combining without it.", exc)
+            self.failed.record("letter", "letter", str(exc))
+            return None
+        self._record_segment_recipe(dst, recipe)
+        logger.info(
+            "Closing letter: %d chars scrolled over ~%.0fs on %s (font: %s).",
+            len(text), seconds, photo.name, Path(font).name,
+        )
+        return dst
+
     def _render_letter_standalone(
         self, seg_dir: Path, text: str, width: int, height: int
     ) -> Optional[Path]:
@@ -2111,6 +2435,7 @@ class Pipeline:
             emoji_font=self.config.letter_emoji_font_path,
             font_size=self.config.letter_font_size,
             pace=self.config.letter_seconds_per_screen,
+            wpm=self.config.letter_reading_words_per_minute,
         )
         if self._segment_fresh(dst, [self.workspace.letter_file], recipe):
             logger.info("Reusing closing letter (unchanged).")
@@ -2124,9 +2449,16 @@ class Pipeline:
             )
             png = seg_dir / "letter.png"
             image.save(png)
+            # pad=True puts a blank screen above and below, so the scroll
+            # travels image.height - height from all-blank to all-blank.
+            seconds, pps = _letter_pace(
+                image.height - height,
+                height / self.config.letter_seconds_per_screen,
+                reading_seconds(
+                    text, self.config.letter_reading_words_per_minute),
+            )
             render_letter_scroll(
-                png, dst, width, height, image.height,
-                pixels_per_second=height / self.config.letter_seconds_per_screen,
+                png, dst, width, height, image.height, pixels_per_second=pps,
             )
         except Exception as exc:  # noqa: BLE001 - extras must not kill combine
             logger.error("Closing letter failed (%s); combining without it.", exc)
@@ -2135,10 +2467,7 @@ class Pipeline:
         self._record_segment_recipe(dst, recipe)
         logger.info(
             "Closing letter: %d chars scrolled over ~%.0fs (font: %s).",
-            len(text),
-            (image.height - height)
-            / (height / self.config.letter_seconds_per_screen),
-            Path(font).name,
+            len(text), seconds, Path(font).name,
         )
         return dst
 
@@ -2431,9 +2760,22 @@ class Pipeline:
                 self._clip_name(a, b)
                 for a, b in self._bridge_pairs(frames, quiet=True)
             ]
+            # The human's worklist, read once for the whole loop.
+            marked = {
+                f.transition_id: f.note
+                for f in self._clip_flags_safe().values()
+            }
             for clip in expected:
                 exists = clip.exists()
                 missing += 0 if exists else 1
+                # Which video model produced this clip. Only clips rendered
+                # since this was recorded carry it; an unknown model is NOT
+                # reported as a mismatch, so switching models does not light
+                # up every clip of every existing project.
+                rendered_with = (
+                    (self.state.get(f"clip:{clip.name}") or {}).get("model", "")
+                    if exists else ""
+                )
                 clips.append({
                     "id": clip.stem,
                     "file": clip.name,
@@ -2443,6 +2785,18 @@ class Pipeline:
                     # as-is until someone regenerates it deliberately.
                     "stale": exists
                     and self.state.status(f"stale:{clip.name}") is not None,
+                    "model": rendered_with,
+                    # A movie that mixes two video models looks inconsistent
+                    # for a reason nothing else would explain. Never fixed
+                    # automatically — re-rendering is money.
+                    "model_changed": bool(
+                        rendered_with
+                        and rendered_with != self.config.fal_model_id
+                    ),
+                    # A human watched this one and said it needs redoing.
+                    # Purely a note to a human: nothing here acts on it.
+                    "needs_fix": clip.stem in marked,
+                    "fix_note": marked.get(clip.stem, ""),
                 })
             found = (
                 find_generated_clips(ws.clips_dir)
@@ -2502,6 +2856,10 @@ class Pipeline:
                     c.id for c in storyboard.characters
                     if is_clothing_anchored(c.epithet)
                 ],
+                # id -> epithet, so anything reporting per-character findings
+                # (the face audit below, the panel's badges) can name a
+                # person instead of printing a cast id at them.
+                "cast": {c.id: c.epithet for c in storyboard.characters},
                 # Cast members whose epithets cannot be told apart — one a
                 # word-subset of the other ("woman with dark hair bun" /
                 # "young woman with dark hair bun"). The video model has no
@@ -2538,11 +2896,41 @@ class Pipeline:
                 # carrying a camera-family prompt is not listed, and
                 # untagged frames have no opinion — so pre-existing
                 # untagged projects stay silent.
+                # Frames drawn against cast faces that have since changed —
+                # a reference re-cut from a different frame, or a person
+                # tagged into/out of this photo. Only frames that really
+                # were styled WITH references speak up (an empty stamp is
+                # "styled from none", which is true of every project that
+                # predates this and stays silent). Never fixed for you:
+                # re-styling spends image credits, so it is a badge and an
+                # explicit --restyle-frame.
+                # The last face audit's findings (see cmd_faces --audit),
+                # read from disk so the panel can show yesterday's answer
+                # without buying it again. Empty until somebody runs one.
+                "face_audit": self.read_face_audit(),
+                "outdated_styling": outdated_reference_frames(
+                    storyboard,
+                    {
+                        path: stamp
+                        for path, (_, stamp) in
+                        self.style_reference_plan(storyboard).items()
+                    },
+                ),
+                # Pairs already carrying a camera-family prompt. Exposed so
+                # the panel doesn't have to re-implement the recognition
+                # (`is_camera_transition` is strict-family on purpose, and a
+                # second copy of that list in JavaScript would drift).
+                "camera_transitions": [
+                    t.id for t in storyboard.transitions
+                    if is_camera_transition(t.motion_prompt)
+                ],
                 "unstageable_pairs": [
                     t.id for t in storyboard.transitions
                     if is_unstageable_pair(
                         _snapshot_people.get(t.start_frame),
                         _snapshot_people.get(t.end_frame),
+                        mover_budget=self.config.unstageable_mover_budget,
+                        crowd_limit=self.config.unstageable_crowd_limit,
                     )
                     and not is_camera_transition(t.motion_prompt)
                 ],
@@ -2554,6 +2942,15 @@ class Pipeline:
             "missing_frames": missing_frames,
             "clips": clips,
             "stray_clips": stray,
+            # Which video model this project renders with, and whether that
+            # model can be handed the cast's faces. The panel shows both so
+            # the choice and its consequence are never two separate things
+            # to keep in step.
+            "video_model": self._video_model_state(),
+            # The handful of config knobs this project may override from the
+            # panel, with the value it actually runs on and whether that was
+            # pinned here or inherited from the shared config.
+            "settings": describe_settings(self.config, self.pinned_settings()),
             "pending_renders": self.pending_renders(),
             "final_video": ws.final_video.exists(),
             # The movie was built before one of its clips was (re-)rendered,
@@ -2571,6 +2968,14 @@ class Pipeline:
             # produces no letter (see _letter_text), so status and the panel
             # have to be able to say whether there is one at all.
             "letter": letter_state(ws.letter_file),
+            # Where the letter plays when combine is run without a per-run
+            # choice, so the panel's picker starts from this project's truth
+            # rather than assuming the studio default. Its own key, not part
+            # of "letter": that one is the FILE's state, and it is also what
+            # PUT /api/projects/<n>/letter answers with — one name meaning
+            # two shapes is how a panel ends up reading a field that isn't
+            # there.
+            "letter_placement": self.config.letter_placement,
             # Estimated money spent on this project (see cost_report). Built
             # from what snapshot already knows, so it costs no extra I/O.
             "cost": self.cost_report(
@@ -2580,6 +2985,10 @@ class Pipeline:
             # Human judgements of this project's clips, and how many lessons
             # they taught the planner (see feedback.py).
             "feedback": self._feedback_summary(),
+            # Clips a human marked as needing a fix (see clip_flags.py).
+            # A worklist, not evidence: free to set, free to clear, and it
+            # changes nothing about the movie on its own.
+            "clip_flags": self._clip_flag_summary(clips),
             "music": ws.music_file.exists(),
             "custom_music": ws.custom_music_file.exists(),
             "has_failed_jobs": self.failed.path.exists(),
@@ -2645,6 +3054,361 @@ class Pipeline:
                 "re-planning — especially where two people look alike.", tagged,
             )
         return tagged
+
+    # ------------------- the cast's canonical faces ------------------------ #
+    def cast_reference_paths(
+        self, storyboard: Optional[Storyboard] = None
+    ) -> dict[str, Path]:
+        """Cast id -> the face reference on disk, for the ids that have one.
+
+        A read, not a build: callers that need the files fresh call
+        ``build_cast_references`` first. Missing files are simply absent, so
+        a project that has never had references (or had them deleted) yields
+        an empty mapping and every consumer degrades to its old behaviour.
+        """
+        if not self.config.cast_references_enabled:
+            return {}
+        refs: dict[str, Path] = {}
+        ids = (
+            [c.id for c in storyboard.characters] if storyboard is not None
+            else None
+        )
+        directory = self.workspace.cast_refs_dir
+        if not directory.is_dir():
+            return {}
+        for path in sorted(directory.glob("*.png")):
+            if ids is None or path.stem in ids:
+                refs[path.stem] = path
+        return refs
+
+    def style_reference_plan(
+        self, storyboard: Optional[Storyboard]
+    ) -> dict[str, tuple[list[Path], str]]:
+        """Frame output_path -> (reference files to attach, their fingerprint).
+
+        Computed from the SAVED storyboard, which is the whole reason this
+        works without reordering the pipeline: the first styling of a project
+        has no tags and therefore no references, and the tags that arrive
+        afterwards anchor the NEXT styling of those people — a re-style of a
+        drifted frame, which is a named, deliberate action already.
+
+        Frames nobody is tagged in are simply absent, so they style exactly as
+        they always have.
+        """
+        if storyboard is None or not self.config.cast_references_enabled:
+            return {}
+        refs = self.cast_reference_paths(storyboard)
+        if not refs:
+            return {}
+        digests = {cid: _file_sha1(path) for cid, path in refs.items()}
+        appearances: dict[str, int] = {}
+        for frame in storyboard.frames:
+            for person in frame.people:
+                appearances[person.id] = appearances.get(person.id, 0) + 1
+
+        plan: dict[str, tuple[list[Path], str]] = {}
+        for frame in storyboard.frames:
+            if not frame.people:
+                continue
+            chosen = references_for_frame(
+                [(p.id, p.x) for p in frame.people],
+                set(refs),
+                appearances,
+                self.config.max_style_references,
+            )
+            if not chosen:
+                continue
+            plan[frame.output_path] = (
+                [refs[cid] for cid in chosen],
+                reference_fingerprint([(cid, digests[cid]) for cid in chosen]),
+            )
+        return plan
+
+    def build_cast_references(self, storyboard: Storyboard) -> dict[str, str]:
+        """Cut one canonical face per cast member out of the styled frames.
+
+        Returns ``{cast id: the frame it was cut from}`` for everyone who got
+        one. Free, local and deterministic — no API call, no image credit —
+        which is why this is allowed to run itself whenever it is out of
+        date, unlike every step that spends money.
+
+        A character with no tagged appearance gets no reference and no
+        complaint: tagging is optional, and an untagged movie must keep
+        behaving exactly as it did before this existed.
+        """
+        if not self.config.cast_references_enabled or self.dry_run:
+            return {}
+        root = self.workspace.root
+        people_per_frame = {
+            f.output_path: len(f.people) for f in storyboard.frames
+        }
+        appearances: dict[str, list[tuple[str, int]]] = {}
+        positions: dict[tuple[str, str], FramePerson] = {}
+        for frame in storyboard.frames:
+            if not (root / frame.output_path).exists():
+                continue
+            for person in frame.people:
+                appearances.setdefault(person.id, []).append(
+                    (frame.output_path, people_per_frame[frame.output_path])
+                )
+                positions[(person.id, frame.output_path)] = person
+
+        written: dict[str, str] = {}
+        stale = set(self.cast_reference_paths().keys())
+        for character in storyboard.characters:
+            chosen = pick_reference_frame(
+                appearances.get(character.id, []), character.reference_frame
+            )
+            if chosen is None:
+                continue
+            person = positions[(character.id, chosen)]
+            dst = self.workspace.cast_refs_dir / f"{character.id}.png"
+            if write_face_reference(
+                root / chosen, dst, person.x, person.y,
+                people_per_frame.get(chosen, 1),
+                self.config.face_reference_crop,
+            ):
+                written[character.id] = chosen
+                stale.discard(character.id)
+
+        # A reference for somebody who is no longer in the cast (or no longer
+        # tagged anywhere) would keep being handed to the image model as a
+        # person to match. Derived data, so dropping it is free and safe.
+        for orphan in stale:
+            (self.workspace.cast_refs_dir / f"{orphan}.png").unlink(missing_ok=True)
+        if written:
+            logger.info(
+                "Cast references: %d face(s) cut from the styled frames.",
+                len(written),
+            )
+        return written
+
+    def pinned_settings(self) -> dict[str, Any]:
+        """The editable keys THIS project pins in its own config.json.
+
+        Only the allowlisted ones: anything else in that file was put there by
+        hand and is none of the settings card's business. Never raises — an
+        unreadable override file must not take the whole status page down with
+        it, and the shared config still decides.
+        """
+        path = self.workspace.project_config_file
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Could not read %s: %s", path, exc)
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {k: v for k, v in data.items() if k in set(setting_keys())}
+
+    def _video_model_state(self) -> dict[str, Any]:
+        """What this project renders with, for status and the panel picker."""
+        preset = self.config.video_model_preset()
+        return {
+            "key": preset.key if preset else "",
+            "label": preset.label if preset else self.config.fal_model_id,
+            "model_id": self.config.fal_model_id,
+            "verified": bool(preset.verified) if preset else False,
+            # Whether the model CAN take cast faces, and whether it is
+            # actually going to — a capable model with the cast references
+            # switched off still sends none.
+            "supports_elements": bool(preset.supports_elements) if preset else False,
+            "sends_cast_faces": (
+                self.config.elements_enabled()
+                and self.config.cast_references_enabled
+            ),
+            "usd_per_second": self.config.pricing.clip_usd_per_second,
+        }
+
+    def read_face_audit(self) -> dict[str, Any]:
+        """The last face-consistency audit, or an empty report. Never raises."""
+        path = self.workspace.face_audit_file
+        if not path.exists():
+            return {"checked": 0, "characters": {}, "ran_at": ""}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Could not read the face audit (%s); ignoring.", exc)
+        return {"checked": 0, "characters": {}, "ran_at": ""}
+
+    def _face_audit_groups(
+        self, storyboard: Storyboard, temp: Path
+    ) -> list[tuple[str, str, list[tuple[str, Path]]]]:
+        """Cut every tagged appearance of every cast member into ``temp``.
+
+        Local, free and thrown away with the temp directory — the same shape
+        as the clip reviewer's frame sampling. Only people who appear at
+        least twice are worth asking about: consistency is a comparison, and
+        a single appearance cannot disagree with anything.
+        """
+        root = self.workspace.root
+        people_per_frame = {
+            f.output_path: len(f.people) for f in storyboard.frames
+        }
+        epithets = {c.id: c.epithet for c in storyboard.characters}
+        by_character: dict[str, list[tuple[str, Path]]] = {}
+        for frame in storyboard.frames:
+            src = root / frame.output_path
+            if not src.exists():
+                continue
+            label = Path(frame.output_path).name
+            for person in frame.people:
+                if person.id not in epithets:
+                    continue
+                crop = temp / f"{person.id}__{label}"
+                if write_face_reference(
+                    src, crop, person.x, person.y,
+                    people_per_frame.get(frame.output_path, 1),
+                    self.config.face_reference_crop,
+                ):
+                    by_character.setdefault(person.id, []).append((label, crop))
+        return [
+            (cid, epithets[cid], crops)
+            for cid, crops in by_character.items()
+            if len(crops) >= 2
+        ]
+
+    def cmd_faces(self) -> None:
+        """Rebuild the cast's face references, and optionally audit them.
+
+        Two halves with very different costs, which is why the expensive one
+        is opt-in:
+
+        * rebuilding the reference sheet is free — the faces are cut out of
+          frames already styled — so it just happens;
+        * ``--audit`` additionally asks the vision model which frames draw
+          someone as a different person. That is one paid call, and it is
+          what turns "the faces drift a bit" into a list of frames worth
+          re-styling.
+
+        Nothing is ever re-styled here. Redoing a frame spends image credits,
+        so it stays what it has always been: a named, deliberate
+        ``storyboard --restyle-frame <name>``.
+        """
+        storyboard = self._require_storyboard("faces")
+        if not self.config.cast_references_enabled:
+            raise PipelineError(
+                "Cast face references are switched off for this project "
+                "(`cast_references_enabled: false` in config.json)."
+            )
+        if not storyboard.characters:
+            raise PipelineError(
+                "This project has no cast yet, so there are no faces to cut. "
+                f"Run `{self._next_command('storyboard')}` first."
+            )
+        if self.dry_run:
+            groups = sum(
+                1 for c in storyboard.characters
+                if any(
+                    p.id == c.id for f in storyboard.frames for p in f.people
+                )
+            )
+            logger.info(
+                "[dry-run] would cut %d cast face reference(s)%s",
+                groups, " and audit them" if self.options.audit_faces else "",
+            )
+            return
+
+        written = self.build_cast_references(storyboard)
+        epithets = {c.id: c.epithet for c in storyboard.characters}
+        print(f"\nCast face references ({len(written)}):")
+        for cid, frame_path in sorted(written.items()):
+            print(
+                f"  {epithets.get(cid, cid):<34} from "
+                f"{Path(frame_path).name}"
+            )
+        untagged = [c for c in storyboard.characters if c.id not in written]
+        if untagged:
+            print(
+                f"  ({len(untagged)} cast member(s) are tagged in no frame "
+                "yet, so they have no reference.)"
+            )
+        if not self.options.audit_faces:
+            print(
+                "\nThese anchor the next styling of these people. To find "
+                "frames where someone is already drawn as a different person, "
+                f"run `{self._next_command('faces', '--audit')}` (one paid "
+                "vision call)."
+            )
+            return
+
+        self._audit_faces(storyboard)
+
+    def _audit_faces(self, storyboard: Storyboard) -> None:
+        """The paid half of `faces`: which frames draw someone else."""
+        with tempfile.TemporaryDirectory(prefix="face-audit-") as tmp:
+            groups = self._face_audit_groups(storyboard, Path(tmp))
+            if not groups:
+                print(
+                    "\nNobody is tagged in two or more frames yet, so there is "
+                    "nothing to compare. Tag more photos first."
+                )
+                return
+            crops = sum(len(c) for _, _, c in groups)
+            if not self._ask(
+                [
+                    f"Compare {crops} face crop(s) of {len(groups)} cast "
+                    "member(s) and report where someone is drawn as a "
+                    "different person.",
+                    "One OpenAI vision call. Nothing is re-styled, re-planned "
+                    "or re-rendered — you get a list to act on.",
+                ],
+                f"Audit {len(groups)} character(s)? [y/N] ",
+                "Nothing audited.",
+            ):
+                return
+            try:
+                findings = self.openai.review_face_consistency(groups)
+            except Exception as exc:  # noqa: BLE001 - a report is not the movie
+                raise PipelineError(
+                    f"The face audit could not be completed: {exc}"
+                ) from exc
+
+        report = {
+            "ran_at": datetime.now().isoformat(timespec="seconds"),
+            "checked": len(groups),
+            "characters": findings,
+        }
+        try:
+            self.workspace.face_audit_file.parent.mkdir(parents=True, exist_ok=True)
+            self.workspace.face_audit_file.write_text(
+                json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        except OSError as exc:
+            logger.warning("Could not save the face audit: %s", exc)
+
+        epithets = {c.id: c.epithet for c in storyboard.characters}
+        flagged = {
+            cid: data for cid, data in findings.items() if data.get("odd_frames")
+        }
+        if not flagged:
+            print(
+                f"\nChecked {len(groups)} character(s): every one of them is "
+                "drawn consistently. Nothing to redo."
+            )
+            return
+        print("\nFrames where someone is drawn as a different person:")
+        for cid, data in sorted(flagged.items()):
+            print(f"  {epithets.get(cid, cid)}")
+            for label in data["odd_frames"]:
+                print(f"    {label}")
+            if data.get("note"):
+                print(f"    ({data['note']})")
+        names = sorted({
+            label for data in flagged.values() for label in data["odd_frames"]
+        })
+        print(
+            "\nRe-style them with the cast faces as anchors (spends image "
+            "credits, one per frame):\n  "
+            + self._next_command(
+                "storyboard",
+                " ".join(f"--restyle-frame {n}" for n in names),
+            )
+        )
 
     def cmd_tag(self) -> None:
         """Propose who is in each frame, for a human to correct.
@@ -2713,6 +3477,7 @@ class Pipeline:
 
         tagged = self._propose_tags(storyboard)
         self._save_storyboard(storyboard)
+        references = self.build_cast_references(storyboard)
         epithets = {c.id: c.epithet for c in storyboard.characters}
         print(f"\nTagged {tagged} of {len(targets)} frame(s):")
         for frame in storyboard.frames:
@@ -2730,6 +3495,12 @@ class Pipeline:
             )
         if missing:
             print(f"  ({missing} frame(s) have no styled image yet.)")
+        if references:
+            print(
+                f"\nCut {len(references)} cast face reference(s) into "
+                f"{self.workspace.cast_refs_dir.name}/ — these are what later "
+                "stylings of these people are matched against."
+            )
         print(
             "\nThis is a DRAFT — check it in the panel's \"Who's in each "
             "photo\" tagger, especially where two people look alike.\n"
@@ -2745,6 +3516,90 @@ class Pipeline:
             logger.warning("Could not read the feedback file: %s", exc)
             return {"count": 0, "good": 0, "bad": 0, "lessons": 0,
                     "by_transition": {}}
+
+    def _clip_flags_safe(self) -> dict[str, Any]:
+        """Every mark, or none — a worklist must never break status."""
+        try:
+            return self.clip_flags.all()
+        except Exception as exc:  # noqa: BLE001 - a note can't break status
+            logger.warning("Could not read the clip flags file: %s", exc)
+            return {}
+
+    def _clip_flag_summary(self, clips: list[dict[str, Any]]) -> dict[str, Any]:
+        """Marks + whether each one's clip has been re-rendered since."""
+        mtimes: dict[str, float] = {}
+        for clip in clips:
+            if not clip.get("rendered"):
+                continue
+            path = self.workspace.clips_dir / clip["file"]
+            try:
+                mtimes[clip["id"]] = path.stat().st_mtime
+            except OSError:
+                continue
+        try:
+            return self.clip_flags.summary(mtimes)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not summarise the clip flags: %s", exc)
+            return {"count": 0, "ids": [], "flags": [], "rerendered": []}
+
+    def mark_clip(self) -> dict[str, Any]:
+        """Mark or unmark one rendered clip as needing a fix.
+
+        Free, instant and reversible — it writes one small file and renders
+        nothing. Marking a clip that is not rendered yet is refused: the mark
+        means "I watched this and it is wrong", and there is nothing to have
+        watched.
+        """
+        tid = (self.options.feedback_clip or "").strip()
+        if not tid:
+            raise PipelineError(
+                "Which clip? Pass --clip ID (e.g. --clip 003_to_004)."
+            )
+        clip_path = self.workspace.clips_dir / f"{tid}.mp4"
+        if self.options.clear_flag:
+            cleared = self.clip_flags.clear(tid)
+            return {"transition_id": tid, "marked": False, "was_marked": cleared}
+        if not clip_path.exists():
+            raise PipelineError(
+                f"No rendered clip for {tid} ({clip_path} does not exist). "
+                "A mark says a clip you watched needs redoing, so there has "
+                "to be one to watch — render it first."
+            )
+        try:
+            mtime = clip_path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        flag = self.clip_flags.mark(
+            tid, self.options.feedback_note or "", mtime
+        )
+        return {
+            "transition_id": tid, "marked": True, "note": flag.note,
+            "was_marked": False,
+        }
+
+    def cmd_flag(self) -> None:
+        """CLI face of :meth:`mark_clip`."""
+        result = self.mark_clip()
+        tid = result["transition_id"]
+        if not result["marked"]:
+            print(
+                f"\n{tid} is no longer marked."
+                if result["was_marked"]
+                else f"\n{tid} was not marked; nothing to clear."
+            )
+        else:
+            print(f"\n{tid} is marked as needing a fix.")
+            if result["note"]:
+                print(f"  Note: {result['note']}")
+            print(
+                "  Nothing was deleted or re-rendered — redo it when you are "
+                "ready with:\n    "
+                + self._next_command("render", "--clip", tid)
+            )
+        summary = self._clip_flag_summary(self.snapshot().get("clips") or [])
+        if summary["count"]:
+            print(f"  Marked in this project: {', '.join(summary['ids'])}")
+        print(f"  Worklist: {self.workspace.clip_flags_file}")
 
     def record_feedback(self) -> dict[str, Any]:
         """Record one judgement of a rendered clip and learn a rule from it.
@@ -3243,6 +4098,46 @@ class Pipeline:
                 + self._next_command("storyboard", "--replan-all")
             )
 
+        # Frames drawn before the cast faces they should have matched.
+        # Re-styling costs a credit each, so this names the frames and the
+        # exact command, and stops there.
+        outdated_styling = (
+            (snap["storyboard"] or {}).get("outdated_styling") or []
+        )
+        if outdated_styling:
+            names = [Path(p).name for p in outdated_styling]
+            print(
+                f"  !! {len(names)} frame(s) were styled before the current "
+                "cast face references: "
+                f"{', '.join(names[:6])}{' …' if len(names) > 6 else ''}\n"
+                "     Redraw them against the references (one image credit "
+                "each):\n     "
+                + self._next_command(
+                    "storyboard",
+                    " ".join(f"--restyle-frame {n}" for n in names[:6]),
+                )
+            )
+
+        # Where the last audit found a cast member drawn as somebody else.
+        audit = (snap["storyboard"] or {}).get("face_audit") or {}
+        drifted = {
+            cid: data
+            for cid, data in (audit.get("characters") or {}).items()
+            if data.get("odd_frames")
+        }
+        if drifted:
+            epithets = (snap["storyboard"] or {}).get("cast") or {}
+            total = sum(len(d["odd_frames"]) for d in drifted.values())
+            print(
+                f"  !! the face audit flagged {total} frame(s) across "
+                f"{len(drifted)} cast member(s):"
+            )
+            for cid, data in sorted(drifted.items()):
+                print(
+                    f"       {epithets.get(cid, cid)}: "
+                    + ", ".join(data["odd_frames"])
+                )
+
         # Saved prompts still choreographing people on pairs whose tags say
         # the choreography cannot exist (too many movers / too crowded).
         unstageable = (snap["storyboard"] or {}).get("unstageable_pairs") or []
@@ -3262,11 +4157,30 @@ class Pipeline:
                     "  !! OUTDATED (storyboard changed - redo with --clip)"
                     if clip.get("stale") else ""
                 )
+                if clip.get("model_changed"):
+                    outdated += "  !! rendered with a different video model"
                 print(f"    clip {clip['id']:<12} rendered  ({sfx}){outdated}")
             else:
                 print(f"    clip {clip['id']:<12} MISSING")
         if snap["stray_clips"]:
             print(f"  Stray clips      : {', '.join(snap['stray_clips'])}")
+
+        # Which model renders this project, and whether it can be handed the
+        # cast's faces — one line, because the two are one decision.
+        model = snap.get("video_model") or {}
+        if model:
+            faces = (
+                "cast faces sent" if model.get("sends_cast_faces")
+                else "no cast faces (model can't take them)"
+                if not model.get("supports_elements")
+                else "cast faces available but off"
+            )
+            print(
+                f"  Video model      : {model.get('label')} "
+                f"(${model.get('usd_per_second'):.3f}/s, {faces})"
+                + ("  !! request shape untested here"
+                   if model.get("key") and not model.get("verified") else "")
+            )
 
         # Paid-for renders whose output was never collected. Nothing fetches
         # these in the background — only the next render of that clip does.
@@ -3288,9 +4202,35 @@ class Pipeline:
                     "job's output is lost."
                 )
 
+        # The human's own worklist. Printed before the money so it reads as
+        # what it is: what YOU still have to look at, not what the pipeline
+        # thinks is wrong.
+        flags = snap["clip_flags"]
+        if flags["count"]:
+            print(
+                f"  Needs fixing     : {flags['count']} clip(s) you marked — "
+                + ", ".join(flags["ids"])
+            )
+            for item in flags["flags"]:
+                if item["note"]:
+                    print(f"     {item['transition_id']}: {item['note']}")
+            if flags["rerendered"]:
+                # Never cleared automatically: deciding a human's note is
+                # finished with is not the code's call.
+                print(
+                    "     re-rendered since you marked them ("
+                    + ", ".join(flags["rerendered"])
+                    + ") — clear with:\n     "
+                    + self._next_command(
+                        "flag", "--clip", flags["rerendered"][0], "--clear")
+                )
+
         letter = snap["letter"]
         if letter["chars"]:
             print(f"  Closing letter   : {letter['chars']} chars in {ws.letter_file}")
+            wording = _LETTER_PLACEMENT_WORDING.get(snap["letter_placement"])
+            if wording:
+                print(f"                     plays {wording}")
         elif letter["exists"]:
             print(f"  Closing letter   : {ws.letter_file} is empty — nothing to scroll")
 

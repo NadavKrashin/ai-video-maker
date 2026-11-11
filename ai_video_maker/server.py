@@ -29,6 +29,7 @@ address are throttled (see ``_AuthThrottle``).
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import os
 import queue
@@ -78,11 +79,14 @@ from .intake import (
 )
 from .logging_setup import logger, setup_logging
 from .media.audio_files import looks_like_audio
+from .clip_flags import ClipFlagStore
 from .media.letter import read_letter, save_letter
 from .media.music_url import fetch_music
 from .models import Storyboard, changed_transition_ids
 from .options import RunOptions
+from .project_settings import coerce_settings, describe_settings
 from .runner import Pipeline
+from .video_models import VIDEO_MODELS, get_video_model, model_keys
 from .workspace import (
     PROJECT_ROOT,
     PROJECTS_DIR,
@@ -100,6 +104,11 @@ _ALLOWED_COMMANDS = {
     # `tag` proposes who is in each frame; it writes only frames[].people,
     # never a transition, so it can't invalidate a rendered clip.
     "tag",
+    # `faces` cuts the cast's canonical portraits (free, derived from frames
+    # already styled) and with audit_faces=true also reports where someone is
+    # drawn as a different person. It never re-styles, re-plans or re-renders
+    # anything — the repair is an explicit storyboard --restyle-frame.
+    "faces",
 }
 _ALLOWED_OPTIONS = {f.name for f in dataclasses.fields(RunOptions)}
 
@@ -699,8 +708,62 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         return ws
 
     def _pipeline(ws: Workspace) -> Pipeline:
-        cfg = Config.load(config_path, override_path=ws.root / "config.json")
+        cfg = Config.load(config_path, override_path=ws.project_config_file)
         return Pipeline(cfg, ws, RunOptions())
+
+    def _read_project_config(ws: Workspace) -> dict[str, Any]:
+        """This project's config overrides, or {} when it has none.
+
+        A malformed file is a 500 rather than a silent {}: overwriting one
+        would throw away whatever a human hand-wrote in there, and the panel
+        is the only place the error would ever be read.
+        """
+        path = ws.project_config_file
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Could not read the project config: {exc}"
+            ) from exc
+        if not isinstance(data, dict):
+            raise HTTPException(
+                status_code=500,
+                detail=f"{path.name} must contain a JSON object",
+            )
+        return data
+
+    def _read_shared_config() -> dict[str, Any]:
+        """The studio-wide config as raw JSON, for validating an override on
+        top of it before anything is written."""
+        try:
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Could not read the shared config: {exc}"
+            ) from exc
+        return data if isinstance(data, dict) else {}
+
+    def _write_project_config(ws: Workspace, data: dict[str, Any]) -> None:
+        """Save the overrides, or DELETE the file once nothing is pinned.
+
+        An empty file left behind would be indistinguishable from a project
+        that pins something, and `Config.load` treats a missing override file
+        and an empty one identically anyway — so the tidier state is no file.
+        """
+        path = ws.project_config_file
+        try:
+            if data:
+                path.write_text(
+                    json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+                )
+            else:
+                path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Could not save the project config: {exc}"
+            ) from exc
 
     # ------------------------------ endpoints ------------------------------ #
 
@@ -1179,6 +1242,162 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         state = save_letter(ws.letter_file, text)
         return {"ok": True, "letter": state}
 
+    @app.put("/api/projects/{name}/clips/{clip_id}/flag", dependencies=guarded)
+    async def flag_clip(
+        name: str, clip_id: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Mark (or unmark) a rendered clip as needing a fix.
+
+        A worklist, not a judgement the pipeline acts on — see clip_flags.py
+        for why this is deliberately separate from the feedback store. Free,
+        instant and reversible, so it goes straight through rather than
+        through the job runner: there is no work to queue and nothing to
+        confirm. Marking cannot delete or re-render anything, which is what
+        makes it safe to expose this directly.
+        """
+        ws = _workspace(name)
+        marked = body.get("marked", True)
+        if not isinstance(marked, bool):
+            raise HTTPException(
+                status_code=422, detail="'marked' must be true or false"
+            )
+        note = body.get("note", "")
+        if not isinstance(note, str):
+            raise HTTPException(status_code=422, detail="'note' must be a string")
+        # The id becomes a filename, so it may not wander out of clips/.
+        if "/" in clip_id or "\\" in clip_id or clip_id in ("", ".", ".."):
+            raise HTTPException(status_code=422, detail="Bad clip id")
+        store = ClipFlagStore(ws.clip_flags_file)
+        if not marked:
+            store.clear(clip_id)
+            return {"ok": True, "marked": False}
+        clip_path = ws.clips_dir / f"{clip_id}.mp4"
+        if not clip_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"No rendered clip for {clip_id} — render it first.",
+            )
+        try:
+            mtime = clip_path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        flag = store.mark(clip_id, note, mtime)
+        return {"ok": True, "marked": True, "note": flag.note}
+
+    @app.get("/api/video-models", dependencies=guarded)
+    async def list_video_models() -> dict[str, Any]:
+        """The selectable video models, for the panel's picker."""
+        return {
+            "models": [
+                {
+                    "key": m.key,
+                    "label": m.label,
+                    "model_id": m.model_id,
+                    "supports_elements": m.supports_elements,
+                    "usd_per_second": m.usd_per_second,
+                    "verified": m.verified,
+                    "note": m.note,
+                }
+                for m in VIDEO_MODELS
+            ]
+        }
+
+    @app.put("/api/projects/{name}/video-model", dependencies=guarded)
+    async def set_video_model(name: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Pin which video model this ONE project renders with.
+
+        Writes `video_model` into projects/<name>/config.json, which is
+        merged over the shared config — so this never changes what any other
+        movie renders with. Deliberately narrow: it edits exactly one key and
+        validates it against the registry, rather than opening the whole
+        config to arbitrary writes from a browser.
+
+        Free and instant. It does not re-render anything: clips already
+        rendered keep the model they were made with and are flagged
+        `model_changed` so a movie can't silently mix two.
+        """
+        ws = _workspace(name)
+        key = str(body.get("model") or "").strip()
+        if key and get_video_model(key) is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown model {key!r}. Available: "
+                       + ", ".join(model_keys()),
+            )
+        current = _read_project_config(ws)
+        # An empty choice REMOVES the pin rather than writing "", so the
+        # project goes back to following the shared config.
+        if key:
+            current["video_model"] = key
+        else:
+            current.pop("video_model", None)
+        # The preset's field names are derived at load time, never frozen
+        # into the file — otherwise a corrected preset could never reach a
+        # project that had already been pinned.
+        for derived in ("fal_model_id", "fal_start_frame_field",
+                        "fal_end_frame_field", "fal_elements_field",
+                        "fal_element_image_field", "fal_max_elements",
+                        "fal_element_prompt_template"):
+            current.pop(derived, None)
+        _write_project_config(ws, current)
+        return {"ok": True, "video_model": key}
+
+    @app.put("/api/projects/{name}/settings", dependencies=guarded)
+    async def save_project_settings(
+        name: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Override a few config knobs for THIS project.
+
+        Deliberately an allowlist (`project_settings.PROJECT_SETTINGS`), not a
+        config editor: most of config breaks renders in ways that are hard to
+        diagnose from a browser, while these few exist precisely to be
+        experimented with. Everything else in the project's config.json is
+        left exactly as it is.
+
+        Body is ``{"settings": {key: value}}``. A value of ``null`` REMOVES
+        the override so the shared config decides again — a different thing
+        from pinning the shared value, and it has to stay expressible or a
+        project could never be un-pinned.
+
+        Free and instant: nothing is re-planned, re-styled or re-rendered.
+        These are plan-time and render-time inputs, so they land on the next
+        storyboard/render, the same rule as the cast and the photo tags.
+        """
+        ws = _workspace(name)
+        patch = body.get("settings")
+        if not isinstance(patch, dict):
+            raise HTTPException(
+                status_code=422, detail="'settings' must be an object"
+            )
+        try:
+            cleaned = coerce_settings(patch)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        current = _read_project_config(ws)
+        for key, value in cleaned.items():
+            if value is None:
+                current.pop(key, None)
+            else:
+                current[key] = value
+        # Validate the RESULT before saving: a combination this config class
+        # rejects would otherwise be written to disk and then break every
+        # later load of the project, including the status page that would
+        # have to explain it.
+        try:
+            Config(**{**_read_shared_config(), **current})
+        except Exception as exc:  # noqa: BLE001 - reported, not raised through
+            raise HTTPException(
+                status_code=422, detail=f"Those settings are not valid: {exc}"
+            ) from exc
+        _write_project_config(ws, current)
+
+        pipeline = _pipeline(ws)
+        return {
+            "ok": True,
+            "settings": describe_settings(pipeline.config, pipeline.pinned_settings()),
+        }
+
     @app.put("/api/projects/{name}/storyboard", dependencies=guarded)
     async def save_storyboard(name: str, body: dict[str, Any]) -> dict[str, Any]:
         """Overwrite the storyboard, marking clips the edits invalidated.
@@ -1449,6 +1668,9 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         # because the file route deliberately refuses path separators.
         "published": lambda ws: ws.published_dir,
         "storyboard": lambda ws: ws.storyboard_dir,
+        # The cast's canonical faces, so the Cast editor can show what each
+        # person's identity anchor actually looks like.
+        "cast_refs": lambda ws: ws.cast_refs_dir,
     }
 
     @app.get("/api/projects/{name}/files/{kind}/{filename}",

@@ -66,6 +66,30 @@ class RunOptions:
     # a prompt when its pair is planned again. Hand-written prompts are
     # replaced, so it is never implicit.
     replan_all: bool = False
+    # storyboard: turn the pairs named by --replan-clip / --replan-all into
+    # deterministic CAMERA transitions instead of planning choreography for
+    # them. The human override for a pair the gate judged stageable but that
+    # mushed when rendered. Free — the wording is a template, so no vision
+    # call — and always a 5s clip.
+    replan_as_camera: bool = False
+    # storyboard: plan the pairs named by --replan-clip / --replan-all through
+    # their PEOPLE even when the unstageable gate would have replaced the
+    # choreography with a camera move. The mirror image of
+    # `replan_as_camera`: the gate decides from tags and headcounts and has
+    # never seen a render, so this is the override for a pair it called
+    # unstageable that a human thinks is worth staging. Costs a vision call
+    # (unlike forcing the camera, which is a template), and the rest of the
+    # coercion — swap restaging, offscreen-ending repair — still applies, so
+    # what comes back is a normal planned prompt and not an unchecked one.
+    replan_stages_people: bool = False
+    # faces: also ask the vision model which frames draw a cast member as a
+    # different person. Off by default because rebuilding the reference sheet
+    # is free and this is the one part of it that costs a call.
+    audit_faces: bool = False
+    # flag: clear the mark instead of setting it. The whole value of the
+    # worklist is being able to tick something off, so unmarking is a
+    # first-class action, not an edit of a record.
+    clear_flag: bool = False
     # feedback: one human judgement of a rendered clip (see feedback.py).
     # `feedback_clip` is the transition id it is about ("003_to_004"); empty
     # means feedback about the movie in general. `feedback_learn` off records
@@ -88,6 +112,9 @@ class RunOptions:
     credits_photos: Optional[bool] = None
     closing_letter: Optional[bool] = None
     intro_clip: Optional[bool] = None
+    # Where the closing letter plays: over the photo montage, after it, or
+    # after it over a held still of the last photo. None -> config.
+    letter_placement: Optional[str] = None
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> "RunOptions":
@@ -126,6 +153,10 @@ class RunOptions:
             retag=bool(get("retag")),
             tag_frames=not get("no_tag", False),
             replan_all=bool(get("replan_all")),
+            replan_as_camera=bool(get("camera")),
+            replan_stages_people=bool(get("stage_people")),
+            audit_faces=bool(get("audit")),
+            clear_flag=bool(get("clear")),
             feedback_clip=get("clip_id"),
             feedback_note=get("note"),
             # --good flips the verdict; the default is that feedback is a
@@ -139,4 +170,5 @@ class RunOptions:
             credits_photos=presentation("credits_photos"),
             closing_letter=get("letter"),
             intro_clip=presentation("intro"),
+            letter_placement=get("letter_placement"),
         )

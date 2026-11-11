@@ -14,6 +14,7 @@ endpoint):
     publish     upload the finished movie into its Cloudinary order folder
     status      show where the project stands and what to run next
     tag         say who is in each frame (identity ground truth for planning)
+    flag        mark a rendered clip as needing a fix (a worklist; free)
     feedback    tell the planner what a rendered clip got wrong, and learn from it
     lessons     show/edit what it has learned so far (project-less)
     costs       what each project has cost, and the total (project-less)
@@ -31,7 +32,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
-from .config import Config
+from .config import LETTER_PLACEMENTS, Config
 from .constants import VALID_DURATIONS
 from .errors import InvalidProjectName, PipelineError
 from .logging_setup import logger, setup_logging
@@ -216,6 +217,24 @@ def build_parser() -> argparse.ArgumentParser:
                          "didn't change; everything else is kept. If its clip "
                          "is already rendered it gets marked outdated. "
                          "Repeatable.")
+    sp.add_argument("--camera", action="store_true",
+                    help="With --replan-clip / --replan-all: make those pairs "
+                         "deterministic CAMERA transitions (the camera travels "
+                         "to the new setting and settles on the end frame) "
+                         "instead of choreographing the people. Free — the "
+                         "wording is a template, so no vision call — and "
+                         "always a 5-second clip. Use it on a pair that mushed "
+                         "when rendered even though the gate judged it "
+                         "stageable.")
+    sp.add_argument("--stage-people", action="store_true",
+                    help="With --replan-clip / --replan-all: plan those pairs "
+                         "through their PEOPLE even if the unstageable gate "
+                         "would have replaced the choreography with a camera "
+                         "move. The mirror of --camera: the gate judges from "
+                         "tags and headcounts and has never seen a render, so "
+                         "this is how you say 'try it anyway'. Spends a vision "
+                         "call, and the prompt still goes through swap "
+                         "restaging and offscreen-ending repair.")
     sp.add_argument("--restyle-frame", action="append", metavar="NAME",
                     help="Re-style this frame from scratch (styled png name, "
                          "e.g. beach.png) even though its source is unchanged "
@@ -284,6 +303,15 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Scroll the project's letter.txt (Hebrew-safe) over "
                          "a dark background at the very end, credits-style. "
                          "Overrides the closing_letter config key.")
+    sp.add_argument("--letter-placement", default=None,
+                    choices=list(LETTER_PLACEMENTS),
+                    help="Where the closing letter plays: over_photos "
+                         "scrolls it over the end-credits montage (both end "
+                         "together), after_photos lets the montage finish "
+                         "first and then scrolls the letter on a dark "
+                         "screen, on_last_photo does the same but holds the "
+                         "movie's last photo behind the text. Overrides the "
+                         "letter_placement config key for this run.")
     sp.add_argument("--intro", action=argparse.BooleanOptionalAction,
                     default=None,
                     help="Prepend the shared intro video (intro.mp4 at the "
@@ -328,6 +356,41 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Say what would be looked at without spending a call.")
     sp.add_argument("-y", "--yes", action="store_true",
                     help="Skip the confirmation prompt.")
+
+    sp = command("faces",
+                 "Cut one canonical styled face per cast member out of the "
+                 "frames they appear in, using the positions from `tag`. "
+                 "These references are what later stylings of those people "
+                 "are matched against, so the same person stays the same "
+                 "character from frame to frame. Free — the faces come from "
+                 "images already styled. With --audit it also asks the vision "
+                 "model which frames draw someone as a DIFFERENT person "
+                 "(one paid call); nothing is ever re-styled for you.")
+    sp.add_argument("--audit", action="store_true",
+                    help="Also compare every tagged appearance of each cast "
+                         "member and report the frames where they are drawn "
+                         "as somebody else. One OpenAI vision call.")
+    sp.add_argument("--dry-run", action="store_true",
+                    help="Say what would be cut and compared, spending nothing.")
+    sp.add_argument("-y", "--yes", action="store_true",
+                    help="Skip the confirmation prompt for --audit.")
+
+    sp = command("flag",
+                 "Mark a rendered clip as needing a fix, so you know which "
+                 "ones to come back to. FREE and instant — it writes one small "
+                 "file, teaches the planner nothing and changes nothing about "
+                 "the movie. Marks show up in `status`, in the snapshot and on "
+                 "the clip in the panel; clear one with --clear once it is "
+                 "fixed. Use `feedback` instead when you want the planner to "
+                 "LEARN from what went wrong.")
+    sp.add_argument("--clip", dest="clip_id", metavar="ID", required=True,
+                    help="Which rendered clip needs fixing (e.g. 003_to_004).")
+    sp.add_argument("note", nargs="?", default="",
+                    help="Optional reminder of what is wrong with it, for when "
+                         "you come back. Keep it short — the long version "
+                         "belongs in `feedback`, where it can teach something.")
+    sp.add_argument("--clear", action="store_true",
+                    help="Unmark this clip instead (it has been dealt with).")
 
     sp = command("feedback",
                  "Tell the planner what a rendered clip got wrong (or right). "

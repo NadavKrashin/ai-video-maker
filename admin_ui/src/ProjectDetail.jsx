@@ -5,12 +5,14 @@
 // goes through a confirmation modal that says exactly what will happen.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Alert, Badge, Button, Card, Checkbox, Divider, Group, Image, Modal, Paper,
-  ScrollArea, SegmentedControl, Select, Stack, Text, Textarea, TextInput,
-  Title, UnstyledButton
+  Alert, Badge, Button, Card, Checkbox, Divider, Group, Image, Menu, Modal,
+  NumberInput, Paper, ScrollArea, SegmentedControl, Select, Stack, Text,
+  Textarea, TextInput, Title, UnstyledButton
 } from '@mantine/core';
 import { api, fileUrl } from './api.js';
-import { COST, ConfirmModal, notify, stepChip, usd } from './ui.jsx';
+import {
+  COST, CollapsibleCard, ConfirmModal, ZoomableImage, notify, stepChip, usd
+} from './ui.jsx';
 
 // A transition's start_frame/end_frame is the styled image path in practice
 // ("styled_images/img1.png"), but may also be a frame id — handle both.
@@ -300,6 +302,9 @@ function FrameTagger({ project, frame, cast, mediaV, onChange }) {
       </Group>
       <div style={{ position: 'relative', cursor: active ? 'crosshair' : 'default' }}
         onClick={place}>
+        {/* Deliberately NOT a ZoomableImage: on this one image a click means
+            "place a face tag here", and the tag's x/y come from where you
+            clicked. Opening a lightbox instead would take the tagger away. */}
         <Image src={fileUrl(project, 'styled', imgName, mediaV)} radius="sm"
           alt={imgName} />
         {people.map((p) => (
@@ -390,10 +395,14 @@ function SpendCard({ project, cost }) {
   );
 }
 
-function TransitionCard({ project, tr, framesById, clip, edited, placeholder, verdict, planBehind, endsOffscreen, unstageable, selected, onToggleSelect, onEdit, onRegenerate, onReplan, onRedoAudio, onFeedback, busy, replanBusy, audioBusy, mediaV }) {
+function TransitionCard({ project, tr, framesById, clip, edited, placeholder, verdict, planBehind, endsOffscreen, unstageable, isCamera, selected, onToggleSelect, onEdit, onRegenerate, onReplan, onReplanAsCamera, onReplanStagingPeople, onRedoAudio, onFeedback, onToggleFix, busy, replanBusy, audioBusy, flagBusy, mediaV }) {
   const startImg = frameName(framesById, tr.start_frame);
   const endImg = frameName(framesById, tr.end_frame);
   const clipFile = tr.output_path.split('/').pop();
+  const framePair = [
+    ...(startImg ? [{ src: fileUrl(project, 'styled', startImg, mediaV), label: `start · ${tr.start_frame}` }] : []),
+    ...(endImg ? [{ src: fileUrl(project, 'styled', endImg, mediaV), label: `end · ${tr.end_frame}` }] : [])
+  ];
   return (
     <Card withBorder padding="md">
       <Group gap="xs" mb="sm">
@@ -409,6 +418,20 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, ve
           <Badge variant="light" color="orange"
             title="The storyboard changed after this clip was rendered (re-planned motion). The clip is kept as-is — click regenerate when you want the new plan applied (spends credits).">
             outdated
+          </Badge>
+        )}
+        {clip?.model_changed && (
+          <Badge variant="light" color="grape"
+            title={`Rendered with ${clip.model}, which is no longer the configured video model. The clip is fine — but a movie mixing two models can look inconsistent. Regenerate it when you want them to match (spends credits).`}>
+            older video model
+          </Badge>
+        )}
+        {clip?.needs_fix && (
+          <Badge variant="filled" color="red"
+            title={clip.fix_note
+              ? `You marked this clip as needing a fix: ${clip.fix_note}`
+              : 'You marked this clip as needing a fix.'}>
+            needs fixing
           </Badge>
         )}
         <Text size="xs" c="dimmed">{tr.duration}s</Text>
@@ -446,11 +469,15 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, ve
       </Group>
       <Group align="center" gap="md">
         <Group gap={6} align="center" wrap="nowrap">
-          {startImg && <Image src={fileUrl(project, 'styled', startImg, mediaV)} alt={tr.start_frame}
-            w={128} radius="sm" loading="lazy" />}
+          {/* Either frame opens the PAIR: what you are judging on a clip card
+              is the journey between them, which one frame cannot show. */}
+          {startImg && <ZoomableImage src={fileUrl(project, 'styled', startImg, mediaV)}
+            alt={tr.start_frame} w={128} radius="sm" loading="lazy"
+            zoomTitle={tr.id} zoomImages={framePair} />}
           <Text c="dimmed">→</Text>
-          {endImg && <Image src={fileUrl(project, 'styled', endImg, mediaV)} alt={tr.end_frame}
-            w={128} radius="sm" loading="lazy" />}
+          {endImg && <ZoomableImage src={fileUrl(project, 'styled', endImg, mediaV)}
+            alt={tr.end_frame} w={128} radius="sm" loading="lazy"
+            zoomTitle={tr.id} zoomImages={framePair} />}
         </Group>
         {clip?.rendered && (
           // preload="none": don't fetch clip bytes until the user hits play.
@@ -473,11 +500,58 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, ve
         <TextInput label="Sound prompt (optional)" style={{ flex: 1 }} miw={220}
           value={tr.sound_prompt || ''}
           onChange={(e) => onEdit({ ...tr, sound_prompt: e.target.value })} />
-        <Button variant="default" size="xs" loading={replanBusy}
-          onClick={() => onReplan(tr.id)}
-          title="Ask the AI planner to write a fresh motion prompt for this pair (small OpenAI call; the clip is not re-rendered)">
-          Re-plan prompt
-        </Button>
+        {/* One button, three ways to re-plan. The gate that decides between
+            people and camera judges from tags and headcounts and has never
+            watched a render, so a human needs to be able to overrule it in
+            EITHER direction — not just the camera one. */}
+        <Menu shadow="md" width={330} position="bottom-start">
+          <Menu.Target>
+            <Button variant="default" size="xs" loading={replanBusy}>
+              Re-plan prompt ▾
+            </Button>
+          </Menu.Target>
+          <Menu.Dropdown>
+            <Menu.Item onClick={() => onReplan(tr.id)}>
+              <Text size="xs" fw={500}>Let the planner decide</Text>
+              <Text size="xs" c="dimmed">
+                A fresh look at the two frames. Pairs with too many people
+                moving still come back as a camera move.
+              </Text>
+            </Menu.Item>
+            {!isCamera && (
+              <Menu.Item onClick={() => onReplanAsCamera(tr.id)}>
+                <Text size="xs" fw={500}>Force a camera move</Text>
+                <Text size="xs" c="dimmed">
+                  People hold still, the camera travels and settles on the end
+                  frame. Free and instant — no AI call. Use it when people
+                  distorted travelling between the frames.
+                </Text>
+              </Menu.Item>
+            )}
+            <Menu.Item onClick={() => onReplanStagingPeople(tr.id)}>
+              <Text size="xs" fw={500}>Stage the people anyway</Text>
+              <Text size="xs" c="dimmed">
+                Choreograph the people even if this pair reads as too crowded
+                to stage. Use it when a camera move is not what this moment
+                needs{unstageable ? ' — this pair is flagged as one' : ''}.
+              </Text>
+            </Menu.Item>
+          </Menu.Dropdown>
+        </Menu>
+        {clip?.rendered && (
+          // Free, instant and reversible, so no confirmation modal — that
+          // one is for spending money and destroying work. This writes a
+          // line in a worklist and cannot touch the clip.
+          <Button size="xs" loading={flagBusy}
+            variant={clip.needs_fix ? 'filled' : 'default'}
+            color={clip.needs_fix ? 'red' : undefined}
+            onClick={() => onToggleFix(tr.id, !clip.needs_fix, clip.fix_note)}
+            title={clip.needs_fix
+              ? 'You marked this as needing a fix. Click to tick it off.'
+              : 'Mark this clip as needing a fix, so you know which ones to come back to. Free — it changes nothing about the movie and teaches the planner nothing (use Feedback for that).'}>
+            {clip.needs_fix ? '✓ Fixed' : 'Needs fixing'}
+          </Button>
+        )}
         {clip?.rendered && (
           <Button variant="default" size="xs" loading={audioBusy}
             onClick={() => onRedoAudio(tr.id)}
@@ -716,6 +790,226 @@ function StoryboardPanel({ ask, locked, info, onReplanAll }) {
   );
 }
 
+// The cast's canonical faces: one styled portrait per person, cut for free
+// out of frames already paid for. They are what later stylings of that person
+// are matched against, so this card exists to answer one question at a
+// glance — "is THIS the face the model will be told to draw?" — and to let
+// you point it at a better frame when it isn't.
+function CastFacesCard({
+  name, snap, storyboard, locked, mediaV, audit, onRebuild, onAudit, onPickFrame
+}) {
+  const cast = storyboard.characters || [];
+  const findings = audit.characters || {};
+  // Which frames each person is tagged in — the choices for "cut it from a
+  // different photo instead".
+  const appearances = {};
+  (storyboard.frames || []).forEach((f) => {
+    (f.people || []).forEach((p) => {
+      (appearances[p.id] = appearances[p.id] || []).push(f.output_path);
+    });
+  });
+  const outdated = snap.storyboard?.outdated_styling || [];
+
+  const drifted = Object.values(findings)
+    .filter((f) => f.odd_frames?.length).length;
+
+  return (
+    <CollapsibleCard id="cast-faces" title="Cast faces"
+      badges={<>
+        <Badge size="xs" variant="light" color="gray">{cast.length}</Badge>
+        {/* Both of these are why you would open this card, so neither may
+            disappear when it is folded. */}
+        {drifted > 0 && (
+          <Badge size="xs" variant="light" color="orange">
+            {drifted} drifted
+          </Badge>
+        )}
+        {outdated.length > 0 && (
+          <Badge size="xs" variant="light" color="yellow">
+            {outdated.length} styled against older faces
+          </Badge>
+        )}
+      </>}
+      actions={<>
+        <Button size="compact-xs" variant="default" disabled={locked}
+          onClick={onRebuild}
+          title="Re-cut every reference from the current tags. Free — the faces come from frames that are already styled.">
+          Rebuild
+        </Button>
+        <Button size="compact-xs" variant="default" disabled={locked}
+          onClick={onAudit}
+          title="One vision call compares every tagged appearance of each person and reports where they are drawn as somebody else. Nothing is re-styled.">
+          Find drifted faces…
+        </Button>
+      </>}>
+      <Text size="xs" c="dimmed" mb="xs">
+        One canonical face per person, cut from the photo where their face is
+        largest. Styling a photo of them sends these along, so the same person
+        stays the same character across the movie. Free to rebuild; edits here
+        apply the next time a frame is styled.
+      </Text>
+      {outdated.length > 0 && (
+        <Alert color="yellow" variant="light" mb="xs"
+          title={`${outdated.length} frame(s) were styled against older faces`}>
+          Their references have changed since — someone was re-cut from a
+          different photo, or tagged into or out of that frame. Re-style those
+          frames (one image credit each) from the Storyboard step to bring
+          them in line, or leave them: they are not broken, just older.
+        </Alert>
+      )}
+      {audit.ran_at && Object.values(findings).every((f) => !f.odd_frames?.length) && (
+        <Alert color="green" variant="light" mb="xs" title="No drifted faces">
+          The last audit checked {audit.checked} character(s) and found
+          everyone drawn consistently.
+        </Alert>
+      )}
+      <Stack gap="sm">
+        {cast.map((c) => {
+          const finding = findings[c.id] || {};
+          const odd = finding.odd_frames || [];
+          const frames = appearances[c.id] || [];
+          // Zoomable only when a reference exists: with none, the image falls
+          // back to a blank SVG and blowing that up would show nothing.
+          const RefImage = frames.length ? ZoomableImage : Image;
+          return (
+            <Group key={c.id} align="flex-start" gap="sm" wrap="nowrap">
+              {/* 64px square, cropped to fill — exactly the size at which a
+                  mush crop and a clean one look the same. */}
+              <RefImage w={64} h={64} radius="sm" fit="cover"
+                fallbackSrc="data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E"
+                src={fileUrl(name, 'cast_refs', `${c.id}.png`, mediaV)}
+                alt={c.epithet}
+                zoomTitle={`${c.epithet || c.id} — cast reference`} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <Text size="xs" fw={500}>{c.epithet || c.id}</Text>
+                {frames.length === 0 ? (
+                  <Text size="xs" c="dimmed">
+                    Tagged in no photo yet — no reference.
+                  </Text>
+                ) : (
+                  <Select size="xs" mt={4} allowDeselect={false}
+                    value={c.reference_frame || ''}
+                    data={[
+                      { value: '', label: `Automatic (${frames.length} photo(s))` },
+                      ...frames.map((p) => ({ value: p, label: p.split('/').pop() }))
+                    ]}
+                    onChange={(v) => onPickFrame(c.id, v || '')}
+                    title="Which photo this person's face is cut from. Automatic picks the one with the fewest people in it." />
+                )}
+                {odd.length > 0 && (
+                  <Text size="xs" c="orange" mt={4}>
+                    drawn differently in {odd.join(', ')}
+                    {finding.note ? ` — ${finding.note}` : ''}
+                  </Text>
+                )}
+                {!odd.length && finding.note && (
+                  <Text size="xs" c="dimmed" mt={4}>{finding.note}</Text>
+                )}
+              </div>
+            </Group>
+          );
+        })}
+      </Stack>
+    </CollapsibleCard>
+  );
+}
+
+// The handful of config knobs whose right value is a matter of taste that
+// only a watched render settles. They were always tunable by editing
+// projects/<name>/config.json on the machine — which, behind the tunnel,
+// means a shell on the mini, so "just try 2/3 on one project" was advice
+// nobody could act on. Deliberately NOT a config editor: the server keeps an
+// allowlist, and everything else stays out of reach of a browser.
+function ProjectSettingsCard({ settings, locked, busy, onSave, onReset }) {
+  // Local edits, so a number can be typed without a save per keystroke.
+  const [draft, setDraft] = useState({});
+  const pending = Object.keys(draft).length > 0;
+
+  // Drop local edits once the server's answer matches them — otherwise a
+  // saved value would keep showing as unsaved.
+  useEffect(() => {
+    setDraft((d) => {
+      const next = { ...d };
+      settings.forEach((s) => {
+        if (Object.prototype.hasOwnProperty.call(next, s.key)
+            && next[s.key] === s.value) delete next[s.key];
+      });
+      return Object.keys(next).length === Object.keys(d).length ? d : next;
+    });
+  }, [settings]);
+
+  const valueOf = (s) => (
+    Object.prototype.hasOwnProperty.call(draft, s.key) ? draft[s.key] : s.value
+  );
+  const edit = (key, value) => setDraft((d) => ({ ...d, [key]: value }));
+
+  const APPLIES = {
+    're-plan': 'takes effect when a pair is re-planned',
+    restyle: 'takes effect when a frame is re-styled',
+    render: 'takes effect on the next render'
+  };
+
+  if (!settings.length) return null;
+  return (
+    <Card withBorder padding="md" mt="xl">
+      <Group gap="sm" mb={4}>
+        <Text size="sm" fw={500}>Project settings</Text>
+        <div style={{ flex: 1 }} />
+        {pending && (
+          <Button size="compact-xs" variant="subtle"
+            onClick={() => setDraft({})}>Discard</Button>
+        )}
+        <Button size="compact-xs" disabled={locked || !pending} loading={busy}
+          onClick={() => onSave(draft)}>
+          Save settings
+        </Button>
+      </Group>
+      <Text size="xs" c="dimmed" mb="sm">
+        Tuning knobs for THIS movie only — nothing else in the studio changes,
+        and nothing here spends credits or touches work already on disk. Values
+        marked “studio default” are inherited from the shared config and will
+        follow it if it changes; saving one pins it here instead.
+      </Text>
+      <Stack gap="md">
+        {settings.map((s) => (
+          <div key={s.key}>
+            <Group align="center" gap="sm" wrap="nowrap">
+              {s.kind === 'bool' ? (
+                <Checkbox label={s.label} checked={Boolean(valueOf(s))}
+                  disabled={locked}
+                  onChange={(e) => edit(s.key, e.target.checked)} />
+              ) : (
+                <NumberInput label={s.label} w={150} size="xs"
+                  min={s.minimum ?? undefined} max={s.maximum ?? undefined}
+                  disabled={locked} value={valueOf(s)} clampBehavior="strict"
+                  onChange={(v) => edit(s.key, v === '' ? s.value : Number(v))} />
+              )}
+              <div style={{ flex: 1 }} />
+              <Badge variant="light" size="sm"
+                color={Object.prototype.hasOwnProperty.call(draft, s.key)
+                  ? 'yellow' : s.pinned ? 'blue' : 'gray'}>
+                {Object.prototype.hasOwnProperty.call(draft, s.key)
+                  ? 'unsaved'
+                  : s.pinned ? 'set for this project' : 'studio default'}
+              </Badge>
+              {s.pinned && (
+                <Button size="compact-xs" variant="subtle" disabled={locked}
+                  onClick={() => onReset(s.key)}
+                  title="Stop overriding this here and follow the shared config again">
+                  Reset
+                </Button>
+              )}
+            </Group>
+            <Text size="xs" c="dimmed" mt={4}>
+              {s.help} <i>({APPLIES[s.applies] || s.applies})</i>
+            </Text>
+          </div>
+        ))}
+      </Stack>
+    </Card>
+  );
+}
+
 // Step 2: the review stop. Planning has just named the cast and taken a
 // first guess at who is in each photo; this is where a human fixes both and
 // then pushes those corrections into the prompts. Nothing here renders.
@@ -753,6 +1047,23 @@ function PeoplePanel({
           taller boy” — before re-planning.
         </Alert>
       )}
+      {info.driftedFaces > 0 && (
+        <Alert color="orange" variant="light" mb="md"
+          title={`${info.driftedFaces} photo(s) draw someone as a different person`}>
+          The last face audit found frames where a cast member's face is not
+          the same person as in their other photos. Open the Cast faces card
+          below to see who and where; re-styling those frames (one image
+          credit each) is a deliberate action from the Storyboard step.
+        </Alert>
+      )}
+      {info.outdatedStyling > 0 && (
+        <Alert color="yellow" variant="light" mb="md"
+          title={`${info.outdatedStyling} photo(s) were styled against older cast faces`}>
+          Their references changed afterwards. They are not broken — just
+          drawn before the current faces existed. Re-style them when you want
+          them in line.
+        </Alert>
+      )}
       <Group align="flex-end">
         <Text size="sm" style={{ flex: 1 }}>
           {info.totalFrames === 0
@@ -783,7 +1094,57 @@ function PeoplePanel({
   );
 }
 
-function RenderPanel({ ask, locked, info, onGenerateAll }) {
+// Which video model this project renders with. The choice carries its own
+// consequences — the request shape, the price per second, and whether the
+// cast's faces can be sent at all — so all three are shown next to it rather
+// than left as separate settings to keep in step.
+function VideoModelPicker({ locked, current, models, onPick }) {
+  const chosen = models.find((m) => m.key === current.key);
+  return (
+    <Card withBorder padding="sm" mb="md">
+      <Group align="flex-end" gap="sm">
+        <Select label="Video model" w={230} allowDeselect={false}
+          disabled={locked || !models.length}
+          value={current.key || ''}
+          data={[
+            ...(current.key ? [] : [{ value: '', label: current.label }]),
+            ...models.map((m) => ({ value: m.key, label: m.label }))
+          ]}
+          onChange={(v) => v && v !== current.key && onPick(v)}
+          title="Which Kling model renders this project's clips. Only this project changes." />
+        <div style={{ flex: 1 }}>
+          <Group gap="xs" mb={4}>
+            <Badge variant="light"
+              color={current.sends_cast_faces ? 'green' : 'gray'}>
+              {current.sends_cast_faces
+                ? 'sends cast faces'
+                : current.supports_elements
+                  ? 'cast faces available'
+                  : 'no cast faces'}
+            </Badge>
+            <Badge variant="light" color="gray">
+              ${Number(current.usd_per_second || 0).toFixed(3)}/s
+            </Badge>
+            {chosen && !chosen.verified && (
+              <Badge variant="light" color="orange"
+                title="This request shape comes from fal's docs and has not been rendered from here yet.">
+                untested here
+              </Badge>
+            )}
+          </Group>
+          <Text size="xs" c="dimmed">
+            {chosen?.note
+              || 'Following the shared config. Pick a model to pin one for this project.'}
+          </Text>
+        </div>
+      </Group>
+    </Card>
+  );
+}
+
+function RenderPanel({
+  ask, locked, info, onGenerateAll, videoModel, videoModels, onPickModel
+}) {
   const [motionPrompt, setMotionPrompt] = useState('');
   const [duration, setDuration] = useState('');
   const [dryRun, setDryRun] = useState(false);
@@ -816,12 +1177,30 @@ function RenderPanel({ ask, locked, info, onGenerateAll }) {
         doesn't have one yet. Review the storyboard first — each clip is paid
         the moment it renders.
       </PanelIntro>
+      <VideoModelPicker locked={locked} current={videoModel}
+        models={videoModels} onPick={onPickModel} />
       {info.outdated > 0 && (
         <Alert color="orange" variant="light" mb="md"
           title={`${info.outdated} rendered clip(s) are outdated`}>
           Their motion prompt, duration or frames changed after they were
           rendered. Rendering missing clips leaves them alone — use
           “Generate everything that needs it” to redo them in the same job.
+        </Alert>
+      )}
+      {/* Your own worklist, not something the pipeline worked out. Kept
+          separate from "outdated" above for that reason: outdated is a fact
+          about the plan, this is a judgement about the picture. */}
+      {info.needsFix.length > 0 && (
+        <Alert color="red" variant="light" mb="md"
+          title={`${info.needsFix.length} clip(s) you marked as needing a fix`}>
+          {info.needsFix.join(', ')}. Nothing here is redone automatically —
+          fix the prompt and regenerate the clip when you are ready, then tick
+          it off with the clip's ✓ Fixed button.
+          {info.fixRerendered.length > 0 && (
+            <> Already re-rendered since you marked{' '}
+              {info.fixRerendered.length > 1 ? 'them' : 'it'}:{' '}
+              {info.fixRerendered.join(', ')} — worth a look and a tick.</>
+          )}
         </Alert>
       )}
       <Group align="flex-end">
@@ -895,6 +1274,17 @@ function TriToggle({ value, onChange, label, title, note = '' }) {
   );
 }
 
+// Where the closing letter plays. Some customers want to read the letter
+// and look at the photos separately rather than through each other, so the
+// overlay is one shape of ending among three (see config.letter_placement).
+const LETTER_PLACEMENTS = [
+  { value: 'over_photos', label: 'Over the photos (both end together)' },
+  { value: 'after_photos', label: 'After the photos, on a dark screen' },
+  { value: 'on_last_photo', label: 'After the photos, over the last photo' },
+];
+const placementLabel = (v) =>
+  LETTER_PLACEMENTS.find((p) => p.value === v)?.label || v;
+
 function CombinePanel({
   ask, locked, info, onUploadMusic, onRemoveMusic, onFetchMusicUrl, musicBusy,
   letterText, onSaveLetter, letterBusy
@@ -902,6 +1292,8 @@ function CombinePanel({
   const [intro, setIntro] = useState(null);
   const [credits, setCredits] = useState(null);
   const [letter, setLetter] = useState(null);
+  // null = whatever the project's config says (shown in the picker).
+  const [placement, setPlacement] = useState(null);
   const start = (finalize) => {
     // The delivery preset takes everything this project HAS: the letter is
     // opt-in per project (most orders have none), so it joins only when
@@ -917,6 +1309,9 @@ function CombinePanel({
       if (credits !== null) o.credits_photos = credits;
       if (letter !== null) o.closing_letter = letter;
     }
+    // The placement is a property of the ENDING, not of which button was
+    // pressed, so a picked one rides along with Finalize too.
+    if (placement !== null) o.letter_placement = placement;
     const extras = [
       o.intro_clip && 'intro', o.credits_photos && 'photo credits',
       o.closing_letter && 'closing letter'
@@ -932,6 +1327,9 @@ function CombinePanel({
         // here instead, where the decision is being made.
         ...(o.closing_letter && !info.letterChars
           ? ['No letter is written for this project yet, so the movie will be built WITHOUT one — write it below first.']
+          : []),
+        ...(o.closing_letter && info.letterChars
+          ? [`The letter plays: ${placementLabel(o.letter_placement || info.letterPlacement).toLowerCase()}.`]
           : []),
         'Pure ffmpeg on your machine — nothing is sent to any API.'
       ],
@@ -962,6 +1360,16 @@ function CombinePanel({
           Finalize…</Button>
         <Button disabled={locked} onClick={() => start(false)}>Combine…</Button>
       </Group>
+      <Select mt="sm" size="xs" style={{ maxWidth: 420 }}
+        label="Where the letter plays"
+        description={'Over the photos, the two share one section and end '
+          + 'together. After them, the montage finishes first and the letter '
+          + 'gets its own screen — dark, or holding the last photo.'}
+        value={placement}
+        placeholder={`Project setting — ${placementLabel(info.letterPlacement)}`}
+        clearable
+        data={LETTER_PLACEMENTS}
+        onChange={setPlacement} />
       <LetterEditor text={letterText} onSave={onSaveLetter} busy={letterBusy} />
       <MusicBed info={info} onUpload={onUploadMusic} onRemove={onRemoveMusic}
         onFetchUrl={onFetchMusicUrl} busy={musicBusy}
@@ -1133,6 +1541,14 @@ export default function ProjectDetail({ name, onBack }) {
   const [openPanel, setOpenPanel] = useState('');
   const [uploading, setUploading] = useState(false);
   const [musicBusy, setMusicBusy] = useState(false);
+  // Which clip's "needs fixing" mark is mid-flight. Declared up here with the
+  // rest of the state and NOT next to its handler further down: everything
+  // below `if (!snap) return` runs only once the snapshot has loaded, so a
+  // hook there is skipped on the first render and the hook count changes
+  // between renders — React tears the whole page down with "rendered more
+  // hooks than during the previous render", which looks exactly like the
+  // project page crashing on open.
+  const [flagBusy, setFlagBusy] = useState('');
   const [letterBusy, setLetterBusy] = useState(false);
   const [confirm, setConfirm] = useState(null);
   // Which transition the feedback form is open for (null = closed), and what
@@ -1144,8 +1560,18 @@ export default function ProjectDetail({ name, onBack }) {
   // the browser would otherwise keep showing the pre-render version. Bumped
   // on every poll while a job runs, and once more when it settles.
   const [mediaV, setMediaV] = useState(0);
+  // The selectable video models. Fetched once — the registry is static.
+  const [videoModels, setVideoModels] = useState([]);
   const pollRef = useRef(null);
   const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    api.videoModels()
+      .then((d) => setVideoModels(d.models || []))
+      // A failed fetch just leaves the picker empty; it must never stop the
+      // page rendering, since everything else on it still works.
+      .catch(() => setVideoModels([]));
+  }, []);
 
   const load = useCallback(async () => {
     const data = await api.project(name);
@@ -1242,6 +1668,9 @@ export default function ProjectDetail({ name, onBack }) {
   // choreography can't exist (too many movers / too crowded). Re-planning
   // them yields the deterministic camera transition.
   const unstageablePairs = new Set(snap.storyboard?.unstageable_pairs || []);
+  // Recognising a camera prompt is deliberately strict-family and lives in
+  // one place on the server; the panel just reads the answer.
+  const cameraPairs = new Set(snap.storyboard?.camera_transitions || []);
   const chip = stepChip(snap.next_step);
   const activeJob = (snap.jobs || []).find((j) => ['running', 'queued', 'cancelling'].includes(j.state));
   const locked = Boolean(activeJob);
@@ -1263,11 +1692,18 @@ export default function ProjectDetail({ name, onBack }) {
     missing: total - rendered,
     outdated: (snap.clips || []).filter((c) => c.rendered && c.stale).length,
     needsRender: clipsNeedingRender(snap).length,
+    // The human's worklist (see clip_flags.py) — never mixed into
+    // needsRender: a marked clip is not automatically re-rendered, because
+    // whatever was wrong with it usually needs a prompt edit first.
+    needsFix: snap.clip_flags?.ids || [],
+    fixRerendered: snap.clip_flags?.rerendered || [],
     silentRendered: (snap.clips || []).filter((c) => c.rendered && !c.sfx).length,
     finalExists: Boolean(snap.final_video),
     customMusic: Boolean(snap.custom_music),
     // 0 when no letter is written: the Closing letter toggle is a no-op then.
     letterChars: snap.letter?.chars || 0,
+    // Where the letter plays when combine is run without a per-run choice.
+    letterPlacement: snap.letter_placement || 'over_photos',
     // Delivery state from published.json (no network): {count, latest,
     // changed_since, publishable}.
     published: snap.published || {},
@@ -1276,7 +1712,14 @@ export default function ProjectDetail({ name, onBack }) {
     taggedFrames,
     outdatedPlans: (snap.storyboard?.outdated_plans || []).length,
     hasCast: (storyboard?.characters || []).length > 0,
-    fragileEpithets: (snap.storyboard?.fragile_epithets || []).length
+    fragileEpithets: (snap.storyboard?.fragile_epithets || []).length,
+    // Photos where the last audit says someone is drawn as somebody else,
+    // and photos styled against cast faces that have moved since. Both are
+    // reports, never actions: fixing either spends an image credit a frame.
+    driftedFaces: Object.values(
+      snap.storyboard?.face_audit?.characters || {}
+    ).reduce((n, f) => n + (f.odd_frames || []).length, 0),
+    outdatedStyling: (snap.storyboard?.outdated_styling || []).length
   };
 
   const stepStatus = (id) => {
@@ -1425,6 +1868,37 @@ export default function ProjectDetail({ name, onBack }) {
     });
   };
 
+  // Re-cutting the cast's faces is free (they come out of frames already
+  // styled) and changes nothing that exists, so it runs straight away — no
+  // confirmation modal, which is reserved for actions that spend money or
+  // destroy work.
+  const rebuildFaces = () => run('faces', {}, 'Rebuild cast faces');
+
+  const askForFaceAudit = () => ask({
+    title: 'Find faces drawn as a different person?',
+    lines: [
+      'Compares every tagged appearance of each cast member and reports the photos where somebody is drawn as someone else — a bald man who grew hair, a child who became a different child.',
+      'One OpenAI vision call. The face crops are cut locally and cost nothing.',
+      'Nothing is re-styled, re-planned or re-rendered: you get a list, and redoing a frame stays a separate deliberate action.'
+    ],
+    cost: 'openai',
+    label: 'Audit faces',
+    command: 'faces', options: { audit_faces: true }
+  });
+
+  // Which photo a person's canonical face is cut from. Like the epithet, this
+  // is plan/style-time input: it changes what the NEXT styling is matched
+  // against and marks nothing stale on its own.
+  const setReferenceFrame = (id, frame) => {
+    setStoryboard((sb) => ({
+      ...sb,
+      characters: (sb.characters || []).map(
+        (c) => (c.id === id ? { ...c, reference_frame: frame } : c)
+      )
+    }));
+    setDirty((d) => new Set(d).add(CAST_EDIT));
+  };
+
   // Cast epithets feed FUTURE planning calls (they are baked into motion
   // prompts when a pair is planned), so editing one never marks a rendered
   // clip outdated — re-plan a clip to pick up a changed epithet.
@@ -1492,6 +1966,125 @@ export default function ProjectDetail({ name, onBack }) {
       cost: 'openai',
       label: 'Re-plan prompt',
       action: () => run('storyboard', { replan_clips: [clipId] }, `re-plan ${clipId}`)
+    });
+  };
+
+  // The worklist: which rendered clips you have decided need redoing. Free,
+  // instant and reversible, so like the settings card it goes straight
+  // through rather than through ask() — there is nothing to confirm and
+  // nothing it could destroy. Deliberately NOT the Feedback button: that one
+  // costs two model calls and teaches the planner a studio-wide rule, which
+  // is far too much ceremony for "come back to this one".
+  const toggleNeedsFix = async (clipId, marked, note = '') => {
+    setFlagBusy(clipId);
+    try {
+      await api.flagClip(name, clipId, marked, marked ? note : '');
+      notify(marked ? `${clipId} marked as needing a fix` : `${clipId} ticked off`);
+      await load();
+    } catch (e) { notify(`Could not update the mark: ${e.message}`, 'red'); }
+    finally { setFlagBusy(''); }
+  };
+
+  // Saving a tuning knob is free, instant and reversible — it writes one
+  // file and renders nothing — so it goes straight through rather than
+  // through ask(). The confirmation modal is for spending money and for
+  // destroying work; putting it here would be friction with nothing to
+  // confirm.
+  const saveSettings = async (patch) => {
+    setBusyAction('settings');
+    try {
+      await api.saveProjectSettings(name, patch);
+      notify('Project settings saved');
+      await load();
+    } catch (e) { notify(`Could not save settings: ${e.message}`, 'red'); }
+    finally { setBusyAction(''); }
+  };
+
+  // null means "stop overriding this here", which is a different thing from
+  // pinning today's shared value — the project follows the studio again.
+  const resetSetting = (key) => saveSettings({ [key]: null });
+
+  // Pinning a video model for THIS project. Free and instant — it writes one
+  // key into the project's config.json and renders nothing. Clips already
+  // made keep the model they were made with and get flagged, which is the
+  // part worth spelling out in the modal.
+  const pickVideoModel = (key) => {
+    const model = videoModels.find((m) => m.key === key);
+    const rendered = (snap.clips || []).filter((c) => c.rendered).length;
+    ask({
+      title: `Render this project with ${model?.label || key}?`,
+      lines: [
+        `Every clip rendered from now on uses ${model?.label || key} at about $${Number(model?.usd_per_second || 0).toFixed(3)} per second.`,
+        model?.supports_elements
+          ? 'This model accepts the cast\'s face references, so they will be sent with each clip to hold each person\'s identity through the shot.'
+          : 'This model cannot take face references, so the cast faces will NOT be sent — identity is held only by the two frames and the prompt.',
+        ...(rendered ? [
+          `The ${rendered} clip(s) already rendered are NOT re-rendered. They keep the model they were made with and are flagged "older video model" so a movie can't silently mix two.`
+        ] : []),
+        ...(model && !model.verified ? [
+          'This request shape comes from fal\'s documentation and has not been rendered from here — try a single clip before committing a whole movie to it.'
+        ] : []),
+        'Only this project changes; nothing else in the studio is affected.'
+      ],
+      cost: 'free',
+      label: 'Use this model',
+      action: async () => {
+        setBusyAction('video model');
+        try {
+          await api.setVideoModel(name, key);
+          notify(`Now rendering with ${model?.label || key}`);
+          await load();
+        } catch (e) { notify(`Could not switch model: ${e.message}`, 'red'); }
+        finally { setBusyAction(''); }
+      }
+    });
+  };
+
+  // The human override for a pair that mushed even though the gate judged it
+  // stageable. Deterministic wording, so it costs nothing and is instant —
+  // the opposite of the vision re-plan above.
+  const replanAsCamera = (clipId) => {
+    if (needsSave()) return;
+    ask({
+      title: `Make ${clipId} a camera transition?`,
+      lines: [
+        'Replaces this pair\'s choreography with the camera move: the people hold still, the camera travels to the new setting and settles on exactly what the end frame shows.',
+        'Use it when people distort or dissolve while travelling between the two frames — a camera move never maps one person onto another, which is why these are usually the cleanest clips in a movie.',
+        'FREE and instant: the wording is a fixed template, so there is no AI call. The clip becomes 5 seconds.',
+        'Any hand-written prompt for this pair is replaced. The clip is NOT re-rendered — it gets marked "outdated" so you can regenerate it when you want the new plan applied.'
+      ],
+      cost: 'free',
+      label: 'Use camera move',
+      action: () => run(
+        'storyboard',
+        { replan_clips: [clipId], replan_as_camera: true },
+        `camera transition ${clipId}`,
+      )
+    });
+  };
+
+  // The other half of the same override. The gate turns a pair into a camera
+  // move from tags and headcounts alone; this is how you say "I have looked
+  // at these two frames and I want the people". Unlike forcing the camera it
+  // PLANS, so it costs a call — and the plan still goes through the swap and
+  // offscreen-ending repairs, so this cannot smuggle a broken prompt through.
+  const replanStagingPeople = (clipId) => {
+    if (needsSave()) return;
+    ask({
+      title: `Stage the people on ${clipId}?`,
+      lines: [
+        'Asks the planner for a fresh motion prompt for this pair, and keeps the people choreography even if the pair reads as too crowded to stage (which normally turns it into a camera move).',
+        'Worth trying when the moment is about what the people DO and a camera move would throw that away. The usual outcome on a genuinely crowded pair is distortion, so look at the render before doing it to more pairs.',
+        'The prompt is still checked the usual way — a swap gets restaged and an ending that leaves the frame empty gets repaired.',
+        'One small vision call. The clip is NOT re-rendered; it gets marked "outdated" so you can regenerate it when the new prompt looks right.'
+      ],
+      cost: 'openai',
+      label: 'Stage the people',
+      action: () => run(
+        'storyboard',
+        { replan_clips: [clipId], replan_stages_people: true },
+        `stage people on ${clipId}`,
+      )
     });
   };
 
@@ -1870,7 +2463,9 @@ export default function ProjectDetail({ name, onBack }) {
       onReplanOutdated={replanOutdated}
       onOpenTagger={() => { setShowTagger(true); setOpenPanel(''); }} />,
     render: <RenderPanel ask={ask} locked={locked} info={info}
-      onGenerateAll={() => { if (!needsSave()) generateAll(snap); }} />,
+      onGenerateAll={() => { if (!needsSave()) generateAll(snap); }}
+      videoModel={snap.video_model || {}} videoModels={videoModels}
+      onPickModel={pickVideoModel} />,
     audio: <AudioPanel ask={ask} locked={locked} info={info}
       onUploadMusic={uploadMusic} onRemoveMusic={removeMusic}
       onFetchMusicUrl={fetchMusicUrl} musicBusy={musicBusy} />,
@@ -2138,6 +2733,14 @@ export default function ProjectDetail({ name, onBack }) {
             {inputImages.map((img) => {
               const styledName = img.replace(/\.[^.]+$/, '.png');
               const styled = styledImages.includes(styledName);
+              // Clicking either thumbnail opens BOTH big: at 120px you can
+              // see that a frame was styled, not whether the face survived it.
+              const zoomPair = [
+                { src: fileUrl(name, 'input', img, 0), label: 'original' },
+                ...(styled
+                  ? [{ src: fileUrl(name, 'styled', styledName, mediaV), label: 'styled' }]
+                  : [])
+              ];
               return (
                 <Stack key={img} gap={2} w={styled ? 244 : 120}>
                   {/* Original AND styled, side by side. The styled frame used
@@ -2147,17 +2750,19 @@ export default function ProjectDetail({ name, onBack }) {
                       from the source needs both in one glance. */}
                   <Group gap={4} wrap="nowrap" align="flex-start">
                     <Stack gap={0}>
-                      <Image w={120} radius="sm" alt={`${img} (original)`}
+                      <ZoomableImage w={120} radius="sm" alt={`${img} (original)`}
                         style={styling && !styled ? { opacity: 0.45 } : undefined}
-                        src={fileUrl(name, 'input', img, 0)} />
+                        src={fileUrl(name, 'input', img, 0)}
+                        zoomTitle={img} zoomImages={zoomPair} />
                       {styled && (
                         <Text size="10px" c="dimmed" ta="center">original</Text>
                       )}
                     </Stack>
                     {styled && (
                       <Stack gap={0}>
-                        <Image w={120} radius="sm" alt={`${styledName} (styled)`}
-                          src={fileUrl(name, 'styled', styledName, mediaV)} />
+                        <ZoomableImage w={120} radius="sm" alt={`${styledName} (styled)`}
+                          src={fileUrl(name, 'styled', styledName, mediaV)}
+                          zoomTitle={img} zoomImages={zoomPair} />
                         <Text size="10px" c="dimmed" ta="center">styled</Text>
                       </Stack>
                     )}
@@ -2242,8 +2847,24 @@ export default function ProjectDetail({ name, onBack }) {
               });
             });
             return (
-              <Card withBorder padding="md">
-                <Text size="sm" fw={500}>Cast</Text>
+              <CollapsibleCard id="cast" title="Cast"
+                badges={<>
+                  <Badge size="xs" variant="light" color="gray">
+                    {(storyboard.characters || []).length}
+                  </Badge>
+                  {/* Folded, the alerts below are out of sight — so the
+                      counts ride on the header, which never is. */}
+                  {fragile.size > 0 && (
+                    <Badge size="xs" variant="light" color="orange">
+                      {fragile.size} name{fragile.size > 1 ? 's' : ''} by clothing
+                    </Badge>
+                  )}
+                  {indistinct.size > 0 && (
+                    <Badge size="xs" variant="light" color="orange">
+                      {indistinct.size} alike
+                    </Badge>
+                  )}
+                </>}>
                 <Text size="xs" c="dimmed" mb="xs">
                   How motion prompts name each person — the video model sees
                   only pixels, so every mention uses these exact words. Name
@@ -2287,9 +2908,17 @@ export default function ProjectDetail({ name, onBack }) {
                       onChange={(e) => editCharacter(c.id, e.target.value)} />
                   ))}
                 </Stack>
-              </Card>
+              </CollapsibleCard>
             );
           })()}
+          {(storyboard.characters || []).length > 0 && (
+            <CastFacesCard
+              name={name} snap={snap} storyboard={storyboard} locked={locked}
+              mediaV={mediaV}
+              audit={snap.storyboard?.face_audit || {}}
+              onRebuild={rebuildFaces} onAudit={askForFaceAudit}
+              onPickFrame={setReferenceFrame} />
+          )}
           {(storyboard.characters || []).length > 0 && (
             <Card withBorder padding="md">
               <Group gap="sm" mb={4}>
@@ -2387,12 +3016,17 @@ export default function ProjectDetail({ name, onBack }) {
               planBehind={outdatedPlans.has(tr.id)}
               endsOffscreen={offscreenEndings.has(tr.id)}
               unstageable={unstageablePairs.has(tr.id)}
+              isCamera={cameraPairs.has(tr.id)}
               selected={selected.has(tr.id)} onToggleSelect={toggleSelected}
               onEdit={editTransition}
-              onRegenerate={regenerate} onReplan={replanPrompt} onRedoAudio={redoAudio}
+              onRegenerate={regenerate} onReplan={replanPrompt}
+              onReplanAsCamera={replanAsCamera}
+              onReplanStagingPeople={replanStagingPeople} onRedoAudio={redoAudio}
+              onToggleFix={toggleNeedsFix} flagBusy={flagBusy === tr.id}
               onFeedback={openFeedback}
               busy={busyAction === `render ${tr.id}`}
-              replanBusy={busyAction === `re-plan ${tr.id}`}
+              replanBusy={busyAction === `re-plan ${tr.id}`
+                || busyAction === `camera transition ${tr.id}`}
               audioBusy={busyAction === `audio ${tr.id}`}
               mediaV={mediaV} />
           ))}
@@ -2401,6 +3035,10 @@ export default function ProjectDetail({ name, onBack }) {
       {snap.storyboard_error && (
         <Text c="red" size="sm">Storyboard unreadable: {snap.storyboard_error}</Text>
       )}
+
+      <ProjectSettingsCard settings={snap.settings || []} locked={locked}
+        busy={busyAction === 'settings'}
+        onSave={saveSettings} onReset={resetSetting} />
 
       {/* Deliberately last and deliberately plain: the one action here that
           destroys paid work with no way back. Kept away from the step tiles

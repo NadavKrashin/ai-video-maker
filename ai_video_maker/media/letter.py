@@ -165,6 +165,31 @@ def _segments(
     return [(run, is_emoji) for run, is_emoji in out if run]
 
 
+# A token counts as a word only when it contains a letter or a digit, so a
+# line of emoji or a lone "!!!" doesn't buy reading time it doesn't need.
+_WORD_RE = re.compile(r"[^\W_]", re.UNICODE)
+
+
+def count_words(text: str) -> int:
+    """How many readable words the letter has (emoji and bare punctuation excluded)."""
+    return sum(1 for token in text.split() if _WORD_RE.search(token))
+
+
+def reading_seconds(text: str, words_per_minute: float) -> float:
+    """How long a viewer needs to READ this letter, in seconds.
+
+    A scrolling letter can't be paused or re-read, so its length has to come
+    from the text rather than from a fixed speed: at one pace per screen, a
+    long letter and a short one give the reader the same seconds per line
+    but wildly different odds of finishing. Callers take the MAX of this and
+    the configured pace, so a short letter keeps the timing it always had
+    and only a letter with more to say gets more time.
+    """
+    if words_per_minute <= 0:
+        return 0.0
+    return count_words(text) / words_per_minute * 60.0
+
+
 def read_letter(path: Path) -> str:
     """The project's letter text, or "" when it hasn't been written yet.
 

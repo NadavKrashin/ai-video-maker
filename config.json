@@ -35,6 +35,8 @@
   "letter_font_path": "",
   "letter_font_size": 64,
   "letter_seconds_per_screen": 7.0,
+  "letter_reading_words_per_minute": 200.0,
+  "letter_placement": "over_photos",
   "end_fade_seconds": 1.5,
   "sfx_volume": 0.35,
   "max_parallel_requests": 8,

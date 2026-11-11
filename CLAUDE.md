@@ -143,7 +143,7 @@ Core design rules:
   move is a global solution, no person-to-person mapping at all.
   `is_unstageable_pair` (openai_client.py) decides in code from the pair's
   rosters (tags first, model orders second): movers (leave+arrive) >
-  `_MOVER_BUDGET` (3), or crowd > `_CROWD_LIMIT` (4) while the roster or
+  the mover budget, or crowd > the crowd limit while the roster or
   arrangement changes → the planned choreography is REPLACED (never
   repaired) by `camera_shift_prompt`, a deterministic 4-shape family:
   drift-to-one-of-its-own (the reviewer's own 12_to_13 suggestion),
@@ -181,6 +181,27 @@ Core design rules:
   camera-family (`is_camera_transition`, strict-family on purpose). On
   am-130826-pcfd the gate flags 24 of 44 pairs — that movie really is
   unstageable nearly everywhere, which is the user's own diagnosis of it.
+  ...AND THE THRESHOLDS ARE CONFIG NOW — BUT THE DEFAULTS ARE STILL 3/4
+  (2026-08-16). The user reported faces distorting whenever characters
+  travel between the two frames, and I tightened 3/4 to 2/3 reasoning that
+  the camera clips being the best in the movie meant the pairs sitting JUST
+  UNDER the line were the ones still mushing. The user reverted it the same
+  day. TAKE THE LESSON, not just the numbers: that was a hypothesis about
+  taste with no watched render behind it, applied to every project at once
+  — exactly the kind of change this file says to make visible and optional
+  rather than default. Don't re-tighten the defaults without renders to
+  point at. What SURVIVES the revert is the tunability:
+  `unstageable_mover_budget` (3) / `unstageable_crowd_limit` (4) are config,
+  so 2/3 can be tried on ONE project's config.json and looked at.
+  `_MOVER_BUDGET`/`_CROWD_LIMIT` survive only as the fallback for callers
+  with no config (the pure functions take optional
+  `mover_budget`/`crowd_limit`). The prompt's TOO MANY PEOPLE block had
+  "more than three"/"five or more" hard-coded; it is now a template rendered
+  by `mode_a_system(budget, limit)` — a stale numeral there teaches the
+  model a rule the gate does not apply, which is the same incoherence the
+  `unstageable_reason` wording fix was about, and it is what makes tuning
+  coherent at all. Never reintroduce a literal number in that block. Pinned
+  by TestTheGateThresholdsAreTunable.
   Pinned by TestUnstageablePairs / TestCameraShiftPromptFamily /
   TestUnstageablePairsAreReplacedInCoercion /
   TestThePlannerIsTaughtTheSameGate / TestUnstageablePairsAreVisible /
@@ -327,6 +348,170 @@ Core design rules:
   destroy the hand work. Pinned by TestConfirmedIdentities /
   TestTagsDriveSwapDetection / TestIdentifyPeopleCoercion /
   TestFrameTagsSurviveStoryboardRuns / TestTaggedPeople.
+- THE CAST HAS FACES, NOT JUST NAMES (user report, 2026-08-16: "the same
+  person might not look the same between images"). Styling was structurally
+  guaranteed to drift: `style_image` sent ONE image (the photo) + a text
+  prompt, 8 in parallel, so frame 3 and frame 17 never knew they showed the
+  same person. "Preserve the likeness" anchors each output to THAT
+  PHOTOGRAPH, and an album spans years — honouring a 2019 and a 2024 photo
+  faithfully yields two different-looking cartoons. Correct per image, wrong
+  per movie. Fix: `media/faces.py` cuts one canonical portrait per cast
+  member into `cast_refs/<id>.png`, and `style_image` sends the relevant
+  ones alongside the photo. The crop needs NO new call and NO new UI —
+  `FramePerson.x/y` is already the face CENTRE, recorded by the panel's
+  tagger; face SIZE is the one thing not recorded, so it is estimated as
+  `crop/sqrt(people_in_frame)` (faces shrink in two dimensions as a group
+  grows) with a floor, because a mush crop teaches the wrong face with full
+  confidence. Free and derived, so it rebuilds itself on tag changes rather
+  than sitting behind a gate — the opposite of everything that spends money.
+  Key invariants: `_STYLE_REFERENCE_INSTRUCTION` says the references are
+  IDENTITY ONLY (they are frames of this same movie, full of scenery and
+  clothing from another moment that the edit endpoint will happily blend
+  in) and that THE PHOTOGRAPH WINS on clothing/action/place — people change
+  outfits between photos taken years apart. A single-image call stays
+  byte-identical to what it always was, so an untagged project cannot
+  behave differently. `references_for_frame` is the ONE decider, called both
+  when styling and when checking staleness — two implementations would
+  drift and report every frame stale forever. `Frame.styled_refs` stamps
+  what a frame was drawn against; an EMPTY stamp means "styled from no
+  references", which is true of every pre-existing frame and is deliberately
+  NOT reported outdated (a project fine yesterday must not wake up asking
+  for money). References come from the SAVED storyboard, which is what lets
+  all of this work with NO pipeline reordering: the first styling has no
+  tags, and the tags arriving afterwards land on the next deliberate
+  `--restyle-frame`. Pinned by tests/test_cast_references.py.
+- ...AND THE DRIFT THAT ALREADY HAPPENED IS FINDABLE (same day). `faces`
+  (cmd_faces) rebuilds the sheet for free; `faces --audit` is one vision
+  call comparing every tagged appearance of each cast member and naming the
+  frames where somebody is drawn as someone else. ONE call for the whole
+  cast, not one per person — a 29-entry cast is a real shape here.
+  `_FACE_AUDIT_SYSTEM` is conservative BY DESIGN: expression, angle,
+  lighting, clothing, haircut and crop quality are explicitly normal and
+  never findings, because this list invites a human to spend an image
+  credit per frame on it — a false alarm costs them, a miss costs nothing
+  they were not already living with. `_coerce_face_audit` drops unknown ids
+  and foreign labels, and a character flagged in EVERY frame is reduced to
+  "no odd frames, keep the note" (naming every crop is not a finding about
+  which frame to redo). Findings persist in `storyboard/face_audit.json` so
+  the panel shows yesterday's answer without re-buying it. NOTHING is ever
+  re-styled automatically — it prints/links the `--restyle-frame` command,
+  same rule as clips.
+- THE MODEL IS PICKED BY NAME, AND IT DECIDES WHETHER FACES ARE SENT (user
+  request, 2026-08-17). `video_models.py` holds named presets
+  (`kling-2.5-turbo-pro`, `kling-3-pro`, `kling-3-turbo-pro`); `video_model`
+  in config names one and `apply_video_model_preset` fills every `fal_*`
+  field at LOAD time. The reason it is a preset and not three keys: models
+  disagree about what the frame fields are CALLED (`image_url` vs
+  `start_image_url`, `tail_image_url` vs `end_image_url`) and a mismatch
+  does not fail loudly — it silently drops the end frame and the movie stops
+  chaining. Explicitly-set `fal_*` keys still win, so nothing existing
+  changes and an unpresetted endpoint can still be hand-configured.
+  `Config.elements_enabled()` is the ONE answer to "send the cast faces?":
+  a preset that says `supports_elements=False` refuses even when the element
+  fields are set by hand, which is what makes "2.5 never gets faces" a
+  property of the model rather than a second switch that drifts out of step
+  with it; an UNKNOWN model id falls back to the fields so a new endpoint is
+  still testable. Pricing follows the model (`clip_usd_per_second`) unless
+  pinned, or a 60%-more-expensive model would keep reporting the old
+  estimate. `verified` marks a shape actually rendered from here — only 2.5
+  is; the Kling 3 entries are from fal's docs (fal.ai was unreachable), so
+  status and the panel say "untested here" and the advice is one
+  `render --clip ID` first. The panel's picker (`PUT
+  /api/projects/<n>/video-model`) is deliberately narrow — one validated key
+  into one project's config.json, never a general config editor — and it
+  DELETES any hand-written derived `fal_*` keys so a stale
+  `fal_end_frame_field` from the previous model cannot silently break the
+  new one, and never writes the derived values (a corrected preset must be
+  able to reach a project that is already pinned). Pinned by
+  tests/test_video_models.py + tests/test_server_video_model.py.
+- MAKING A KNOB CONFIG IS ONLY HALF THE JOB (user question, 2026-09-07:
+  "is this editable from the ui?"). Twice I told the user to "just try 2/3 on
+  one project's config.json" — which, behind the Cloudflare tunnel, means SSH
+  to the mini. A setting nobody can reach is not tunable. The panel's Project
+  settings card (bottom of the project page, above Delete) now edits four
+  keys: `unstageable_mover_budget`, `unstageable_crowd_limit`,
+  `cast_references_enabled`, `fal_elements_partial` — the ones whose right
+  value is TASTE settled by watching renders, which is exactly the category
+  that must not ship as a silent default (see the gate-tightening revert
+  above). `project_settings.py` is the single source of truth: the server
+  validates against it and the panel renders its inputs from it, so a new
+  knob is one entry, not a schema kept in step across two languages.
+  Deliberately an ALLOWLIST, never a config editor — an unknown key is a 422
+  rather than ignored (silently dropping one would let the panel believe it
+  saved), and `style_prompt` / the `fal_*` request fields stay out of a
+  browser's reach because they break renders in ways that are hard to
+  diagnose from there. `null` UNPINS (different from pinning today's shared
+  value, and it has to stay expressible or a project could never follow the
+  studio again); the override file is DELETED once nothing is pinned; the
+  merged result is validated by `Config(...)` BEFORE writing, so a rejected
+  combination can never land on disk and break every later load. The card
+  shows "set for this project" vs "studio default" per row — a bare number
+  looks like somebody's choice when it may be the studio default about to
+  change under them. Saving is free/instant so it does NOT go through
+  `ask({...})`: that modal is for spending money and destroying work.
+  `snapshot()["settings"]` carries it. Pinned by
+  tests/test_server_project_settings.py.
+- A HUMAN CAN FORCE THE CAMERA ON ONE PAIR (user request, 2026-08-17).
+  `storyboard --replan-clip ID --camera` (panel: the clip's "Use camera
+  move") replaces that pair's choreography with `camera_shift_prompt` — the
+  same deterministic family the gate uses, shape picked from the pair's own
+  rosters. The gate decides from tags and headcounts and has never seen a
+  render; this is the override for the pair that mushed anyway. FREE and
+  callless by construction: the forced pairs are excluded from `dirty` so
+  `_plan_pairs` is never asked about them (a planning call would produce
+  something the code overwrites), and `_NoPlanner` in the tests is what
+  proves it. Always 5s (one continuous beat), sound_prompt preserved (it
+  feeds a different step), clip marked stale not deleted. Applies ONLY to
+  explicitly requested ids — a pair dirty because its photo changed must
+  never silently become a camera move. `snapshot()`'s
+  `camera_transitions` exists so the panel can hide the button on a pair
+  that already is one WITHOUT keeping a second copy of the strict-family
+  prefix list in JavaScript. Pinned by tests/test_camera_replan.py.
+- ...AND A HUMAN CAN FORCE THE PEOPLE, WHICH IS THE OTHER HALF OF THE SAME
+  OVERRIDE (user request, 2026-09-08). The gate judges from tags and
+  headcounts and has never watched a render, so it can be wrong in BOTH
+  directions; only the camera direction had an override. `storyboard
+  --replan-clip ID --stage-people` (panel: the clip's "Re-plan prompt" is now
+  a menu — let the planner decide / force a camera move / stage the people
+  anyway) keeps the planner's choreography on a pair `is_unstageable_pair`
+  would have replaced. Unlike `--camera` this one PLANS, so it costs a vision
+  call: the flag does not write a prompt, it stops the coercion throwing one
+  away. `stage_anyway` is one bool PER PAIR, sliced per planning segment
+  because the gate runs inside `_coerce_transition_plans` — a global switch
+  would silently free every pair in the same call. It suppresses ONLY that
+  gate: swap restaging and `_complete_offscreen_ending` still run, so "try
+  anyway" can never become the back door that ships an offscreen ending
+  (`TestTheGateCanBeOverriddenPerPair` asserts exactly that). Same
+  explicitly-requested-only rule as `--camera` — a pair dirty because its
+  photo changed must not be force-staged — and asking for both overrides at
+  once is a PipelineError, because they want opposite things and guessing a
+  winner is worse than refusing. Pinned by TestForcingThePeopleInstead /
+  TestTheGateCanBeOverriddenPerPair.
+- CHARACTER ELEMENTS ARE PLUMBED BUT OFF BY DEFAULT (2026-08-16). Newer Kling accepts
+  reference portraits that pin identity through a shot — exactly the
+  face-distortion-in-transit complaint. Shaped like `fal_start_frame_field`
+  / `fal_end_frame_field` (`fal_elements_field`, `fal_element_image_field`,
+  `fal_max_elements`, `fal_element_prompt_template`, `fal_elements_partial`)
+  so enabling it is CONFIG, not code — and since 2026-08-17 the normal way
+  to enable it is picking a Kling 3 preset, which fills those fields in and
+  gates them on the model. The DEFAULT model is still 2.5, so out of the box
+  nothing is sent. fal.ai was unreachable from the session that wrote it and
+  ONE question decides everything: does the endpoint take elements AND an
+  end frame together?
+  Every clip here is pinned to the next styled photo; an endpoint that makes
+  you choose breaks chaining and `combine` shows jumps — that is not a
+  trade-off, it is a different product. Elements go only to people tagged in
+  BOTH frames (someone who leaves has no continuous identity to hold, and is
+  exactly who we stage an exit for so the model won't carry them across),
+  and NEVER to camera transitions (they name nobody, and they are already
+  the best clips). `fal_elements_partial` encodes the open question instead
+  of guessing: more qualifiers than the cap sends NONE by default (one crisp
+  face among three drifting can read worse than four drifting together);
+  flip it to rescue the most-recurring face. Elements join the render
+  fingerprint ONLY when present, so turning this on cannot orphan a paid
+  pending render. Also closed the last invisible staleness: a clip records
+  which model rendered it, and a mismatch with `fal_model_id` is flagged
+  (`model_changed`) rather than letting a movie silently mix two models.
 - AN EPITHET MUST OUTLIVE THE PHOTO IT CAME FROM (user call, 2026-08-02).
   The cast is pinned once and reused for the WHOLE movie, but the movie is
   built from photos taken months or years apart — so a clothing-anchored
@@ -526,6 +711,32 @@ Core design rules:
   rather than deleted. `lessons` lists/edits them; `learning_enabled` and
   `max_lessons_in_prompt` (newest win) bound the mechanism. Pinned by
   tests/test_feedback.py + tests/test_server_learning.py.
+- A WORKLIST IS NOT EVIDENCE, SO IT GETS ITS OWN STORE (user request,
+  2026-09-08: "mark rendered clips that are not good so that I know which
+  needs fixing"). The obvious move was to reuse the feedback verdict — it
+  already records bad/good per transition and already draws a badge — and it
+  is wrong. `feedback.py` is APPEND-ONLY evidence pinned to the exact prompt
+  that produced the clip, it costs two model calls, it mints studio-wide
+  lessons, and its verdicts have no "never mind" because nothing is learned
+  in reverse. What the user asked for is a to-do list: one click, free, and
+  above all UNMARKABLE, because ticking things off is the entire point.
+  Forcing that into the evidence log would have meant appending a `good`
+  entry to cancel a `bad` one, which is a lie in the one file that exists to
+  be true. So `clip_flags.py` + `projects/<n>/clip_flags.json`: mutable,
+  keyed by transition id, free, and it teaches the planner NOTHING (a test
+  asserts marking writes no feedback entry). CLI `flag <proj> --clip ID
+  [note] [--clear]`, `PUT /api/projects/<n>/clips/<id>/flag`, panel button
+  "Needs fixing" ↔ "✓ Fixed". Marking is refused on an UNRENDERED clip (the
+  mark means "I watched this"), but CLEARING never is — you must be able to
+  tick off a mark whose clip you already deleted. Re-rendering a marked clip
+  does NOT clear the mark: `clip_mtime` is stamped at mark time and a newer
+  clip is reported as `rerendered`, because deciding a human's note is
+  finished with is not the code's call — same rule as never auto-deleting a
+  clip. A `clip_mtime` of 0 means "unknown", never "re-rendered", so marks
+  made before the stamp existed stay quiet. Free/instant, so no `ask({...})`
+  modal and no JobRunner — that machinery is for spending money and
+  destroying work. Pinned by tests/test_clip_flags.py +
+  tests/test_server_clip_flags.py.
 - MONEY IS TRACKED PER PROJECT, AS AN ESTIMATE (2026-07-31). Every completed
   API call prices itself into `projects/<n>/logs/costs.json` from the
   `pricing` block in config.json — OpenAI calls report through
@@ -614,7 +825,9 @@ Core design rules:
 
 Lifecycle: (`orders` → `ingest` for paid web orders, or `init` + manual
 images) → `storyboard` (stops for review; writes json/md/preview.html;
-`tag` then states who is in each frame, which later plans are told as fact)
+`tag` then states who is in each frame, which later plans are told as fact;
+`faces` cuts the cast's canonical portraits from those tags, and
+`faces --audit` reports where somebody is drawn as a different person)
 → `render` (plan + confirm; `--clip ID` redoes one clip) → `audio` → `combine`
 → `publish` (web orders only: delivers the movie into the order's Cloudinary
 folder as the next `final_vN`); `run` chains them (up to `combine`) with
@@ -916,7 +1129,8 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   already-paid pending renders stay resumable. `cfg_scale` is deliberately
   left at the provider default until a real A/B on one clip says otherwise.
 - `config.json` at the repo root is the user's live shared config. Current
-  model choices are deliberate: Kling v2.5 Turbo Pro (`fal_model_id`),
+  model choices are deliberate: Kling v2.5 Turbo Pro (`video_model` /
+  `fal_model_id`),
   `gpt-image-2` for images (user wants OpenAI images), `gpt-5.1` for
   text/vision planning. The gpt-5 model line rejects non-default `temperature`
   — don't add temperature params to chat calls.
@@ -953,6 +1167,40 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   are therefore listed FIRST in the hint, ahead of the full-body-child
   theory I guessed at before actually looking at the photos. Pinned by
   TestOutputStageModeration.
+- A BARE-CHILD BLOCK MOVES IN TWO STAGES, AND EACH STAGE HAS ITS OWN LEVER
+  (2026-09-07, order אלינור-לבנברג). Every family album has bath and diaper
+  photos in it, so this is core content, not an edge case: 3 of 30 photos
+  came back `safety_violations=[sexual]` — a bare baby in a crib, a baby in
+  a bath, a toddler in a diaper. Read the STAGE before reaching for a fix.
+  An INPUT-stage block is judging the request, and on these photos the
+  variable is the PIXELS (the same shared style prompt passed on the other
+  28) — so the lever is CROPPING to the face: on the two hard frames a crop
+  moved them from input-refused-every-time to input-accepted. That promotes
+  the problem to an OUTPUT-stage block, where the model drew a cartoon of a
+  nude infant and the picture was refused; there the lever is the PROMPT,
+  because the prompt decides what gets drawn. `Frame.style_note` is the
+  existing escape hatch and it worked: "a soft blanket draped over his back
+  and shoulders" / "bath foam up to his collarbone" — both plausible in the
+  real scene, so the memory still reads true — and both frames styled on the
+  next try. Note the notes must describe something that could have been in
+  the photo; inventing clothing on a bath shot is a visible lie about a
+  memory the customer is buying, so it is the USER'S call, not a default.
+  Two corrections to the intuitions this file already carried. (1) The
+  existing `_DEBRAND_INSTRUCTION` output-stage retry is the WRONG medicine
+  here — it is about licensed characters and says nothing about nudity, so
+  it burns an attempt. (2) "The prompt is not the variable" is too strong:
+  frame 006 failed rewords 1 and 2 and PASSED on reword 3 with a
+  byte-identical image, so the score is a combined image+text score sitting
+  on a threshold and either lever can tip it. That also means these
+  outcomes are stochastic — a photo refused today can pass on a later
+  attempt, and a "sexual" label is the name of the bucket whose threshold
+  was crossed, never a verdict about the photograph.
+  Operational trap worth keeping: replacing an input photo through the
+  panel ADDS a file, it does not swap one. The originals were deleted with
+  no backup and this project had no order.json, so there was no Cloudinary
+  copy to recover from — back up `input_images/` before editing a photo,
+  and rename the replacement to the frame's own name before it styles, or
+  the scratch filename is baked into the styled png and every clip id.
 - Content filters false-positive on family content: OpenAI during styling,
   and fal/Kling on clip motion prompts (`content_policy_violation`). Kling's
   worst trigger is a baby/child being physically handled (lifted, bounced,
@@ -1027,6 +1275,45 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   `application/octet-stream` and bare extensions) because the server checks
   content anyway. The same trap is live for PHOTO uploads
   (`_PHOTO_EXTENSIONS` in server.py) — fix it the same way if it bites.
+- THE LETTER OVER THE PHOTOS IS ONE ENDING, NOT THE ENDING (user report,
+  2026-09-24: clients want to focus on the letter and the photos
+  separately). `letter_placement` (config, `--letter-placement`, panel
+  picker in the Combine step) chooses between `over_photos` (the original
+  overlay, still the default — an existing project's ending does not
+  change), `after_photos` (the montage plays out at its own configured pace,
+  then the letter scrolls alone on dark) and `on_last_photo` (same running
+  order, letter over a held still of the LAST photo — the user's own "so it
+  won't be black"). The sequential shapes deliberately do NOT go through
+  `_fit_credits_and_letter`: that function exists to make two things end
+  together, and stretching either one is exactly what the customer objected
+  to. `on_last_photo` needs a photo even with the montage off (it is about
+  what sits BEHIND the text), so the sources are read whenever it is asked
+  for, and an idea-based movie with no `source_path` falls back to dark with
+  a warning rather than failing the combine. Placement rides in each
+  section's recipe, so switching it re-renders the ending even though no
+  project file was touched (the trap `_SEGMENT_RENDERER_VERSION` exists
+  for). An unknown value is a PipelineError, not a silent fall-back to the
+  overlay — the ending is the part a customer reads word by word. Pinned by
+  the placement tests in TestPresentationSegments.
+- A LETTER'S LENGTH COMES FROM ITS TEXT, NOT FROM A SPEED (user call,
+  2026-09-25, with a real 81-word blessing timed at ~14s: "it needs at least
+  5/10 more seconds"). `letter_seconds_per_screen` sets a SPEED, so every
+  letter gets the same seconds per line and a long one scrolls past before
+  it can be read — and a scroll cannot be paused or re-read.
+  `reading_seconds()` (media/letter.py) prices the text at
+  `letter_reading_words_per_minute` (200, calibrated to land that blessing
+  at 23.7s — inside the 5-10s the user asked for), and `_letter_pace()`
+  takes the MAX of that and the travel at the configured pace. A FLOOR, never
+  a ceiling: nothing is ever sped up, so every existing short letter renders
+  exactly as before (the 12-word case measured identical) and only a letter
+  with more to say changes. Words are counted ignoring emoji and bare
+  punctuation — a line of hearts is not reading time. Applies to the
+  letter's OWN section only (after_photos / on_last_photo); `over_photos`
+  stays paced by `_fit_credits_and_letter` because there the montage
+  decides, and slowing the letter there would silently stretch the photos —
+  the user scoped the request to the standalone shapes. The rate is in each
+  section's recipe, so changing it re-renders. Pinned by
+  TestReadingTimeSlowsALongLetter.
 - THE CREDITS PHOTOS ARE NEVER GREYED OUT under a scrolling letter (user
   call, 2026-07-28). `_letter_overlay_cmd` used to lay a fixed `black@0.55`
   drawbox over the montage for text contrast; the photos are the product,

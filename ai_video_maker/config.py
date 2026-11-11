@@ -5,10 +5,19 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from .costs import Pricing
 from .errors import ConfigError
+from .video_models import VideoModel, get_video_model, model_for_id, model_keys
+
+
+# Where the closing letter plays relative to the end-credits montage.
+# Named here so the CLI, the API and the renderer all validate against one
+# list instead of three copies drifting apart.
+LETTER_PLACEMENTS: tuple[str, ...] = (
+    "over_photos", "after_photos", "on_last_photo",
+)
 
 
 class Config(BaseModel):
@@ -37,10 +46,19 @@ class Config(BaseModel):
     openai_text_model: str = "gpt-5.1"
 
     # --- fal.ai image-to-video. Auth via FAL_KEY. ---
+    # PREFERRED: name a preset here and every fal_* field below is filled in
+    # coherently — see video_models.py for the list ("kling-2.5-turbo-pro",
+    # "kling-3-pro", "kling-3-turbo-pro"). Models disagree about what the
+    # frame fields are CALLED, and setting the model id without the matching
+    # field names does not fail loudly: it silently drops the end frame, and
+    # the movie stops landing on its photos. A preset makes that impossible.
+    #
+    # Any fal_* key set explicitly still wins over the preset, so an
+    # experiment needs no new preset and every existing config keeps working
+    # untouched. Empty = no preset, exactly the old hand-configured behaviour.
+    video_model: str = ""
     # Default: Kling v2.5 Turbo Pro (image_url + tail_image_url, start->end
     # interpolation — same request shape as v2.1, better and cheaper).
-    # For Kling 3.0 use model "fal-ai/kling-video/v3/pro/image-to-video" with
-    # start field "start_image_url" and end field "end_image_url".
     fal_model_id: str = "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
     fal_start_frame_field: str = "image_url"
     # End-frame support is model-dependent. Leave empty to send only the start
@@ -59,6 +77,45 @@ class Config(BaseModel):
     # null to use the provider's default.
     fal_cfg_scale: Optional[float] = None
     fal_extra_arguments: dict[str, Any] = Field(default_factory=dict)
+
+    # --- Character elements (face references sent WITH the clip request) --- #
+    # Newer Kling versions accept "elements": reference portraits that pin a
+    # character's identity through the shot, which is exactly the failure the
+    # cast references exist for — a face distorting while people travel
+    # between the two frames.
+    #
+    # OFF BY DEFAULT, and deliberately shaped like fal_start_frame_field /
+    # fal_end_frame_field: every part of the request is named here, so
+    # turning this on is a config change once the endpoint's schema has been
+    # read, not a code change. It is off because the schema has NOT been
+    # verified — see README "Character elements" for the three things to
+    # check first, the most important being whether the endpoint accepts
+    # elements AND an end frame in the same request. This pipeline's whole
+    # contract is that a clip lands exactly on the next styled photo; an
+    # endpoint that makes you choose is not a trade-off, it is a different
+    # product.
+    #
+    # The request key for the elements array, e.g. "elements". Empty = never
+    # send them.
+    fal_elements_field: str = ""
+    # The key inside each element object that carries the face image URL,
+    # e.g. "frontal_image_url" or "image_url".
+    fal_element_image_field: str = "frontal_image_url"
+    # How many elements the endpoint accepts. fal's docs describe ONE for the
+    # v3 image-to-video endpoints; Kling's own docs describe up to three with
+    # start/end frames. 0 keeps the feature off even if a field name is set.
+    fal_max_elements: int = 0
+    # What happens when a clip has more shared people than fal_max_elements.
+    # False (default): send NO elements rather than pin an arbitrary subset —
+    # one crisp face among three drifting ones can read worse than four that
+    # drift together. True: send as many as fit, most-recurring people first.
+    # This is the open question a real A/B on a few clips should settle.
+    fal_elements_partial: bool = False
+    # How the motion prompt refers to an element, e.g. "@Element{index}"
+    # (1-based). When set, each element's epithet in the prompt is annotated
+    # with its token, because a model that is not told which person an
+    # element IS can only guess. Empty sends the elements unreferenced.
+    fal_element_prompt_template: str = ""
 
     # --- Audio (post-generation sound), also fal (auth via FAL_KEY). ---
     # Two layers:
@@ -124,6 +181,31 @@ class Config(BaseModel):
     letter_emoji_font_path: str = ""
     letter_font_size: int = 64
     letter_seconds_per_screen: float = 7.0  # scroll pace per screen height
+    # How fast a viewer is assumed to READ, when the letter has the screen to
+    # itself (after_photos / on_last_photo). A scroll can't be paused or
+    # re-read, and a pace-per-screen gives a long letter and a short one the
+    # same seconds per line — so a letter with more to say is slowed until it
+    # lasts at least this long: words / rate. Taken as a FLOOR against
+    # letter_seconds_per_screen, so a short letter keeps the timing it always
+    # had and nothing ever scrolls faster than configured. LOWER = SLOWER.
+    # Calibrated on a real 81-word blessing the user timed: 14.3s at the
+    # plain pace, which they wanted 5-10s longer; 200 wpm gives it 24.3s.
+    # 0 turns the floor off entirely (pure pace, the pre-2026-09-25 shape).
+    letter_reading_words_per_minute: float = 200.0
+    # WHERE the letter plays, when the end-credits montage is on too. Some
+    # customers want to read the letter and look at the photos separately
+    # rather than through each other, so the overlay is a choice, not the
+    # only shape:
+    #   over_photos   - the letter scrolls over the montage, both paced to
+    #                   end together (the original behaviour, still default)
+    #   after_photos  - the montage plays out at its own pace, then the
+    #                   letter scrolls alone on the dark background
+    #   on_last_photo - same, but the letter scrolls over a held still of
+    #                   the movie's last photo instead of a black screen
+    # With no montage the first two are the same thing; on_last_photo still
+    # puts the photo behind the text (and falls back to dark when the
+    # storyboard records no original photos).
+    letter_placement: str = "over_photos"
     # How much to darken the photo montage under a scrolling letter, 0-1.
     # 0 (the default) plays the photos at their true brightness — the user
     # explicitly does not want them greyed out; the letter's own drop shadow
@@ -205,6 +287,54 @@ class Config(BaseModel):
     # and try again, up to this many times. Set 0 to disable and fail fast.
     moderation_reword_attempts: int = 3
 
+    # --- Where person-choreography gives way to a camera move -------------- #
+    # A pair whose people cannot be staged one-by-one inside the beat budget
+    # gets a deterministic camera transition instead (see unstageable_reason
+    # in clients/openai_client.py). These two numbers are that threshold, and
+    # they are config rather than constants because the right value is a
+    # matter of taste that is only settled by watching renders: raise them to
+    # let the planner choreograph more pairs, lower them to hand more pairs to
+    # the camera. A per-project config.json can pin its own.
+    #
+    # mover budget: how many people may leave or arrive and still be staged
+    # individually. Roughly one mover per beat (5s = one beat, 10s = two),
+    # plus a little slack.
+    # crowd limit: above this many visible figures, an epithet stops picking
+    # anyone out ("the teenage boy with short brown hair" in a 13-person
+    # frame points at nobody), so ANY roster change mushes. A group that is
+    # the SAME on both sides is never gated by this — holding steady works at
+    # any size.
+    #
+    # These are the long-standing 3/4. They were briefly tightened to 2/3 on
+    # the theory that the pairs sitting just under the line were the ones
+    # still mushing, and reverted the same day at the user's request: that
+    # was a guess, and no render had been watched to back it. Tightening is
+    # now a config edit away — try 2/3 on one project and look at the result
+    # before making it everyone's default.
+    unstageable_mover_budget: int = 3
+    unstageable_crowd_limit: int = 4
+
+    # --- Character consistency (see media/faces.py) ------------------------ #
+    # A canonical styled portrait per cast member, cut for free out of frames
+    # already styled, using the face positions the panel's tagger records.
+    # Two consumers: the image model is shown the people it has already drawn
+    # when styling a new frame of them, and a video model that accepts
+    # character elements can be shown them at render time.
+    #
+    # Off by default because it depends on TAGS: an untagged project has no
+    # references, gets none, and behaves exactly as it did before. Turning it
+    # off entirely also restores the old behaviour on tagged projects.
+    cast_references_enabled: bool = True
+    # Side of the face crop for a frame with one tagged person, as a fraction
+    # of the frame's height; a fuller frame divides it down (see
+    # reference_crop_box). Raise for more shoulders and background, lower to
+    # tighten onto the face.
+    face_reference_crop: float = 0.5
+    # How many references may ride along with ONE styling call. They compete
+    # with the photo being styled for the model's attention, and a crowded
+    # frame would otherwise attach a dozen portraits to a single edit.
+    max_style_references: int = 4
+
 
     # --- Spending ledger (projects/<name>/logs/costs.json) ----------------- #
     # Unit prices used to value every API call the pipeline makes, so each
@@ -228,6 +358,21 @@ class Config(BaseModel):
     # planning call already carries ~20 frames; newest lessons win.
     max_lessons_in_prompt: int = 25
 
+    @field_validator("letter_placement")
+    @classmethod
+    def _known_letter_placement(cls, value: str) -> str:
+        """Refuse a typo rather than silently falling back to the overlay.
+
+        A misspelt placement would otherwise build the ending nobody asked
+        for and say nothing about it — and the ending is the part a customer
+        reads word by word.
+        """
+        if value not in LETTER_PLACEMENTS:
+            raise ValueError(
+                f"letter_placement must be one of {', '.join(LETTER_PLACEMENTS)}"
+            )
+        return value
+
     @classmethod
     def load(cls, path: Path, override_path: Path | None = None) -> "Config":
         """Load and validate the config, optionally layering project overrides.
@@ -241,6 +386,7 @@ class Config(BaseModel):
         if override_path is not None:
             overrides = cls._read_json(override_path, required=False)
             data.update(overrides)
+        data = apply_video_model_preset(data)
         try:
             return cls(**data)
         except ValidationError as exc:
@@ -263,3 +409,60 @@ class Config(BaseModel):
         if not isinstance(data, dict):
             raise ConfigError(f"{path} must contain a JSON object.")
         return data
+
+    # --- the chosen video model, and what it can do ------------------------ #
+    def video_model_preset(self) -> Optional[VideoModel]:
+        """The preset behind this config, by name or by model id.
+
+        Falls back to matching ``fal_model_id`` so a config written before
+        presets existed still gets the capability answers — which is what
+        keeps "does this model take elements?" from becoming a second switch
+        somebody has to remember to flip in step with the model.
+        """
+        return get_video_model(self.video_model) or model_for_id(self.fal_model_id)
+
+    def elements_enabled(self) -> bool:
+        """Should cast face references ride along with a clip request?
+
+        The MODEL decides. Kling 2.5 cannot take elements, so it never gets
+        them however the element fields happen to be set — that is the whole
+        point of tying this to the model rather than to a separate flag that
+        could drift out of step with it. An unrecognised model has no opinion
+        recorded, so it falls back to the fields, which is what lets a new
+        endpoint be tried by hand before it earns a preset.
+        """
+        configured = bool(self.fal_elements_field) and self.fal_max_elements > 0
+        preset = self.video_model_preset()
+        if preset is not None and not preset.supports_elements:
+            return False
+        return configured
+
+
+def apply_video_model_preset(data: dict[str, Any]) -> dict[str, Any]:
+    """Fill in the ``fal_*`` fields implied by ``data['video_model']``.
+
+    Keys already present in ``data`` are left ALONE — an explicitly written
+    value always beats the preset, so a per-project experiment needs no new
+    preset and no existing config changes behaviour. An unknown preset name
+    is left for pydantic-free validation below rather than silently ignored:
+    a typo that quietly rendered on the wrong model would be expensive.
+    """
+    name = str(data.get("video_model") or "").strip()
+    if not name:
+        return data
+    preset = get_video_model(name)
+    if preset is None:
+        raise ConfigError(
+            f"Unknown video_model {name!r}. Available: "
+            + ", ".join(model_keys())
+        )
+    merged = dict(data)
+    for key, value in preset.as_config_fields().items():
+        merged.setdefault(key, value)
+    # Pricing follows the model unless the config states its own — otherwise
+    # switching to a model that costs 60% more would keep reporting the old
+    # estimate, and the spend figures are the only cost signal there is.
+    pricing = dict(merged.get("pricing") or {})
+    pricing.setdefault("clip_usd_per_second", preset.usd_per_second)
+    merged["pricing"] = pricing
+    return merged

@@ -349,6 +349,90 @@ _IDENTIFY_PEOPLE_SCHEMA = {
 }
 
 
+_FACE_AUDIT_SYSTEM = (
+    "You check whether one animated character is drawn as the SAME PERSON "
+    "across a film. You are given several face crops of one character, each "
+    "labelled, all cut from frames of the same movie and all rendered in the "
+    "same cartoon style. Decide which of them, if any, do not look like the "
+    "same individual as the majority of the others.\n\n"
+    "Judge IDENTITY, not photography. These crops come from photographs "
+    "taken over months or years and then stylised, so the following are "
+    "NORMAL and are never on their own a reason to flag a crop: a different "
+    "expression, a different angle or head tilt, different lighting or "
+    "colour grading, different clothing, a different background, a haircut "
+    "or a beard trimmed, being older or younger, softer or sharper "
+    "rendering, and a smaller or blurrier crop.\n\n"
+    "Flag a crop only when the underlying PERSON looks wrong — the face "
+    "shape, the spacing and set of the eyes, the nose, the jaw or chin, the "
+    "hairline (including hair appearing on a bald head, which is a known "
+    "failure of the image model), the shape or colour of glasses, or an age "
+    "band that cannot be the same person at all. When in doubt, DO NOT "
+    "FLAG: this list is shown to a human who pays real money to redraw each "
+    "frame on it, so a false alarm costs them, while a missed one costs "
+    "nothing they were not already living with. Flagging everything is the "
+    "worst possible answer, and so is flagging the majority — if most crops "
+    "disagree with each other the honest answer is an empty list and a note "
+    "saying the character is inconsistent throughout."
+)
+
+_FACE_AUDIT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "characters": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "odd_labels": {"type": "array", "items": {"type": "string"}},
+                    "note": {"type": "string"},
+                },
+                "required": ["id", "odd_labels", "note"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["characters"],
+    "additionalProperties": False,
+}
+
+
+def _coerce_face_audit(
+    data: dict[str, Any], allowed: dict[str, set[str]]
+) -> dict[str, dict[str, Any]]:
+    """Normalise a face-audit response, dropping anything unverifiable.
+
+    ``allowed`` maps a cast id to the labels that were actually SENT for it.
+    Everything else is discarded: an id nobody asked about, a label from a
+    different character, a repeated label. The output drives a badge that
+    invites someone to spend image credits, so an answer about a frame that
+    was never shown is worse than no answer.
+
+    A character the model flags ENTIRELY is dropped back to "no odd frames,
+    keep the note". Naming every crop as the odd one out is not a finding
+    about which frame to redo — it means the character never looked
+    consistent, and the note is the useful part of that.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for entry in (data.get("characters") or []):
+        if not isinstance(entry, dict):
+            continue
+        cid = str(entry.get("id") or "")
+        if cid not in allowed:
+            continue
+        seen: list[str] = []
+        for label in (entry.get("odd_labels") or []):
+            text = str(label)
+            if text in allowed[cid] and text not in seen:
+                seen.append(text)
+        if len(seen) >= len(allowed[cid]):
+            seen = []
+        note = str(entry.get("note") or "").strip()
+        if seen or note:
+            out[cid] = {"odd_frames": seen, "note": note}
+    return out
+
+
 def _coerce_frame_people(
     data: dict[str, Any], count: int, known_ids: set[str]
 ) -> list[list[dict[str, Any]]]:
@@ -854,9 +938,10 @@ _MODE_A_SYSTEM = (
     "position swap is at least difficulty 4; a swap combined with a setting "
     "change is 5. "
     "TOO MANY PEOPLE TO CHOREOGRAPH: exit-and-entrance staging is for a FEW "
-    "people — it does not scale. When more than three people would have to "
-    "leave or arrive between the two frames, or either frame holds five or "
-    "more visible people and the roster or arrangement changes, per-person "
+    "people — it does not scale. When more than {{MOVER_BUDGET}} people would "
+    "have to leave or arrive between the two frames, or either frame holds "
+    "{{OVER_CROWD_LIMIT}} or more visible people and the roster or "
+    "arrangement changes, per-person "
     "choreography cannot fit the beat budget, and the video model answers a "
     "many-body staging with ghost dissolves, bodies blending into each "
     "other, and people vanishing — a real movie staged seven exits and "
@@ -956,6 +1041,78 @@ _MODE_A_SYSTEM = (
     "calling, soft wind'). Real on-screen/world sounds only — no music, no "
     "speech, no narration."
 )
+
+# Appended to the style prompt when canonical cast faces ride along with the
+# photo (see media/faces.py and OpenAIClient.style_image).
+#
+# Every sentence here exists to stop a reference from leaking CONTENT. The
+# references are frames of this same movie, so they are full of plausible
+# scenery, clothing and poses that belong to a DIFFERENT moment — and the
+# edit endpoint is perfectly willing to blend them in. What is being borrowed
+# is a face and nothing else; the photograph remains the only authority on
+# what is happening, who is present, and what they are wearing. The last
+# clause matters most: a person's outfit changes between photos taken years
+# apart, and a reference that overruled the photograph there would dress
+# someone in clothes they are not wearing in this scene.
+_STYLE_REFERENCE_INSTRUCTION = (
+    " CHARACTER REFERENCES: the FIRST image is the photograph to convert, and "
+    "it alone decides the scene, the people present, their poses, their "
+    "clothing and the composition. Every image AFTER the first is a reference "
+    "portrait — the established cartoon face of one person in this film, "
+    "already drawn in this exact style. They are NOT part of this scene. "
+    "Where someone in the photograph is one of the people shown in a "
+    "reference, draw that person's face to MATCH their reference: the same "
+    "facial structure and proportions, the same hairline and hair (including "
+    "its absence), the same facial hair, the same eyewear shape and colour, "
+    "the same apparent age band — so this person is recognisably the SAME "
+    "character they are in every other frame of the film, not a fresh "
+    "interpretation of them. Never copy a reference's clothing, background, "
+    "pose, expression, lighting or framing into this frame; never add a "
+    "person who appears only in a reference and not in the photograph; never "
+    "drop or move a person who IS in the photograph because no reference "
+    "shows them. Where the photograph and a reference disagree about what "
+    "someone is WEARING, DOING or WHERE THEY ARE, the photograph always "
+    "wins — these photographs were taken years apart and the same person "
+    "changes clothes, hairstyle and age between them. Match the person, not "
+    "the picture."
+)
+
+# Small numbers as words, for prompts. The thresholds are config now, so the
+# sentence that teaches them cannot carry a hard-coded numeral any more.
+_NUMBER_WORDS = (
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+    "nine", "ten", "eleven", "twelve",
+)
+
+
+def _spell(n: int) -> str:
+    return _NUMBER_WORDS[n] if 0 <= n < len(_NUMBER_WORDS) else str(n)
+
+
+def mode_a_system(
+    mover_budget: Optional[int] = None, crowd_limit: Optional[int] = None
+) -> str:
+    """The planner's system prompt with the LIVE gate thresholds spelled in.
+
+    ``_MODE_A_SYSTEM`` is a template: the TOO MANY PEOPLE TO CHOREOGRAPH
+    block used to hard-code "more than three" / "five or more", which stopped
+    being true the moment the thresholds became config. Leaving stale numerals
+    in the prompt is the same failure the gate's own ``unstageable_reason``
+    was built to avoid — telling the model one rule while the code enforces
+    another erodes compliance on every pair whose wording still matters.
+
+    The thresholds resolve at CALL time (the module constants are defined
+    further down, next to the gate they document), so ``None`` here means
+    "whatever the fallback is", never a value frozen at import.
+    """
+    budget = _MOVER_BUDGET if mover_budget is None else mover_budget
+    limit = _CROWD_LIMIT if crowd_limit is None else crowd_limit
+    return (
+        _MODE_A_SYSTEM
+        .replace("{{MOVER_BUDGET}}", _spell(budget))
+        .replace("{{OVER_CROWD_LIMIT}}", _spell(limit + 1))
+    )
+
 
 _STORYBOARD_NO_TEXT_FRAMES = (
     " Every frame MUST depict a real visual scene with characters "
@@ -1136,7 +1293,11 @@ def _people_count(n: int) -> str:
     return f"{n} person" if n == 1 else f"{n} people"
 
 
-def _tagged_people_block(tags: list[Optional[list[str]]]) -> str:
+def _tagged_people_block(
+    tags: list[Optional[list[str]]],
+    mover_budget: Optional[int] = None,
+    crowd_limit: Optional[int] = None,
+) -> str:
     """Tell the planner who is in each frame, and what that means per pair.
 
     Two halves, because the tags answer two different questions the planner
@@ -1167,7 +1328,9 @@ def _tagged_people_block(tags: list[Optional[list[str]]]) -> str:
         shared = [p for p in start if p in end]
         gone = [p for p in start if p not in end]
         arrived = [p for p in end if p not in start]
-        reason = unstageable_reason(start, end)
+        reason = unstageable_reason(
+            start, end, mover_budget=mover_budget, crowd_limit=crowd_limit
+        )
         if reason:
             # Do NOT prescribe the exit-and-entrance here: on these pairs it
             # is exactly the choreography that renders as ghost dissolves
@@ -1550,10 +1713,15 @@ def is_arrangement_swap(start_order: Any, end_order: Any) -> bool:
 # holding 9-13 people) that assumption broke: plans staged seven exits and
 # three entrances in ten seconds and Kling answered with ghost dissolves,
 # bodies mushing into each other, and people vanishing — and a sampled
-# 4-mover pair (two out, two in) already showed identity churn. The budget
-# is 3 movers; the crowd limit exists because past ~4 people the epithets
-# stop picking anyone out ("the teenage boy with short brown hair" in a
-# 13-person frame points at nobody), so choreography of ANY size mushes.
+# 4-mover pair (two out, two in) already showed identity churn. The crowd
+# limit exists because past a handful of people the epithets stop picking
+# anyone out ("the teenage boy with short brown hair" in a 13-person frame
+# points at nobody), so choreography of ANY size mushes.
+#
+# These are only the FALLBACK values, used when no config is threaded in.
+# The live numbers are `Config.unstageable_mover_budget` /
+# `unstageable_crowd_limit`, because where this line sits is a judgement
+# settled by watching renders, not a fact — see the config for why.
 _MOVER_BUDGET = 3
 _CROWD_LIMIT = 4
 
@@ -1569,15 +1737,21 @@ def _head_count(value: Any) -> int:
 def unstageable_reason(
     start_order: Any, end_order: Any,
     start_heads: Any = None, end_heads: Any = None,
+    mover_budget: Optional[int] = None, crowd_limit: Optional[int] = None,
 ) -> Optional[str]:
     """WHY this pair can no longer be staged through the people, or None.
 
-    ``"movers"``  — more than ``_MOVER_BUDGET`` people leave or arrive, so
+    ``"movers"``  — more than ``mover_budget`` people leave or arrive, so
     the choreography cannot fit the beat budget however few people are on
-    screen. ``"crowd"`` — the frame is fuller than ``_CROWD_LIMIT`` and the
+    screen. ``"crowd"`` — the frame is fuller than ``crowd_limit`` and the
     group changes at all: past that size the epithets stop picking anyone
     out ("the teenage boy with short brown hair" in a 13-person frame points
     at nobody), so choreography of ANY size mushes.
+
+    Both thresholds come from the config (``unstageable_mover_budget`` /
+    ``unstageable_crowd_limit``) wherever a caller has one; the module
+    defaults stand in for the callers that don't, so this stays a pure
+    function usable from a test with no config in hand.
 
     The reason exists so the explanation handed to the planner names the
     rule that actually fired. Deriving the wording separately let the two
@@ -1601,6 +1775,8 @@ def unstageable_reason(
     """
     if not isinstance(start_order, list) or not isinstance(end_order, list):
         return None
+    budget = _MOVER_BUDGET if mover_budget is None else mover_budget
+    limit = _CROWD_LIMIT if crowd_limit is None else crowd_limit
     starts = [_person_tokens(n) for n in start_order]
     ends = [_person_tokens(n) for n in end_order]
     pairs = _match_people(starts, ends)
@@ -1608,13 +1784,13 @@ def unstageable_reason(
         movers = abs(len(starts) - len(ends))
     else:
         movers = (len(starts) - len(pairs)) + (len(ends) - len(pairs))
-    if movers > _MOVER_BUDGET:
+    if movers > budget:
         return "movers"
     crowd = max(
         len(starts), len(ends),
         _head_count(start_heads), _head_count(end_heads),
     )
-    if crowd <= _CROWD_LIMIT:
+    if crowd <= limit:
         return None
     if movers > 0 or is_arrangement_swap(start_order, end_order):
         return "crowd"
@@ -1624,6 +1800,7 @@ def unstageable_reason(
 def is_unstageable_pair(
     start_order: Any, end_order: Any,
     start_heads: Any = None, end_heads: Any = None,
+    mover_budget: Optional[int] = None, crowd_limit: Optional[int] = None,
 ) -> bool:
     """Can this pair no longer be staged through the people themselves?
 
@@ -1632,7 +1809,8 @@ def is_unstageable_pair(
     repairing the wording cannot help when the staging itself is impossible.
     """
     return unstageable_reason(
-        start_order, end_order, start_heads, end_heads
+        start_order, end_order, start_heads, end_heads,
+        mover_budget, crowd_limit,
     ) is not None
 
 
@@ -1783,6 +1961,13 @@ class OpenAIClient:
         # condense/restage/reword calls the runner never sees.
         self.on_spend: Optional[Callable[[str, float, str], None]] = None
 
+    def _mode_a_system(self) -> str:
+        """The planner's standing instructions, carrying THIS config's gate."""
+        return mode_a_system(
+            self.config.unstageable_mover_budget,
+            self.config.unstageable_crowd_limit,
+        )
+
     # --- spending ----------------------------------------------------------- #
     def _spend(self, kind: str, usd: float, detail: str) -> None:
         """Report one paid call. Never raises: billing notes can't fail a run."""
@@ -1831,20 +2016,53 @@ class OpenAIClient:
         )
 
     # --- Mode A: edit an existing image into the target style --------------- #
-    def style_image(self, src: Path, style_prompt: str, dst: Path) -> None:
-        """Edit `src` into the styled look and write a normalised PNG to `dst`."""
+    def style_image(
+        self,
+        src: Path,
+        style_prompt: str,
+        dst: Path,
+        references: Optional[list[Path]] = None,
+    ) -> None:
+        """Edit `src` into the styled look and write a normalised PNG to `dst`.
+
+        ``references`` are canonical styled faces of people who appear in this
+        photo (see media/faces.py). Without them each frame is an independent
+        draw from "cartoon this person": the prompt anchors the output to the
+        SOURCE PHOTO, and since a family album spans years — different age,
+        hair, light, angle — faithfully honouring each photo yields a
+        different-looking cartoon each time. That is correct per image and
+        wrong per movie. Passing the faces already drawn for these people
+        gives every frame the same target to hit.
+        """
         client = self._ensure_client()
         # Never upload the customer's file as-is: phone originals (iPhone MPO
         # HDR containers, unbaked EXIF rotation, 24MP frames) get rejected by
         # the image API as invalid_image_file. Decode once, send clean PNG.
         upload = prepare_image_for_upload(src)
+        reference_uploads = [
+            (f"reference_{i}.png", prepare_image_for_upload(path))
+            for i, path in enumerate(references or [], start=1)
+        ]
+        if reference_uploads:
+            style_prompt += _STYLE_REFERENCE_INSTRUCTION
 
         def _call(prompt: str) -> bytes:
             image = io.BytesIO(upload)
             image.name = f"{src.stem}.png"  # the SDK infers the mime type from this
+            # A single image stays a single image: the edit endpoint accepts
+            # either, and keeping the un-referenced call byte-identical to
+            # what it has always been means this feature cannot change how an
+            # untagged project styles.
+            payload: Any = image
+            if reference_uploads:
+                payload = [image]
+                for name, data in reference_uploads:
+                    ref = io.BytesIO(data)
+                    ref.name = name
+                    payload.append(ref)
             resp = client.images.edit(
                 model=self.config.openai_image_model,
-                image=image,
+                image=payload,
                 prompt=prompt,
                 size=self._IMAGE_API_SIZE,
             )
@@ -1918,6 +2136,75 @@ class OpenAIClient:
             return self._retry(
                 lambda: call(f"{prompt}\n\n{_DEBRAND_INSTRUCTION}"), description
             )
+
+    def review_face_consistency(
+        self, groups: list[tuple[str, str, list[tuple[str, Path]]]]
+    ) -> dict[str, dict[str, Any]]:
+        """Find frames where a cast member is drawn as somebody else.
+
+        ``groups`` is ``(cast id, epithet, [(frame label, face crop)])`` — the
+        crops are cut locally and for free from frames already styled, so the
+        only cost here is the one vision call.
+
+        Returns ``{cast id: {"odd_frames": [label], "note": str}}`` for the
+        characters with something to report. Everyone else is absent, which is
+        the answer this is usually hoping for.
+
+        ONE call for the whole cast rather than one per person: the crops are
+        sent at low detail and a per-character call would multiply the fixed
+        cost of the instructions by the size of the cast — and a 29-entry
+        cast is a real shape here, not a hypothetical.
+        """
+        groups = [g for g in groups if len(g[2]) >= 2]
+        if not groups:
+            return {}
+        client = self._ensure_client()
+
+        content: list[dict[str, Any]] = [{
+            "type": "text",
+            "text": (
+                "Here are face crops of "
+                f"{len(groups)} character(s) from one animated film. For each "
+                "character, list the labels of any crops that do not look "
+                "like the same person as the rest, and add a one-sentence "
+                "note. A character who is drawn consistently should come "
+                "back with an empty list — that is the expected answer, not "
+                "a failure to find anything."
+            ),
+        }]
+        allowed: dict[str, set[str]] = {}
+        for cid, epithet, crops in groups:
+            allowed[cid] = {label for label, _ in crops}
+            content.append({
+                "type": "text",
+                "text": f"\nCharacter id \"{cid}\" — {epithet}:",
+            })
+            for label, path in crops:
+                content.append({"type": "text", "text": f"Label \"{label}\":"})
+                content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": encode_image_data_url(path, max_edge=_VISION_MAX_EDGE),
+                        "detail": "low",
+                    },
+                })
+
+        def _call() -> str:
+            resp = client.chat.completions.create(
+                model=self.config.openai_text_model,
+                messages=[
+                    {"role": "system", "content": _FACE_AUDIT_SYSTEM},
+                    {"role": "user", "content": content},
+                ],
+                response_format=_json_schema_format(
+                    "face_audit", _FACE_AUDIT_SCHEMA
+                ),
+            )
+            self._note_text_usage(resp, "review_face_consistency")
+            return resp.choices[0].message.content or "{}"
+
+        raw = self._retry(_call, "OpenAI review_face_consistency")
+        return _coerce_face_audit(json.loads(raw), allowed)
 
     def reword_motion_prompt(self, prompt: str) -> str:
         """Rewrite a clip motion prompt that a video content filter rejected.
@@ -2039,7 +2326,7 @@ class OpenAIClient:
         # The reviewer must judge — and rewrite — under exactly the rules the
         # planner writes under, including everything learned so far.
         system = (
-            _MODE_A_SYSTEM
+            self._mode_a_system()
             + lesson_prompt_block(lessons or [], SCOPE_MOTION)
             + "\n\n--- YOUR TASK NOW ---\n"
             + _CLIP_REVIEW_SYSTEM
@@ -2356,6 +2643,7 @@ class OpenAIClient:
         cast: Optional[list[Character]] = None,
         lessons: Optional[list[str]] = None,
         frame_people: Optional[list[Optional[list[str]]]] = None,
+        stage_anyway: Optional[list[bool]] = None,
     ) -> tuple[list[tuple[str, int, str]], list[Character]]:
         """Vision-analyze consecutive frames and plan each clip between them.
 
@@ -2389,6 +2677,13 @@ class OpenAIClient:
         has said who is who, the model is told not to re-decide, and code
         uses the tags for the same/different and arrangement-swap rulings
         instead of the model's own reading.
+
+        ``stage_anyway`` is one flag per PAIR (so ``len(frames) - 1``): True
+        keeps the planner's people choreography on a pair the unstageable
+        gate would otherwise replace with a camera move (--stage-people). It
+        suppresses only that gate — swap restaging and the offscreen-ending
+        repair still run, so an override cannot smuggle an unchecked prompt
+        into the movie.
 
         When ``default_duration`` is set (5 or 10) every clip is forced to that
         length instead of one chosen per pair.
@@ -2456,7 +2751,11 @@ class OpenAIClient:
         tags = list(frame_people or [])
         tags += [None] * (n - len(tags))
         if any(t is not None for t in tags):
-            instruction += "\n\n" + _tagged_people_block(tags)
+            instruction += "\n\n" + _tagged_people_block(
+                tags,
+                self.config.unstageable_mover_budget,
+                self.config.unstageable_crowd_limit,
+            )
         if global_context.strip():
             # The user's whole-movie guidance (storyboard.global_motion_prompt).
             # It is prepended verbatim to every motion prompt at render time,
@@ -2471,7 +2770,10 @@ class OpenAIClient:
         # Learned rules go in the SYSTEM prompt, right after the standing
         # instructions they correct: they are policy, not per-request
         # context, and a targeted re-plan of one pair must get them too.
-        system = _MODE_A_SYSTEM + lesson_prompt_block(lessons or [], SCOPE_MOTION)
+        system = (
+            self._mode_a_system()
+            + lesson_prompt_block(lessons or [], SCOPE_MOTION)
+        )
 
         content: list[dict[str, Any]] = [{"type": "text", "text": instruction}]
         for i, fp in enumerate(frames, start=1):
@@ -2517,12 +2819,14 @@ class OpenAIClient:
             )
         plans = self._coerce_transition_plans(
             data, n - 1, default_duration, frame_people=tags,
+            stage_anyway=stage_anyway,
         )
         return plans, _merge_cast(cast, data.get("characters"))
 
     def _coerce_transition_plans(
         self, data: dict[str, Any], count: int, default_duration: Optional[int],
         frame_people: Optional[list[Optional[list[str]]]] = None,
+        stage_anyway: Optional[list[bool]] = None,
     ) -> list[tuple[str, int, str]]:
         """Normalise the model JSON into exactly `count` transition plans.
 
@@ -2581,9 +2885,29 @@ class OpenAIClient:
             # seconds of it is a slack shot at twice the price. Difficulty
             # rates how hard the pair is to STAGE, which is exactly the
             # question this branch has already answered with "don't".
-            if is_unstageable_pair(
+            #
+            # A human can say "try it anyway" on one pair (--stage-people /
+            # the panel's re-plan choice). The gate is judged from tags and
+            # headcounts and has never watched a render, so it can be wrong
+            # in both directions; this is the override for the direction the
+            # `--camera` override doesn't cover. It suppresses THIS gate
+            # only — the swap restaging and offscreen repair below still run
+            # on the result.
+            forced_people = bool(
+                stage_anyway and i < len(stage_anyway) and stage_anyway[i]
+            )
+            unstageable = is_unstageable_pair(
                 *orders(i), item.get("start_heads"), item.get("end_heads"),
-            ):
+                self.config.unstageable_mover_budget,
+                self.config.unstageable_crowd_limit,
+            )
+            if unstageable and forced_people:
+                logger.info(
+                    "Pair %d reads as unstageable, but staging through the "
+                    "people was explicitly requested — keeping the planned "
+                    "choreography.", i + 1,
+                )
+            if unstageable and not forced_people:
                 logger.info(
                     "Pair %d cannot be staged through its people (too many "
                     "movers or too crowded); using a %ds camera transition.",

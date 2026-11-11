@@ -17,6 +17,7 @@ from ai_video_maker.clients.openai_client import (
     _realign_by_pair_index,
     camera_shift_prompt,
     is_arrangement_swap,
+    is_camera_transition,
     is_unstageable_pair,
     ends_offscreen,
     is_clothing_anchored,
@@ -1324,6 +1325,85 @@ class TestUnstageablePairs:
         )
 
 
+class TestTheGateThresholdsAreTunable:
+    """Where choreography gives way to the camera is CONFIG, not a constant.
+
+    The DEFAULTS are unchanged (3 movers / 4 in a crowd) and these tests say
+    so: they were briefly tightened to 2/3 on the theory that the pairs just
+    under the line were the ones still mushing, and reverted the same day
+    because that was a guess with no watched render behind it. What survives
+    is the ability to tune — per project, without a deploy — so the theory
+    can be tested on one movie instead of imposed on all of them.
+    """
+
+    def test_the_defaults_are_the_long_standing_three_and_four(self):
+        from ai_video_maker.config import Config
+        assert Config.model_fields["unstageable_mover_budget"].default == 3
+        assert Config.model_fields["unstageable_crowd_limit"].default == 4
+
+    def test_three_movers_are_still_staged_by_default(self):
+        # One out, two in — inside the default budget, as it has always been.
+        assert not is_unstageable_pair(["the man", "the tall woman"],
+                                       ["the man", "the small boy", "the girl"])
+
+    def test_four_movers_are_gated_by_default(self):
+        assert is_unstageable_pair(
+            ["the man", "the tall woman"],
+            ["the small boy", "the teenage girl"],
+        )
+
+    def test_a_four_person_frame_that_changes_is_still_staged_by_default(self):
+        four = ["the man", "the woman", "the small boy", "the girl"]
+        assert not is_unstageable_pair(four, four[:-1] + ["the older man"])
+
+    def test_a_five_person_frame_that_changes_is_gated_by_default(self):
+        five = ["the man", "the woman", "the small boy", "the girl", "the aunt"]
+        assert is_unstageable_pair(five, five[:-1])
+
+    def test_tightening_the_budget_gates_a_pair_the_default_allows(self):
+        # The lever the revert left behind: pass 2/3 (or set it in a project's
+        # config.json) and the pairs just under the default line move to the
+        # camera, without changing what every other movie does.
+        movers = (["the man", "the tall woman"],
+                  ["the man", "the small boy", "the girl"])
+        assert not is_unstageable_pair(*movers)
+        assert is_unstageable_pair(*movers, mover_budget=2, crowd_limit=3)
+
+    def test_loosening_the_budget_stages_a_pair_the_default_gates(self):
+        movers = (["the man", "the tall woman"],
+                  ["the small boy", "the teenage girl"])
+        assert is_unstageable_pair(*movers)
+        assert not is_unstageable_pair(*movers, mover_budget=6, crowd_limit=9)
+
+    def test_the_planner_is_told_the_same_numbers_the_code_enforces(self):
+        # The prompt used to hard-code "more than three" / "five or more".
+        # A stale numeral there teaches the model a rule the gate does not
+        # apply, which is exactly the incoherence unstageable_reason exists
+        # to avoid — so the sentence is generated from the live thresholds.
+        # That fix outlives the revert: it is what makes tuning coherent.
+        from ai_video_maker.clients.openai_client import mode_a_system
+
+        default = mode_a_system()
+        assert "more than three people" in default
+        assert "five or more visible people" in default
+
+        tight = mode_a_system(2, 3)
+        assert "more than two people" in tight
+        assert "four or more visible people" in tight
+
+    def test_no_placeholder_ever_reaches_the_model(self):
+        from ai_video_maker.clients.openai_client import mode_a_system
+        assert "{{" not in mode_a_system()
+        assert "{{" not in mode_a_system(4, 6)
+
+    def test_the_client_spells_in_its_own_config(self, config):
+        from ai_video_maker.clients.openai_client import OpenAIClient
+
+        config.unstageable_mover_budget = 6
+        config.unstageable_crowd_limit = 9
+        assert "more than six people" in OpenAIClient(config)._mode_a_system()
+
+
 class TestCameraShiftPromptFamily:
     """The deterministic camera prompt, picked by the pair's shape."""
 
@@ -1392,6 +1472,90 @@ class TestCameraShiftPromptFamily:
         for prompt in family:
             assert not ends_offscreen(prompt)
             assert len(prompt.split()) <= 35  # one continuous beat, no more
+
+
+class TestTheGateCanBeOverriddenPerPair:
+    """`stage_anyway` keeps the planner's choreography on a gated pair.
+
+    The gate decides from tags and headcounts and has never watched a render,
+    so it can be wrong in both directions. `--camera` covers "you called this
+    stageable and it mushed"; this covers the other one. What it must NOT do
+    is become a way to ship an unchecked prompt, so only THIS gate is
+    suppressed — the swap restaging and offscreen repair still run.
+    """
+
+    def _gated(self, motion="seven people walk out"):
+        """A pair the gate replaces: six people, roster changes."""
+        big = TestUnstageablePairs.SIX
+        return {"transitions": [{
+            "pair_index": 1, "difficulty": 5, "motion_prompt": motion,
+            "sound_prompt": "sea wind", "start_order": big,
+            "end_order": big[:2] + ["the newcomer"],
+        }]}
+
+    def test_without_the_override_the_gate_still_fires(self, config):
+        motion, _, _ = _plans(config, self._gated(), 1)[0]
+        assert is_camera_transition(motion)
+
+    def test_the_override_keeps_the_planned_choreography(self, config):
+        motion, _, _ = OpenAIClient(config)._coerce_transition_plans(
+            self._gated(), 1, None, stage_anyway=[True],
+        )[0]
+        assert not is_camera_transition(motion)
+        assert "walk" in motion
+
+    def test_a_false_flag_is_the_same_as_no_flag(self, config):
+        motion, _, _ = OpenAIClient(config)._coerce_transition_plans(
+            self._gated(), 1, None, stage_anyway=[False],
+        )[0]
+        assert is_camera_transition(motion)
+
+    def test_the_override_is_per_pair_not_global(self, config):
+        """Two gated pairs, one overridden: the other still gets the camera."""
+        big = TestUnstageablePairs.SIX
+        data = {"transitions": [
+            {"pair_index": i + 1, "difficulty": 5,
+             "motion_prompt": f"seven people walk out of {i}",
+             "sound_prompt": "s", "start_order": big,
+             "end_order": big[:2] + ["the newcomer"]}
+            for i in range(2)
+        ]}
+        plans = OpenAIClient(config)._coerce_transition_plans(
+            data, 2, None, stage_anyway=[True, False],
+        )
+        assert not is_camera_transition(plans[0][0])
+        assert is_camera_transition(plans[1][0])
+
+    def test_a_short_flag_list_does_not_crash_the_rest(self, config):
+        """Defensive: the list is built per segment and must not index-error."""
+        plans = OpenAIClient(config)._coerce_transition_plans(
+            self._gated(), 1, None, stage_anyway=[],
+        )
+        assert is_camera_transition(plans[0][0])
+
+    def test_an_overridden_pair_still_gets_its_ending_repaired(
+        self, config, monkeypatch
+    ):
+        """The override suppresses the GATE, not the rest of the coercion.
+
+        Otherwise "try anyway" would be a back door for shipping a prompt
+        that ends offscreen — the one thing nothing is allowed to do.
+        """
+        called = {}
+
+        def _fake(self, motion, duration, end_order):  # noqa: ANN001
+            called["yes"] = True
+            return motion + " and walk back into frame"
+
+        monkeypatch.setattr(
+            OpenAIClient, "_complete_offscreen_ending", _fake
+        )
+        motion, _, _ = OpenAIClient(config)._coerce_transition_plans(
+            self._gated("the six of them walk out past the camera"),
+            1, None, stage_anyway=[True],
+        )[0]
+        assert called.get("yes"), "the offscreen repair was skipped"
+        assert not is_camera_transition(motion)
 
 
 class TestUnstageablePairsAreReplacedInCoercion:

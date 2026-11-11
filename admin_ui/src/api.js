@@ -86,6 +86,29 @@ export const api = {
     request(`/api/projects/${encodeURIComponent(name)}/actions/${command}`, {
       method: 'POST', body: JSON.stringify(options)
     }),
+  // The selectable video models, and pinning one for a single project. The
+  // PUT writes just `video_model` into projects/<name>/config.json — it
+  // renders nothing and never touches another movie.
+  videoModels: () => request('/api/video-models'),
+  // The project's tuning knobs. `settings` is {key: value}; a value of null
+  // removes the override so the shared config decides again. Free — it saves
+  // one file and renders nothing.
+  saveProjectSettings: (name, settings) =>
+    request(`/api/projects/${encodeURIComponent(name)}/settings`, {
+      method: 'PUT', body: JSON.stringify({ settings })
+    }),
+  setVideoModel: (name, model) =>
+    request(`/api/projects/${encodeURIComponent(name)}/video-model`, {
+      method: 'PUT', body: JSON.stringify({ model })
+    }),
+  // Mark (or unmark) a rendered clip as needing a fix. A worklist, not
+  // feedback: free, instant, reversible, and it teaches the planner nothing.
+  flagClip: (name, clipId, marked, note = '') =>
+    request(
+      `/api/projects/${encodeURIComponent(name)}/clips/`
+      + `${encodeURIComponent(clipId)}/flag`,
+      { method: 'PUT', body: JSON.stringify({ marked, note }) }
+    ),
   // What the studio has spent: every project's estimate + the grand total.
   costs: () => request('/api/costs'),
   // One project's ledger, line by line (what each paid call bought).

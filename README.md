@@ -166,12 +166,13 @@ the `ADMIN_API_TOKEN` from `.env`:
   reviewing and editing every transition (motion prompt, duration, sound
   prompt, global motion prompt), rendering all clips or regenerating one,
   per-clip audio redo, uploading the music track, combine/finalize with
-  intro/credits/letter toggles, **writing the closing letter itself** (a
-  Hebrew-safe text box in the Combine step, saved as the project's
-  `letter.txt`), **publishing the finished movie into the order's Cloudinary
+  intro/credits/letter toggles and a **where the letter plays** picker,
+  **writing the closing letter itself** (a Hebrew-safe text box in the
+  Combine step, saved as the project's `letter.txt`), **publishing the finished movie into the order's Cloudinary
   folder** (step 5 — the modal names the exact file, e.g. `final_v2.mp4`,
   before anything is uploaded, and nothing there is ever replaced), and `run`
-  for the whole chain, plus a **Feedback** button on every rendered clip
+  for the whole chain, plus a **Needs fixing** toggle and a **Feedback** button
+  on every rendered clip
   (tell the planner what it got wrong — see
   [Teaching the planner](#teaching-the-planner-feedback--lessons)) and two
   studio-wide tabs: **Spending** (what each project cost and the total) and
@@ -190,6 +191,20 @@ the `ADMIN_API_TOKEN` from `.env`:
   once the whole run finishes. Each photo shows the **original beside its
   styled frame**, because judging a likeness slip, a cropped head or an
   invented face means comparing the two, not looking at the styled one alone.
+  **Clicking any picture opens it big** — and opens the *pair*, because at
+  120px you can see that a frame was styled but not whether the face
+  survived it. The same works on a clip card (click either frame to see
+  start and end side by side) and on a cast reference portrait, where a
+  64px square is exactly the size at which a clean crop and a mush crop
+  look identical. The face tagger is the one exception: there a click means
+  "place a tag here", so it keeps tagging.
+  **The Cast and Cast faces sections fold away** (click the header) and each
+  browser remembers the choice — a real order arrived with a 69-entry cast,
+  which is a screen and a half of text inputs sitting between you and
+  everything below. Folding never hides a problem: the counts a folded card
+  would have warned about (names written from clothing, names too alike,
+  drifted faces, frames styled against older references) ride on the header
+  as chips, which stay visible either way.
   **Jobs sit directly under the step tiles** — clicking a step is what creates
   one, and its log is where you look when a run misbehaves.
   **Photos that will be skipped** get their own alert: a storyboard frame
@@ -212,7 +227,8 @@ the `ADMIN_API_TOKEN` from `.env`:
   phone uploads often have, is still accepted), the closing
   letter (`PUT /api/projects/<name>/letter` with `{"text": "…"}`; the text
   comes back in the project detail as `letter_text`, and its summary as
-  `letter: {exists, chars}`), a publish preview
+  `letter: {exists, chars}` with `letter_placement` alongside it), a
+  publish preview
   (`GET /api/projects/<name>/publish/preview` — read-only; returns the next
   free version and the exact `public_id`/`filename`, plus what the order
   folder already holds), and
@@ -576,6 +592,39 @@ Details worth knowing:
 - With no lessons stored, every prompt is byte-for-byte what it was before
   this feature existed.
 
+### Marking clips that need fixing
+
+Watching twenty-nine clips and remembering which six were wrong is the actual
+problem, and feedback is the wrong tool for it: it costs two model calls and
+writes a studio-wide rule. **`flag` is the worklist** — free, instant, and
+yours to tick off:
+
+```bash
+python pipeline.py flag myfilm --clip 003_to_004 "the boy teleports"
+python pipeline.py flag myfilm --clip 003_to_004 --clear   # dealt with
+```
+
+In the panel it is the **Needs fixing** button on every rendered clip, which
+becomes **✓ Fixed** once marked. Marks show up as a red badge on the clip, a
+count in the Render step, a `status` line and
+`snapshot()["clip_flags"]`. They live in `projects/<name>/clip_flags.json`.
+
+The two are deliberately different things, and the difference is the point:
+
+| | `feedback` | `flag` |
+|---|---|---|
+| What it is | evidence, pinned to the exact prompt that produced the clip | a to-do list for this movie |
+| Costs | two OpenAI calls (watch + distil) | nothing |
+| Teaches the planner | yes — a studio-wide rule | no |
+| Can be undone | no (append-only, by design) | yes — that is the whole point |
+
+Marking a clip **changes nothing about the movie**: nothing is deleted, and
+nothing is re-rendered. Fix the prompt and regenerate the clip when you are
+ready, the same explicit paid action as always. If you re-render a clip that
+is still marked, the mark is **not** cleared for you — it is reported as
+"re-rendered since you marked it" instead, because deciding you are finished
+with your own note is not the pipeline's call.
+
 ### What it costs (spending)
 
 Every paid call — styling an image, a planning/vision call, a clip render, an
@@ -705,14 +754,124 @@ prompt has nobody crossing or leaving frame, a targeted rewrite restages it
 as an exit past the camera plus a walk back in. Prompt-side instructions
 alone kept missing these.
 
+<a id="keeping-a-face-the-same-face"></a>
+
+**The cast's canonical faces (`faces`).** Every frame used to be styled on
+its own: one photo, one prompt, no knowledge that frame 3 and frame 17 show
+the same person. The style prompt says *preserve the likeness*, and it does —
+but that anchors each output to **that photograph**, not to the other styled
+frames. A family album spans years, so faithfully honouring a 2019 photo and
+a 2024 photo of the same person legitimately produces two different-looking
+cartoons. Correct per image, wrong per movie.
+
+`python pipeline.py faces <project>` fixes the anchor. It cuts one canonical
+portrait per cast member into `cast_refs/<cast id>.png`, using the face
+positions the panel's tagger already records (`FramePerson.x`/`y` is the
+centre of that person's face). It is **free** — the faces come out of frames
+you already paid to style — so it runs itself whenever tags change, and the
+frame it cuts from is the one with the fewest people in it, where the face is
+largest. Set `reference_frame` on a cast member (in `storyboard.json` or the
+panel's Cast editor) to override that pick.
+
+From then on, styling a tagged frame sends those faces along with the
+photograph, and the model is told plainly that they are **identity only**:
+match the face, never copy a reference's clothing, pose, background or
+scenery, never add a person who is only in a reference, and where the
+photograph and a reference disagree about what someone is wearing or doing,
+the photograph wins.
+
+Because references come from the *saved* storyboard, the first styling of a
+project has none (nothing is tagged yet) and behaves exactly as it always
+has. They take effect on the next deliberate re-style of a frame
+(`--restyle-frame`), which is how every credit-spending redo in this pipeline
+works.
+
+**Finding the frames that already drifted (`faces --audit`).** One paid vision
+call compares every tagged appearance of each cast member and reports the
+frames where somebody is drawn as a different person — a bald man who grew
+hair, a child who became a different child. It is deliberately conservative:
+a different expression, angle, haircut or outfit is never a finding, and a
+character flagged in *every* frame is reported as "inconsistent throughout"
+rather than as a list of frames to redo, because that list would just be a
+bill. Findings are saved to `storyboard/face_audit.json`, shown by `status`
+and in the panel, and **nothing is ever re-styled for you** — you get the
+exact `--restyle-frame` command to run.
+
+Frames styled against references that have since moved are flagged as
+`outdated_styling`. A frame styled *before* any references existed is never
+flagged: that stamp is empty, which is the truth, and a project that was fine
+yesterday must not wake up demanding money today.
+
+<a id="character-elements"></a>
+
+**Character elements at render time (off — needs a schema check first).**
+Newer Kling versions accept *elements*: reference portraits that pin a
+character's identity through the shot. That is precisely the failure the cast
+references exist for — a face distorting while people travel between the two
+frames — so the plumbing is in place and shaped exactly like the frame
+fields, meaning **turning it on is a config change, not a code change**.
+
+The simplest way to turn this on is to pick a Kling 3 preset (see
+`video_model` above), which sets all of it coherently. The raw fields below
+are for a model that has no preset yet.
+
+The presets ship with Kling 3's element fields already filled in, but the
+endpoint's schema has **not been verified from here**. Read fal's API page
+for the model you intend to use and check three things:
+
+1. **Does it accept elements AND an end frame in the same request?** This is
+   the one that decides everything. Every clip in this pipeline is pinned to
+   the next styled photo (`fal_end_frame_field`); an endpoint that makes you
+   choose between an end frame and a face reference is not a trade-off, it is
+   a different product — the clips would stop chaining and `combine` would
+   show visible jumps.
+2. **How many elements?** fal's docs describe *one* for the v3 image-to-video
+   endpoints; Kling's own docs describe up to three alongside start/end
+   frames.
+3. **The exact field names** — the array key, the key inside each element
+   holding the image URL, and how the prompt refers to an element.
+
+Then set:
+
+```jsonc
+{
+  "fal_elements_field": "elements",              // the array key; "" = off
+  "fal_element_image_field": "frontal_image_url",// image key inside an element
+  "fal_max_elements": 1,                         // 0 = off
+  "fal_element_prompt_template": "@Element{index}",
+  "fal_elements_partial": false
+}
+```
+
+Elements are attached only to people tagged in **both** of a clip's frames —
+someone who leaves or arrives has no continuous identity to hold, and is
+exactly who the pipeline stages an exit for so the model *won't* carry them
+across. Camera transitions never get elements: they name nobody by design,
+and they are already the best-looking clips in a movie.
+
+`fal_elements_partial` is the open question worth A/B-ing. When a clip shares
+more people than `fal_max_elements`, `false` (the default) sends **none**
+rather than pin an arbitrary subset — one crisp face among three drifting
+ones can read worse than four drifting together. Set it `true` to rescue the
+most-recurring face instead. Flip the boolean, render the same clip twice,
+and look.
+
+Try it on a per-project `config.json` before touching the shared one, and
+note that each clip now records **which model rendered it**: switch models
+mid-project and the changed clips are flagged (`model_changed`) so a movie
+never silently mixes two.
+
+<a id="when-the-camera-takes-over"></a>
+
 **Unstageable pairs become camera transitions.** Exit-and-entrance staging
 works for a couple of people and falls apart in a crowd: on a real order the
 planner staged seven exits and three entrances inside one ten-second clip and
 the video model rendered ghost dissolves, bodies mushing into each other, and
 people vanishing. The pipeline now decides in code, per pair, whether the
-staging can exist at all: more than **3 people** leaving or arriving, or a
-frame holding **more than 4 people** whose roster or arrangement changes,
-replaces the choreography with a deterministic **camera transition** — the
+staging can exist at all: more people leaving or arriving than
+`unstageable_mover_budget` (default **3**), or a frame holding more people
+than `unstageable_crowd_limit` (default **4**) whose roster or arrangement
+changes, replaces the choreography with a deterministic **camera transition** — the
 camera travels to the new setting and settles on exactly what the end frame
 shows — with a drift-to-one-person variant when a group narrows to one of its
 own, a scene variant when the end frame is empty, and a **turn-away variant
@@ -725,6 +884,58 @@ reports a per-frame **headcount census** (everyone visible, tagged or not),
 so a crowded frame with only two people tagged still gates correctly. Small
 pairs keep subject staging — this is the only other place camera language is
 allowed, alongside the offscreen last resort below.
+
+Both thresholds are **config, not constants** (`unstageable_mover_budget` /
+`unstageable_crowd_limit`), because where the line sits is a matter of taste
+only watching renders can settle: raise them to let the planner choreograph
+more pairs, lower them to hand more pairs to the camera, and pin a different
+answer for one movie with a per-project `config.json`. The planner's own
+instructions are generated from whatever the numbers currently are, so the
+rule it is taught always matches the rule the code enforces.
+
+If faces are distorting on pairs where people travel between the two frames,
+**2 / 3 is the setting to try** — it hands the pairs sitting just under the
+default line to the camera instead. Try it on one project's `config.json`
+first and watch the result: the camera transitions being the best-looking
+clips in a movie is a reason to suspect that line, not proof of where it
+belongs.
+
+**Asking for a camera move yourself.** The gate decides from tags and
+headcounts; it has never seen a render. When a pair mushes anyway, override
+it:
+
+```bash
+python pipeline.py storyboard myfilm --replan-clip 003_to_004 --camera
+```
+
+or **Re-plan prompt → Force a camera move** on the clip card. It replaces that
+pair's choreography with the same deterministic wording the gate uses, picked
+by the pair's own rosters. **Free and instant** — the prompt is a template,
+so there is no AI call — and always a 5-second clip. The sound prompt is
+kept, the clip is marked outdated rather than re-rendered, and no other pair
+is touched. `--camera` applies only to pairs you name with `--replan-clip` /
+`--replan-all`: a pair that is merely dirty because its photo changed still
+goes through the planner.
+
+**Asking for the people instead.** The gate can be wrong in the other
+direction too — a pair it calls unstageable may be exactly the moment whose
+point is what the people *do*, and a camera move throws that away. Say so:
+
+```bash
+python pipeline.py storyboard myfilm --replan-clip 003_to_004 --stage-people
+```
+
+or **Re-plan prompt → Stage the people anyway**. This one *plans*, so unlike
+forcing the camera it costs a vision call; what the flag does is stop the
+coercion from throwing the planner's choreography away. It suppresses **only**
+that gate — a swap is still restaged and an ending that empties the frame is
+still repaired — so "try anyway" can't become a way to ship an unchecked
+prompt. Same "named pairs only" rule as `--camera`, and asking for both at
+once is refused rather than silently resolved.
+
+Expect distortion on a genuinely crowded pair: that is what the gate exists
+to prevent, and the honest way to use this is one pair, then look at the
+render before doing it to more.
 
 The gate acts when a pair is planned, so storyboards written before it keep
 their many-mover choreography until re-planned. Those pairs are surfaced —
@@ -739,6 +950,35 @@ the camera transition.
 movie — e.g. its own `style_prompt` or a different `fal_model_id`. It is merged
 key-over-key on top of the shared config, so different movies can use different
 looks/models without touching the global file.
+
+<a id="project-settings"></a>
+
+**…and the tuning knobs are editable from the panel.** A few of those keys
+exist precisely to be experimented with — their right value is a matter of
+taste that only watching a render settles — so the project page has a
+**Project settings** card for them, at the bottom above the delete button:
+
+| Setting | Effect |
+|---|---|
+| `unstageable_mover_budget` | how many people may leave/arrive and still be choreographed one by one |
+| `unstageable_crowd_limit` | above this many people, any change to the group hands the pair to the camera |
+| `cast_references_enabled` | send each person's canonical face when styling a photo of them |
+| `fal_elements_partial` | on an element-capable model, pin one face when not everyone fits |
+
+Each row shows whether the value is **set for this project** or inherited as
+the **studio default**, with a Reset that removes the override rather than
+pinning today's shared value — so a project can go back to following the
+global config. Saving is free and instant: nothing is re-planned, re-styled or
+re-rendered, and the card says which step each knob lands on.
+
+This is deliberately **not** a config editor. The server keeps an allowlist
+(`ai_video_maker/project_settings.py`) and refuses anything else, because most
+of config breaks renders in ways that are hard to diagnose from a browser — a
+wrong frame field silently drops the end frame, a rewritten `style_prompt`
+quietly undoes years of accumulated rules. Those stay a deliberate edit on the
+machine; the [video model](#video-model) has its own picker.
+
+<a id="video-model"></a>
 
 ### Model & start/end frames (important)
 
@@ -756,13 +996,39 @@ clip interpolates from one styled frame to the next):
 "fal_duration_as_string": true
 ```
 
+**Pick a model by name (`video_model`).** Models disagree about what their
+inputs are *called* — the start frame is `image_url` on Kling 2.5 and
+`start_image_url` on Kling 3 — and setting the model id without the matching
+field names does not fail loudly: it silently drops the end frame, and the
+movie stops landing on its photos. So name a preset instead and every `fal_*`
+field is filled in together:
+
+| `video_model` | Model | Frame fields | Cast faces | Price |
+|---|---|---|---|---|
+| `kling-2.5-turbo-pro` | Kling 2.5 Turbo Pro (default) | `image_url` / `tail_image_url` | **no** | $0.07/s |
+| `kling-3-pro` | Kling 3.0 Pro | `start_image_url` / `end_image_url` | **yes** (1) | $0.112/s |
+| `kling-3-turbo-pro` | Kling 3.0 Turbo Pro | `start_image_url` / `end_image_url` | **yes** (1) | $0.14/s |
+
+Whether the cast's face references are sent is a property of the **model**,
+not a separate switch: Kling 2.5 cannot read them and never gets them, even
+if the element fields are set by hand; Kling 3 can and does. That is the one
+thing that must not be possible to leave half-configured.
+
+Any `fal_*` key you set explicitly still beats the preset, so experiments
+need no new preset and every existing config keeps working untouched. Pricing
+follows the model too, unless you pin your own — otherwise switching to a
+model that costs 60% more would keep reporting the old estimate.
+
+The panel's Render step has a picker (it writes `video_model` into that one
+project's `config.json`; nothing else in the studio changes). The Kling 3
+entries come from fal's published docs and have **not been rendered from
+here** — try a single clip with `render <project> --clip ID` and check the
+end frame is honoured before committing a whole movie.
+
 - **Start frame** → `fal_start_frame_field` (`image_url`). **End frame** →
   `fal_end_frame_field` (`tail_image_url`); set it to `""` for start-frame-only.
 - `fal_duration_as_string: true` because fal's Kling expects a string enum
   (`"5"`/`"10"`); set it `false` for a model that wants an integer.
-- **Kling 3.0 on fal:** set `fal_model_id` to
-  `"fal-ai/kling-video/v3/pro/image-to-video"`, `fal_start_frame_field` to
-  `"start_image_url"`, and `fal_end_frame_field` to `"end_image_url"`.
 - `fal_negative_prompt` — sent as the model's `negative_prompt` when
   non-empty. The shared config ships a preset targeting artifacts seen on
   real renders (face distortion, morphing, flicker); set it to `""`
@@ -776,10 +1042,20 @@ clip interpolates from one styled frame to the next):
 - Add extra model-specific args via `fal_extra_arguments`; they are applied
   last, so they override the fields above (handy for per-project
   experiments).
-- Changing `fal_negative_prompt`, `fal_cfg_scale`, or `fal_extra_arguments`
-  changes the render **fingerprint**: a pending, not-yet-collected render
-  submitted under the old settings can no longer be resumed (the next render
-  buys a fresh clip). Collect pending renders before flipping these knobs.
+- `fal_elements_field` and friends attach the cast's face references to the
+  request on models that support character elements — **off by default**, see
+  [Character elements](#character-elements) for the schema check to do first.
+- Changing `fal_negative_prompt`, `fal_cfg_scale`, `fal_extra_arguments`, or
+  the face elements attached to a clip changes the render **fingerprint**: a
+  pending, not-yet-collected render submitted under the old settings can no
+  longer be resumed (the next render buys a fresh clip). Collect pending
+  renders before flipping these knobs. Sending *no* elements keeps the old
+  fingerprint exactly, so enabling the feature never orphans a paid render
+  for a clip that gets none.
+- Each rendered clip records **which model produced it**. Switch `fal_model_id`
+  mid-project and the clips rendered with the previous model are flagged
+  (`model_changed` in the snapshot, a note in `status`) — nothing is
+  re-rendered for you, but a movie can no longer silently mix two models.
 
 ---
 
@@ -930,18 +1206,45 @@ no API cost:
   existing `letter.txt` is never overwritten by an ingest. With no letter
   written the flag is a no-op: combine warns and builds the movie without
   one (`pipeline.py status` and the panel both show whether there is a
-  letter). **When
-  `--credits-photos` is also on, the letter scrolls OVER the photo montage**
-  at their normal brightness — a drop shadow behind the text is what keeps
-  it readable, so nothing greys the photos out (`letter_overlay_dim`,
-  default `0`, darkens them instead if you ever want that trade). Both are
-  paced to end together: photos never flash faster than configured and the
-  letter never scrolls faster than configured. With the letter alone it
-  scrolls over a plain dark background. Empty lines become paragraph gaps;
+  letter). Empty lines become paragraph gaps;
   long lines wrap. Font is auto-detected (override with `letter_font_path`),
   size via `letter_font_size` (default 64), pace via
   `letter_seconds_per_screen` (default 7.0 — higher is slower).
-  **Emoji** (a heart at the end of a blessing is the usual one) are drawn by
+  **A letter that has the screen to itself is slowed to the time it takes to
+  READ** (`letter_reading_words_per_minute`, default 200 — LOWER is slower):
+  a pace-per-screen sets a speed, so a long letter and a short one give the
+  reader the same seconds per line and the long one scrolls past unread. The
+  reading time is a FLOOR, never a ceiling — nothing is ever sped up, so a
+  short letter keeps exactly the timing it always had. A real 81-word
+  blessing goes from 14.3s to 23.7s. Set `0` to turn the floor off and go
+  back to the plain pace. It applies to `after_photos` / `on_last_photo`
+  only; under `over_photos` the montage still decides the pace (both end
+  together), so a rushed letter there wants a longer montage or a switch to
+  one of the other two placements.
+- `--letter-placement` (config: `letter_placement`, default `over_photos`):
+  **where** the letter plays, which matters once `--credits-photos` is on
+  too. Some customers want to read the letter and look at the photos
+  separately rather than through each other, so the overlay is one shape of
+  ending among three:
+  - `over_photos` — the letter scrolls OVER the photo montage at the photos'
+    normal brightness; a drop shadow behind the text is what keeps it
+    readable, so nothing greys the photos out (`letter_overlay_dim`, default
+    `0`, darkens them instead if you ever want that trade). The two are
+    paced to end together: photos never flash faster than configured and the
+    letter never scrolls faster than configured.
+  - `after_photos` — the montage plays out at its own configured pace and
+    finishes, then the letter scrolls on a plain dark background. Nothing is
+    stretched to fit anything else, so the ending is simply longer.
+  - `on_last_photo` — the same running order, but the letter scrolls over a
+    held still of the movie's **last photo** instead of a black screen. This
+    one applies even with the montage off (it is about what sits behind the
+    text); with no original photos recorded — an idea-based movie — it falls
+    back to the dark background and says so.
+
+  With the montage off, `over_photos` and `after_photos` both mean the letter
+  alone on dark. The panel's Combine step has the same choice as a picker,
+  defaulting to whatever the project's config says.
+- **Emoji** (a heart at the end of a blessing is the usual one) are drawn by
   the system's colour-emoji font — Apple Color Emoji on macOS, Noto Color
   Emoji on Linux — because the Hebrew text font has no glyph for them and
   would draw an empty box. Override with `letter_emoji_font_path`. If no
@@ -987,13 +1290,15 @@ which are project-less).
 | `serve` | — (no project argument) `--host`, `--port`, `--no-watch` |
 | `ingest` | `<order>` (id / folder / unique fragment), `--force`, `--dry-run` |
 | `init` | — |
-| `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--replan-all` (rewrite every prompt from the current cast + tags), `--no-tag` (skip the identity proposal), `--replan-clip ID` (repeatable; fresh motion prompt for that pair), `--restyle-frame NAME` (repeatable; re-style that frame, e.g. `2.png`, marking adjacent clips outdated), `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
+| `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--replan-all` (rewrite every prompt from the current cast + tags), `--no-tag` (skip the identity proposal), `--replan-clip ID` (repeatable; fresh motion prompt for that pair), `--camera` (with either re-plan flag: make those pairs camera transitions — free, no AI call), `--stage-people` (the opposite override: keep the people choreography on pairs the gate would make camera moves), `--restyle-frame NAME` (repeatable; re-style that frame, e.g. `2.png`, marking adjacent clips outdated), `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
+| `flag` | `--clip ID` (required; which rendered clip), `--clear` (tick it off instead) — plus an optional positional note |
 | `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 5\|10`, `--add-audio`, `--no-audio` |
 | `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-file PATH`, `--music-url URL` |
-| `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--music-url URL`, `--add-audio`, `--no-audio`, `--final`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter` |
+| `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--music-url URL`, `--add-audio`, `--no-audio`, `--final`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter`, `--letter-placement {over_photos,after_photos,on_last_photo}` |
 | `publish` | `--dry-run` (print the name only), `-y/--yes` |
 | `status` | — |
 | `tag` | `--retag`, `--dry-run`, `-y/--yes` |
+| `faces` | `--audit` (paid: find frames drawing someone as a different person), `--dry-run`, `-y/--yes` |
 | `feedback` | `"<note>"` (optional with `--clip`), `--clip ID`, `--good`, `--no-watch`, `--no-learn`, `--dry-run` |
 | `lessons` | — (no project argument) `--add TEXT`, `--scope motion\|style`, `--disable ID`, `--enable ID`, `--forget ID` |
 | `costs` | — (no project argument; per-project + total spend) |
@@ -1105,6 +1410,7 @@ Everything below lives inside the project workspace, `projects/<name>/`:
 |--------|----------|
 | `input_images/` | Your source images (image-based projects) |
 | `styled_images/` | Styled frames (`001_styled.png`, …) |
+| `cast_refs/` | One canonical styled face per cast member (`<cast id>.png`), cut for free from the frames they appear in — see [Keeping a face the same face](#keeping-a-face-the-same-face). Derived: safe to delete, rebuilt by `faces` |
 | `generated_frames/` | Idea-based generated frames (`001.png`, …) |
 | `clips/` | Rendered clips (`001_to_002.mp4`, …) |
 | `output/` | `final_video.mp4` + `music_custom.mp3` (the music track you uploaded, when you supplied one) |
@@ -1214,6 +1520,11 @@ bed costs nothing — it is your own file). Requires `ffmpeg`/`ffprobe` on your
 | `learning_enabled` | `true` (default): rules learned from clip feedback are appended to planning/style prompts. `false` stops sending them (nothing is deleted). |
 | `max_lessons_in_prompt` | How many active rules ride along with one call (default `25`, newest win). |
 | `clip_review_frames` | How many stills are sampled across a clip when the reviewer watches it (default `8`). |
+| `unstageable_mover_budget` | How many people may leave or arrive between two frames and still be choreographed individually (default `3`). Editable in the panel ([Project settings](#project-settings)). Above it, the pair gets a deterministic camera transition instead — see [When the camera takes over](#when-the-camera-takes-over). |
+| `unstageable_crowd_limit` | Above this many visible people in either frame, ANY roster change hands the pair to the camera (default `4`). Editable in the panel ([Project settings](#project-settings)). A group that is the same on both sides is never gated by this. |
+| `cast_references_enabled` | Editable in the panel ([Project settings](#project-settings)). `true` (default): styling a tagged frame is anchored to the cast's canonical faces. `false` restores the old per-photo behaviour. Untagged projects are unaffected either way. |
+| `face_reference_crop` | Side of the face crop for a frame with one tagged person, as a fraction of the frame height (default `0.5`); a fuller frame divides it down. |
+| `max_style_references` | How many cast faces may ride along with one styling call (default `4`). When a frame has more tagged people, the ones who appear in the most frames win. |
 
 All spending figures are **estimates** derived from these prices — see
 [What it costs](#what-it-costs-spending).
