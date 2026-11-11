@@ -1105,10 +1105,23 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   above shipped a half-fix: `git rm --cached` was staged but the `.gitignore`
   edit was not, and `git commit` silently committed only the staged part, so
   the dangerous pattern reached `main` anyway.
-- **`projects/` is irreplaceable and (as of 2026-07-26) UNBACKED** — no Time
-  Machine destination, no snapshots. Its contents cost real API credits.
-  Count/checksum before and after ANY operation that moves, relinks or
-  recreates it, and refuse to do such an operation while a job is running.
+- **`projects/` is irreplaceable, and ASSUME IT IS UNBACKED until a log says
+  otherwise.** `deploy/backup.sh` (2026-11-11) takes hard-linked dated
+  snapshots to `$BACKUP_DEST` and `deploy/com.animoments.backup.plist`
+  schedules it nightly — but the script existing is not a backup: it needs a
+  destination on another disk and has to be installed per machine. Check
+  `~/Library/Logs/animoments/backup.log` before relying on it. Its contents
+  cost real API credits. Count/checksum before and after ANY operation that
+  moves, relinks or recreates it, and refuse to do such an operation while a
+  job is running. Restoring is a manual copy OUT of a snapshot (runbook),
+  never an rsync over the live folder.
+- THERE ARE TWO MACHINES, not just two checkouts: the Mac mini (user
+  `atlas`, production + the self-hosted runner) and the user's MacBook,
+  where sessions usually run. On the MacBook `projects/` is a REAL 1.1 GB
+  directory (not a symlink), there is no `~/production`, and no serve log —
+  so from here you cannot see whether a job is running on the mini, and a
+  deploy sits "queued" whenever the mini is off (`gh api
+  repos/<owner>/<repo>/actions/runners` shows `mac-mini offline`).
 - `projects/` is gitignored and holds the user's real movies (e.g. `Matan`,
   `Entebbe`, `Hila`) — treat their contents as user data: don't delete,
   regenerate, or overwrite without asking. `ai_video_maker.egg-info/` is

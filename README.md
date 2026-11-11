@@ -295,6 +295,13 @@ on every push/PR to either branch; pushing `main` triggers
 self-hosted runner: fast-forward, reinstall, retest, rebuild the panel,
 restart the service, health-check. Never bind `0.0.0.0`; never port-forward.
 
+**Back up `projects/`.** It is not in git and cannot be regenerated.
+`deploy/backup.sh` takes dated, hard-linked snapshots to a folder on another
+disk (`BACKUP_DEST=/Volumes/<disk>/animoments-backups bash deploy/backup.sh`),
+and `deploy/com.animoments.backup.plist` runs it nightly. Neither is active
+until you install it with a real destination — see the runbook's Backups
+section, which also covers restoring.
+
 ### The Firebase order ledger (optional, recommended)
 
 The web frontend writes every paid order to Firestore (collection `orders`:
