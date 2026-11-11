@@ -1011,7 +1011,11 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
                     return {"command": job.command, "state": job.state}
             return None
 
-        client = CloudinaryClient.from_config(config)
+        # Set below, once the folder listing has been tried. None means
+        # Cloudinary is unreadable for THIS request (missing or wrong
+        # credentials, an outage), and everything that needs it degrades
+        # instead of failing the page.
+        client: Optional[CloudinaryClient] = None
 
         def cloudinary_photos(folder: str, project: str) -> Optional[int]:
             """How many photos are sitting in the order's folder RIGHT NOW.
@@ -1028,7 +1032,10 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
             listing hiccup returns None (the panel shows nothing) and must
             never take the whole orders page down with it.
             """
-            if project or not folder:
+            # No client = the listing already failed. Asking again per row
+            # would repeat the same refusal once per order, each with its own
+            # logged traceback, to learn nothing new.
+            if project or not folder or client is None:
                 return None
             try:
                 return len(client.list_order_assets(folder))
@@ -1063,7 +1070,30 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
 
         # The folders Cloudinary really has, read once: the rows below are
         # keyed on them rather than on the name the order doc recorded.
-        cloudinary_folders = client.list_order_folders()
+        #
+        # BEST-EFFORT. This used to be a bare call, so a single Cloudinary
+        # refusal returned a 500 and blanked the WHOLE orders tab — including
+        # the Firestore orders, which need no Cloudinary at all. Seen for
+        # real on 2026-11-11: the storefront had moved to a new cloud, the
+        # API key in .env was switched to that account, config.json still
+        # named the old cloud, and every request came back "401 — cloud_name
+        # mismatch". Now the ledger's orders still list, and the reason
+        # Cloudinary could not be read rides along as `cloudinary_error` for
+        # the panel to show. Safe to surface: the client authenticates with a
+        # Basic-auth header, so credentials never appear in the URL or the
+        # error text.
+        cloudinary_error = ""
+        try:
+            client = CloudinaryClient.from_config(config)
+            cloudinary_folders = client.list_order_folders()
+        except Exception as exc:  # noqa: BLE001 - one source down != page down
+            client = None
+            cloudinary_folders = []
+            cloudinary_error = " ".join(str(exc).split())[:400]
+            logger.warning(
+                "Orders: Cloudinary could not be read; listing the order "
+                "ledger only. %s", cloudinary_error,
+            )
         folders_by_order_id: dict[str, list[str]] = {}
         for name in cloudinary_folders:
             folders_by_order_id.setdefault(
@@ -1121,7 +1151,7 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
             if folder in seen_folders:
                 continue
             out.append({**row(folder), "source": "cloudinary"})
-        return {"orders": out}
+        return {"orders": out, "cloudinary_error": cloudinary_error}
 
     @app.post("/api/orders/ingest", dependencies=guarded)
     async def ingest_order(body: dict[str, Any]) -> dict[str, Any]:

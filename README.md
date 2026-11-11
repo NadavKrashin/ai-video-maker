@@ -84,9 +84,18 @@ order whose name has drifted shows one row (with its customer details and the
 real photo count) rather than a dead row plus an anonymous one.
 
 Setup: `config.json` carries the (public) `cloudinary_cloud_name` and
-`cloudinary_orders_folder`; the Admin-API credentials go in `.env` as
+`cloudinary_orders_folder`. The Admin-API credentials go in `.env` as
 `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` (Cloudinary console →
 Settings → API Keys).
+
+**The key and the cloud name must belong to the same account.** The value
+in `config.json` takes precedence over a `CLOUDINARY_CLOUD_NAME` in `.env`.
+So when you switch Cloudinary accounts, change `cloudinary_cloud_name` in
+`config.json` (committed and deployed like any other change) as well as the
+key and secret in production's `.env`. Restart the service after editing
+`.env`. If only the key changes, every call fails with
+`401 … cloud_name mismatch`. The orders tab keeps listing the order ledger
+when Cloudinary can't be read, and shows the reason above the list.
 
 ### Delivering the finished movie back (`publish`)
 

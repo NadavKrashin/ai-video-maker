@@ -149,11 +149,13 @@ runner → macOS/arm64, follow the shown commands, then):
 ./svc.sh install && ./svc.sh start              # runner as a service too
 ```
 
-**Installed 2026-07-26.** It lives in `~/actions-runner`, registered as
-`mac-mini` with labels `self-hosted, macOS, ARM64, mac-mini` (the workflow's
-`runs-on` needs the first, second and last). It runs as a **user LaunchAgent**,
-`actions.runner.NadavKrashin-ai-video-maker.mac-mini` — that is deliberate and
-must stay that way: `deploy/deploy.sh` calls
+**Installed 2026-07-26, re-registered 2026-11-11.** It lives in
+`~/actions-runner`, registered as `Atlass-Mac-mini` with labels
+`self-hosted, macOS, ARM64, mac-mini` (the workflow's `runs-on` needs the
+first, second and last — the runner's NAME is irrelevant to routing). It runs
+as a **user LaunchAgent**,
+`actions.runner.NadavKrashin-ai-video-maker.Atlass-Mac-mini` — that is
+deliberate and must stay that way: `deploy/deploy.sh` calls
 `launchctl kickstart gui/$(id -u)/com.animoments.pipeline`, which only works
 from inside the logged-in user session. A system-level daemon cannot restart
 the server.
@@ -170,6 +172,29 @@ the release looks like it simply did nothing. That is exactly what happened on
 2026-07-26: `deploy.yml` had been in the repo for over a week with no runner
 ever registered, so every "push main to deploy" was a no-op and the mini was
 only ever updated by hand.
+
+**The runner lives in `~/actions-runner` — never inside the app checkout**
+(owner's call, 2026-11-11). It was once reinstalled at
+`~/production/ai-video-maker/deploy/actions-runner`. When the owner removed
+that folder, its LaunchAgent kept running, re-spawning a `Runner.Listener`
+that no longer existed (`ENOENT`) every 5 seconds. GitHub showed the runner
+offline and a release sat queued. Keep the runner outside both checkouts.
+To recover from a deleted install:
+
+```bash
+launchctl bootout gui/$(id -u)/actions.runner.NadavKrashin-ai-video-maker.<name>
+# then move that LaunchAgent's plist out of ~/Library/LaunchAgents
+cd ~/actions-runner && ./config.sh remove --token <remove-token>   # if configured
+./config.sh --unattended --url https://github.com/NadavKrashin/ai-video-maker \
+            --token <registration-token> --name Atlass-Mac-mini \
+            --labels mac-mini --replace
+./svc.sh install && ./svc.sh start
+```
+
+Both tokens come from `gh api -X POST
+repos/NadavKrashin/ai-video-maker/actions/runners/{remove,registration}-token
+-q .token`. `--replace` takes over the existing registration of that name,
+so no offline duplicate is left behind. A queued deploy then runs on its own.
 
 Settings → Actions → General: set **"Allow select actions"** and disable
 workflow runs for fork PRs (defaults are fine for a private repo, but check —

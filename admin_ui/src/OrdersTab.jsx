@@ -9,7 +9,7 @@
 // resetting the button.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Badge, Button, Card, Group, Modal, ScrollArea, Select, Stack, Text, TextInput, Title
+  Alert, Badge, Button, Card, Group, Modal, ScrollArea, Select, Stack, Text, TextInput, Title
 } from '@mantine/core';
 import { api } from './api.js';
 import { notify } from './ui.jsx';
@@ -74,6 +74,10 @@ const progressLine = (p) => p && [
 
 export default function OrdersTab({ onOpenProject }) {
   const [orders, setOrders] = useState(null);
+  // Why Cloudinary could not be read on the last refresh ('' = it was fine).
+  // The server lists the order ledger anyway, so this is a warning above a
+  // still-working page, never a blank tab.
+  const [cloudinaryError, setCloudinaryError] = useState('');
   const [busyRow, setBusyRow] = useState('');
   const [checking, setChecking] = useState(false);
   const [logJob, setLogJob] = useState(null);
@@ -84,7 +88,9 @@ export default function OrdersTab({ onOpenProject }) {
 
   const refresh = useCallback(async () => {
     try {
-      const fresh = (await api.orders()).orders;
+      const res = await api.orders();
+      const fresh = res.orders;
+      setCloudinaryError(res.cloudinary_error || '');
       // Toast the outcome of any ingest that settled since the last look.
       const still = new Set();
       for (const o of fresh) {
@@ -160,6 +166,25 @@ export default function OrdersTab({ onOpenProject }) {
         </ScrollArea.Autosize>
       </Modal>
 
+      {cloudinaryError && (
+        <Alert color="orange" variant="light" title="Cloudinary could not be read">
+          <Text size="sm">
+            Orders below come from the order ledger only: photo counts, and any
+            order that exists only as a Cloudinary folder, are missing until this
+            is fixed. Ingest and publish need Cloudinary too.
+          </Text>
+          <Text size="xs" c="dimmed" mt={4} style={{ wordBreak: 'break-word' }}>
+            {cloudinaryError}
+          </Text>
+          {/cloud_name mismatch/i.test(cloudinaryError) && (
+            <Text size="xs" mt={4}>
+              “cloud_name mismatch” means the API key in .env belongs to a
+              different Cloudinary cloud than <code>cloudinary_cloud_name</code> in
+              config.json — and config.json wins over .env.
+            </Text>
+          )}
+        </Alert>
+      )}
       <Group>
         <Title order={4} style={{ flex: 1 }}>Orders</Title>
         <Button variant="default" size="xs" loading={checking} onClick={checkNow}>
