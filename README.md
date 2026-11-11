@@ -1041,6 +1041,20 @@ first, and each row jumps to where it is fixed. **Review N rendered clips**
 plays the clips one after another: `→`/`←` move, `F` marks a clip as needing
 a fix, `G` passes it and moves on. Marking is free and can be undone.
 
+**The take a re-render replaces is kept.** Regenerating a clip no longer
+throws away the one you already paid for: it is kept as that clip's
+*previous take* (one per clip) and plays under the clip in the panel. If the
+new take is worse, **Use the previous take** swaps them — nothing is rendered
+or deleted, and doing it again swaps them back. From the CLI:
+
+```bash
+python pipeline.py restore-take myfilm --clip 06_to_07
+```
+
+A restored take that was rendered from a different prompt or length than the
+storyboard holds now is marked "outdated". Previous takes live in
+`projects/<name>/clips_previous/` and are never part of the movie.
+
 **What a model costs for your movie.** The Render step's picker lists every
 model with what *this* storyboard's clips would cost on it and the difference
 from the model in use (`snapshot()["video_model_costs"]`). Clip rendering
@@ -1350,6 +1364,7 @@ which are project-less).
 | `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--replan-all` (rewrite every prompt from the current cast + tags), `--no-tag` (skip the identity proposal), `--replan-clip ID` (repeatable; fresh motion prompt for that pair), `--camera` (with either re-plan flag: make those pairs camera transitions — free, no AI call), `--stage-people` (the opposite override: keep the people choreography on pairs the gate would make camera moves), `--restyle-frame NAME` (repeatable; re-style that frame, e.g. `2.png`, marking adjacent clips outdated), `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
 | `flag` | `--clip ID` (required; which rendered clip), `--clear` (tick it off instead) — plus an optional positional note |
 | `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 5\|10`, `--add-audio`, `--no-audio` |
+| `restore-take` | `--clip ID` (required, repeatable) — swaps the clip with the take its last re-render replaced; free, undoable |
 | `bakeoff` | `--clip ID` (required, repeatable), `--models A,B` (default: every selectable model), `--force`, `--dry-run`, `-y/--yes` — renders the clip once per model into `bakeoff/`, never `clips/` |
 | `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-file PATH`, `--music-url URL` |
 | `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--music-url URL`, `--add-audio`, `--no-audio`, `--final`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter`, `--letter-placement {over_photos,after_photos,on_last_photo}` |

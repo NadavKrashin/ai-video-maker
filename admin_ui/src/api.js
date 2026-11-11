@@ -39,6 +39,8 @@ export const api = {
   createProject: (name) =>
     request('/api/projects', { method: 'POST', body: JSON.stringify({ name }) }),
   project: (name) => request(`/api/projects/${encodeURIComponent(name)}`),
+  // A few bytes: has anything about this project changed since last time?
+  pulse: (name) => request(`/api/projects/${encodeURIComponent(name)}/pulse`),
   // The name is repeated as `confirm` on purpose: the server refuses a
   // delete that does not name its target, so a stray call cannot take a
   // whole workspace (photos, paid frames and clips) with it.
@@ -103,6 +105,13 @@ export const api = {
     }),
   // Mark (or unmark) a rendered clip as needing a fix. A worklist, not
   // feedback: free, instant, reversible, and it teaches the planner nothing.
+  // Swap a clip with the take its last re-render replaced (free, undoable).
+  restorePreviousTake: (name, clipId) =>
+    request(
+      `/api/projects/${encodeURIComponent(name)}/clips/`
+      + `${encodeURIComponent(clipId)}/restore-previous`,
+      { method: 'POST' }
+    ),
   flagClip: (name, clipId, marked, note = '') =>
     request(
       `/api/projects/${encodeURIComponent(name)}/clips/`

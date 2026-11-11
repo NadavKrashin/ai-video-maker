@@ -29,6 +29,7 @@ address are throttled (see ``_AuthThrottle``).
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import logging
 import os
@@ -292,6 +293,34 @@ def apply_in_flight(
 
 
 # --------------------------------- jobs ------------------------------------- #
+
+def _folder_signature(directory: Path, *, files_only: bool = False) -> str:
+    """Entry count + newest mtime + total size of one folder (not recursive).
+
+    Cheap enough to run every couple of seconds, and it moves whenever a
+    file is added, removed or replaced in place — the three things a job
+    does. A missing folder is a stable "absent", not an error.
+    """
+    try:
+        count, newest, size = 0, 0, 0
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                try:
+                    # For the project root: its sub-folders are signed on
+                    # their own, and a folder's mtime moves whenever a file
+                    # is created inside it (a new run log, say).
+                    if files_only and not entry.is_file():
+                        continue
+                    info = entry.stat()
+                except OSError:
+                    continue
+                count += 1
+                size += info.st_size
+                newest = max(newest, info.st_mtime_ns)
+        return f"{directory.name}:{count}:{newest}:{size}"
+    except OSError:
+        return f"{directory.name}:absent"
+
 
 # States in which a job still owns the worker (or will). Anything in one of
 # these when the process dies was cut off mid-flight.
@@ -1345,6 +1374,51 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         snap["letter_text"] = read_letter(ws.letter_file)
         return snap
 
+    @app.get("/api/projects/{name}/pulse", dependencies=guarded)
+    async def project_pulse(name: str) -> dict[str, Any]:
+        """Has anything about this project changed? A few stat calls.
+
+        While a job runs the panel used to re-fetch the WHOLE project every
+        three seconds: the full snapshot, the storyboard, the letter — built
+        from scratch each time and sent through the tunnel, to learn "no
+        change" on nearly every tick of a ten-minute render. This answers
+        that question for almost nothing, and the panel fetches the project
+        only when ``version`` moves.
+
+        ``version`` covers what a job can change: the project's jobs and
+        their states, and the size and newest timestamp of every folder and
+        file the snapshot is built from. It deliberately does NOT hash file
+        contents — a wrong "unchanged" is the only failure that matters
+        here, and a new or replaced file always moves a count or an mtime.
+        """
+        ws = _workspace(name)
+        parts: list[str] = []
+        for job in jobs.list(project=ws.root.name, limit=20):
+            parts.append(f"{job.id}:{job.state}:{job.failures}")
+        for directory in (
+            ws.input_images_dir, ws.styled_images_dir, ws.generated_frames_dir,
+            ws.clips_dir, ws.previous_clips_dir, ws.bakeoff_dir, ws.output_dir,
+            ws.storyboard_dir, ws.failed_jobs_dir,
+        ):
+            parts.append(_folder_signature(directory))
+        # The root's own files: config.json, order.json, the letter, marks.
+        parts.append(_folder_signature(ws.root, files_only=True))
+        # NOT the logs folder as a whole: the run log grows on every line a
+        # job prints, which would make the version move on every tick and
+        # turn this into a more expensive way of polling the full project.
+        # Only the two files in it that change what the page shows.
+        for tracked in (ws.state_file, ws.costs_file):
+            try:
+                info = tracked.stat()
+                parts.append(f"{tracked.name}:{info.st_mtime_ns}:{info.st_size}")
+            except OSError:
+                parts.append(f"{tracked.name}:absent")
+        digest = hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:16]
+        return {
+            "version": digest,
+            "active": any(j.project == ws.root.name for j in jobs.active()),
+        }
+
     @app.get("/api/projects/{name}/publish/preview", dependencies=guarded)
     async def publish_preview(name: str) -> dict[str, Any]:
         """What publishing this project would upload, and under what name.
@@ -1428,6 +1502,38 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
             mtime = 0.0
         flag = store.mark(clip_id, note, mtime)
         return {"ok": True, "marked": True, "note": flag.note}
+
+    @app.post("/api/projects/{name}/clips/{clip_id}/restore-previous",
+              dependencies=guarded)
+    async def restore_previous_clip(name: str, clip_id: str) -> dict[str, Any]:
+        """Swap a clip with the take its last re-render replaced.
+
+        Instant, free and reversible (it swaps, so doing it twice is a
+        no-op), which is why it is not a queued job. Refused while a job is
+        running on the project: a render could be writing the very file
+        being swapped.
+        """
+        ws = _workspace(name)
+        if "/" in clip_id or "\\" in clip_id or clip_id in ("", ".", ".."):
+            raise HTTPException(status_code=422, detail="Bad clip id")
+        busy = [j for j in jobs.active() if j.project == ws.root.name]
+        if busy:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"A {busy[0].command} job is {busy[0].state} on this "
+                    "project — wait for it to finish before swapping takes."
+                ),
+            )
+        config = Config.load(
+            config_path, override_path=ws.root / "config.json"
+        )
+        try:
+            return {"ok": True, **Pipeline(
+                config, ws, RunOptions()
+            ).restore_previous_take(clip_id)}
+        except PipelineError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get("/api/video-models", dependencies=guarded)
     async def list_video_models() -> dict[str, Any]:
@@ -1814,6 +1920,7 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         "generated": lambda ws: ws.generated_frames_dir,
         "clips": lambda ws: ws.clips_dir,
         "bakeoff": lambda ws: ws.bakeoff_dir,
+        "previous": lambda ws: ws.previous_clips_dir,
         "output": lambda ws: ws.output_dir,
         # Archived deliveries (output/published/final_vN.mp4) — its own kind
         # because the file route deliberately refuses path separators.

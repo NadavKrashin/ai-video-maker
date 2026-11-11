@@ -46,7 +46,9 @@ from .clients.openai_client import (
     is_unstageable_pair,
 )
 from .clients.video import VideoClient
+from . import previous_takes
 from .config import LETTER_PLACEMENTS, Config, config_for_model
+from .previous_takes import keep_previous_take
 from .constants import VALID_DURATIONS
 from .costs import KIND_CLIP, KIND_SFX, CostLedger, estimate_usd
 from .video_models import (
@@ -349,6 +351,7 @@ class Pipeline:
             "publish": self.cmd_publish,
             "status": self.cmd_status,
             "flag": self.cmd_flag,
+            "restore-take": self.cmd_restore_take,
             "bakeoff": self.cmd_bakeoff,
             "tag": self.cmd_tag,
             "faces": self.cmd_faces,
@@ -1424,6 +1427,55 @@ class Pipeline:
         pairs, forced = self._select_clips(pairs)
         self._render_pairs(pairs, forced)
 
+    # --------------------------- previous takes --------------------------- #
+    def restore_previous_take(self, clip_id: str) -> dict[str, Any]:
+        """Swap a clip with the take its last re-render replaced.
+
+        Free, local and reversible (restoring again swaps them back). The
+        clip's SFX/fade/model state travels with the file, and the restored
+        take is marked outdated when it is KNOWN to have been rendered from
+        a different prompt or length than the storyboard holds now.
+        """
+        storyboard = self._require_storyboard("restore-take")
+        clip_id = clip_id.removesuffix(".mp4")
+        pairs = {
+            self._clip_name(p[0], p[1]).stem: p
+            for p in self._pairs_from_storyboard(storyboard)
+        }
+        if clip_id not in pairs:
+            raise PipelineError(
+                f"Unknown clip: {clip_id}. Available: "
+                + (", ".join(pairs) or "(none)")
+            )
+        pair = pairs[clip_id]
+        clip = self._clip_name(pair[0], pair[1])
+        try:
+            result = previous_takes.restore_previous_take(
+                clip, self.workspace.previous_clips_dir, self.state,
+                planned_prompt=pair[2], planned_duration=pair[3],
+            )
+        except FileNotFoundError as exc:
+            raise PipelineError(
+                f"{exc} A take is only kept when a clip is re-rendered."
+            ) from exc
+        logger.info(
+            "Restored the previous take of %s (%s). The take it replaced is "
+            "kept, so restoring again swaps them back.",
+            clip_id,
+            {True: "it matches the current prompt",
+             False: "rendered from a DIFFERENT prompt or length — marked outdated",
+             None: "rendered before prompts were recorded, so it cannot be "
+                   "checked against the current one"}[result["matches_plan"]],
+        )
+        return {"clip": clip_id, **result}
+
+    def cmd_restore_take(self) -> None:
+        """`restore-take <project> --clip ID`: put the previous take back."""
+        if not self.options.clips:
+            raise PipelineError("restore-take needs --clip ID.")
+        for clip_id in self.options.clips:
+            self.restore_previous_take(clip_id)
+
     # ------------------------------ bake-off ------------------------------ #
     def cmd_bakeoff(self) -> None:
         """Render the named clip(s) on several video models, side by side.
@@ -1886,6 +1938,13 @@ class Pipeline:
                         )
                     return
                 try:
+                    # A deliberate re-render replaces a clip that was paid
+                    # for. Keep it, so the two can be compared and the old
+                    # one put back if the new one is worse.
+                    if dst.exists():
+                        keep_previous_take(
+                            dst, self.workspace.previous_clips_dir, self.state
+                        )
                     self.video_client.generate_clip(
                         start, end, motion, duration, dst,
                         reword=self.openai.reword_motion_prompt,
@@ -1916,9 +1975,12 @@ class Pipeline:
                         # with nothing to say which clip is which. Everything
                         # else about staleness in this pipeline is visible;
                         # this was the one gap.
+                        # prompt + duration are what lets a restored
+                        # previous take be checked against the plan.
                         self.state.set(
                             job_id, "done", output=str(dst),
                             model=self.config.fal_model_id,
+                            prompt=motion, duration=duration,
                         )
                         self.summary.videos_created += 1
                     logger.info("Clip ready: %s", dst.name)
@@ -2998,6 +3060,13 @@ class Pipeline:
                     "stale": exists
                     and self.state.status(f"stale:{clip.name}") is not None,
                     "model": rendered_with,
+                    # The take the last re-render replaced, kept so the two
+                    # can be compared and swapped back.
+                    "previous": bool(
+                        exists and previous_takes.previous_path(
+                            ws.previous_clips_dir, clip.name
+                        ).exists()
+                    ),
                     # A movie that mixes two video models looks inconsistent
                     # for a reason nothing else would explain. Never fixed
                     # automatically — re-rendering is money.
