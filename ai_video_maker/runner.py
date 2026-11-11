@@ -49,7 +49,16 @@ from .clients.video import VideoClient
 from .config import LETTER_PLACEMENTS, Config, config_for_model
 from .constants import VALID_DURATIONS
 from .costs import KIND_CLIP, KIND_SFX, CostLedger, estimate_usd
-from .video_models import get_video_model, movie_costs, selectable_models
+from .video_models import (
+    get_video_model,
+    model_for_id,
+    movie_costs,
+    selectable_models,
+)
+
+# What a second of video cost before renders recorded their model: Kling 2.5
+# Turbo Pro, the only model this studio used until 2026-11.
+_LEGACY_CLIP_USD_PER_SECOND = 0.07
 from .errors import PipelineCancelled, PipelineError, StoryboardError
 from .clip_flags import ClipFlagStore
 from .feedback import (
@@ -3431,6 +3440,24 @@ class Pipeline:
             "note": preset.note if preset else "",
         }
 
+    def _clip_rate(self, clip_file: str) -> float:
+        """USD per second for one rendered clip, by the model that made it.
+
+        A render records its model id in state. A clip with NO recorded model
+        predates that record, and everything rendered back then was Kling 2.5
+        — so that is what it is priced at, not at whatever is selected now.
+        A recorded model this registry does not know falls back to the
+        configured price, which is the best remaining guess.
+        """
+        entry = self.state.get(f"clip:{clip_file}") or {}
+        model_id = str(entry.get("model") or "")
+        if not model_id:
+            return _LEGACY_CLIP_USD_PER_SECOND
+        preset = model_for_id(model_id)
+        if preset is not None:
+            return preset.usd_per_second
+        return self.config.pricing.clip_usd_per_second
+
     def video_model_costs(
         self, storyboard: Optional[Storyboard]
     ) -> dict[str, Any]:
@@ -4146,11 +4173,24 @@ class Pipeline:
             seconds_by_clip.get(str(c.get("id", "")), self.config.duration)
             for c in rendered
         )
-        estimated = estimate_usd(
-            self.config.pricing,
-            images=images,
-            clip_seconds=clip_seconds,
-            sfx_clips=sum(1 for c in rendered if c.get("sfx")),
+        # Each clip is valued at the price of the model that RENDERED it, not
+        # the model selected today. Pricing them all at the current model
+        # made every finished Kling 2.5 movie's estimate jump 60% the moment
+        # the studio default moved to Kling 3 — for clips that were bought
+        # months earlier at the old price.
+        clip_usd = sum(
+            self._clip_rate(str(c.get("file") or f"{c.get('id', '')}.mp4"))
+            * seconds_by_clip.get(str(c.get("id", "")), self.config.duration)
+            for c in rendered
+        )
+        estimated = round(
+            estimate_usd(
+                self.config.pricing,
+                images=images,
+                clip_seconds=0,
+                sfx_clips=sum(1 for c in rendered if c.get("sfx")),
+            ) + clip_usd,
+            6,
         )
         return {
             **recorded,

@@ -1001,6 +1001,38 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   `v=` cache-buster (`fileUrl`'s 4th argument, bumped by the panel's poll
   and once more when a job settles); without it a regenerated frame kept
   showing its previous version and looked like the button did nothing.
+- THE PANEL HAS URLS, ONE ATTENTION LIST AND A REVIEW QUEUE (2026-11-11).
+  (1) Tab and open project live in the URL HASH (`#/projects`,
+  `#/project/<name>`; `readRoute` in App.jsx): refresh keeps your place,
+  back works, a project can be bookmarked. Hash on purpose — it never
+  reaches the server, so `serve` needs no catch-all route and the API is
+  untouched. `ProjectDetail` is keyed by name so switching projects by URL
+  remounts instead of showing the previous project's unsaved edits.
+  (2) `AttentionCard` at the top of the project page lists every open item,
+  worst first, each row jumping to where it is fixed (clip cards carry
+  `id="clip-<id>"`). It adds NO state and NO endpoint: every count is read
+  from the snapshot. When adding a new "this is out of date" signal to the
+  snapshot, add its row to `attention` in ProjectDetail.jsx too — a signal
+  that is only a badge on a card somewhere is the problem this card exists
+  to end. (3) `ReviewQueue` plays the rendered clips in order with keys
+  (arrows, F = needs fixing, G = good/next). It only toggles the existing
+  clip-flag worklist; it never renders, re-plans or spends.
+  All three were checked in a real browser against real projects. To run
+  the panel locally on the MacBook: the in-app preview launcher CANNOT read
+  `~/Documents` (macOS privacy), so start `serve` from Bash with a throwaway
+  `ADMIN_API_TOKEN` in the environment and open the URL in the browser pane.
+- A CLIP IS VALUED AT THE MODEL THAT RENDERED IT (2026-11-11). The
+  "estimated from the files on disk" figure priced every clip at
+  `config.pricing.clip_usd_per_second`, so moving the studio default to
+  Kling 3 made every finished Kling 2.5 movie's estimate jump 60% — one real
+  project read 26.44 USD instead of 18.88. `_clip_rate` (runner.py) uses the
+  model id recorded in the clip's state; a clip with NO recorded model
+  predates that record and was Kling 2.5 (`_LEGACY_CLIP_USD_PER_SECOND`).
+  General shape of the trap: a price that follows the CURRENT setting must
+  never be applied to work that was bought under a previous one.
+  Still not done from the Phase 6 list: source photo beside the styled frame,
+  keeping the previous take of a re-rendered clip, a phone layout pass, and
+  server-sent events instead of the 3s poll.
 - DELETING A PROJECT IS THE ONE IRREVERSIBLE PANEL ACTION (user request,
   2026-08-16). `DELETE /api/projects/<n>?confirm=<n>` + a red button at the
   BOTTOM of the project page (deliberately far from the step tiles).

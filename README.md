@@ -1032,6 +1032,15 @@ pipeline adds its own sound in the audio step. `kling-3-turbo-pro` is
 does not land on the next photo. A project still pinned to it loads, but
 cannot render until another model is picked.
 
+**Finding your way around the panel.** The address bar follows you
+(`#/projects`, `#/project/<name>`), so a refresh keeps your place and a
+project can be bookmarked. The top of each project page lists everything that
+is waiting on a decision — outdated clips, prompts that end off screen,
+photos left out, clips you marked, renders waiting to be collected — worst
+first, and each row jumps to where it is fixed. **Review N rendered clips**
+plays the clips one after another: `→`/`←` move, `F` marks a clip as needing
+a fix, `G` passes it and moves on. Marking is free and can be undone.
+
 **What a model costs for your movie.** The Render step's picker lists every
 model with what *this* storyboard's clips would cost on it and the difference
 from the model in use (`snapshot()["video_model_costs"]`). Clip rendering
