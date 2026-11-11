@@ -386,7 +386,11 @@ Core design rules:
   `normalize_image` centre-cropped to 1920x1080: ~8% off the top and ~8% off
   the bottom, which no framing instruction can anticipate. A likely
   mechanical contributor to the cropped-heads complaint that the FRAMING
-  prompt section has been fighting with words. `openai_image_size` is config
+  prompt section has been fighting with words. First evidence, 4 photos of
+  am-160726-bd2c at 2048x1152 + quality high (`projects/_canvas_test/
+  comparison.jpg`): gpt-image-2 accepts both, every new frame has headroom,
+  and frame 06 — whose bald man is cut at the top edge today — comes back
+  whole. Small sample, one draw each, canvas and quality changed together. `openai_image_size` is config
   now (validated: multiples of 16, so 1920x1080 is REFUSED — use 2048x1152),
   with `openai_image_quality` and `style_reference_labels` (names each cast
   reference by position, per OpenAI's multi-image guidance) beside it. ALL
@@ -1133,6 +1137,17 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   moves, relinks or recreates it, and refuse to do such an operation while a
   job is running. Restoring is a manual copy OUT of a snapshot (runbook),
   never an rsync over the live folder.
+- ON THE MACBOOK THIS REPO LIVES IN iCLOUD-SYNCED `Documents`, AND iCLOUD
+  EVICTS FILES (2026-11-11). `du` said `projects/` was 1.1 GB; it is 4.7 GB,
+  the rest being cloud-only placeholders — and 13,820 files of `.venv` were
+  placeholders too. Anything that reads them blocks while iCloud fetches one
+  file at a time, with NO output and NO network activity of its own: a
+  styling script sat for 18 minutes inside `import openai` and looked exactly
+  like a hung API call. Diagnose with
+  `find <dir> -type f -flags +dataless | wc -l`; fix by reading the files
+  (`find .venv -type f -flags +dataless -print0 | xargs -0 -P 24 -n 20 cat
+  >/dev/null`). Also: macOS has no `timeout` command — `timeout 100 cmd`
+  fails as "command not found" and a trailing `;` hides it.
 - THERE ARE TWO MACHINES, not just two checkouts: the Mac mini (user
   `atlas`, production + the self-hosted runner) and the user's MacBook,
   where sessions usually run. On the MacBook `projects/` is a REAL 1.1 GB
