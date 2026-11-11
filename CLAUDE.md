@@ -403,6 +403,23 @@ Core design rules:
   styled frames are NOT re-styled by the new default; it lands on the next
   styling of each frame. `pricing.openai_image_usd` (0.19) has not been
   re-checked against the larger canvas. Pinned by tests/test_image_request_options.py.
+- FIRST MIGRATION TEST (2026-11-11, am-160726-bd2c; outputs in
+  `projects/_canvas_test/` and `projects/_plan_test_gpt51|gpt6sol/`). Both
+  replacements run on the existing code unchanged. IMAGES:
+  `gpt-image-2.6-sunburst` holds the real faces far better than gpt-image-2
+  but comes back close to a retouched photograph — the "stayed too
+  realistic" failure the user already rejected — so it is NOT a drop-in;
+  the style prompt (or the model's `complexity` field, or `-flare`) needs
+  work first. PLANNING, same 29 pairs under today's code: gpt-5.1 built a
+  34-entry cast with clothing-anchored epithets, averaged 61 words a prompt
+  (max 137) and got 9 camera transitions; `gpt-6-sol` built a 12-entry cast,
+  averaged 32 words (max 46), and got 18 camera transitions + 12 ten-second
+  clips. Tighter and cleaner, but 62% of the movie became camera moves —
+  watch renders before adopting. Two loose ends it surfaced, neither
+  investigated: the offscreen LAST-RESORT camera prompt kept its pair's 10s
+  (21_to_22) although "a camera transition is ALWAYS 5s", and gpt-6-sol
+  wrote its own camera-move prompts at 10s on two pairs (07_to_08,
+  08_to_09) that are not the code's deterministic family.
 - BOTH OPENAI MODELS IN config.json ARE DEPRECATED (checked 2026-11-11):
   `gpt-image-2` is removed 2027-02-10 (replacement `gpt-image-2.6-sunburst`)
   and `gpt-5.1` on 2027-04-01 (replacement `gpt-6-sol`). Each swap changes
