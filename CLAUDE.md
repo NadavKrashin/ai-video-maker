@@ -169,8 +169,20 @@ Core design rules:
   at any size; it is exits/entrances/crossings that mush. Because tags list
   who MATTERS, not who is THERE (real frame 12: ten aboard, two tagged, and
   the plan staged the two as if alone), the planner now returns
-  `start_heads`/`end_heads` — a census of every visible figure — and the
-  gate takes the max of census and roster. `_tagged_people_block` stops
+  `start_heads`/`end_heads` and the gate takes the max of census and
+  roster. THE CENSUS COUNTS PEOPLE WHO MATTER IN THE SHOT, NOT EVERY FIGURE
+  (user call, 2026-11-12). It used to say "every visible human figure", so
+  on am-101126-unaq one boy in front of a ski slope full of tiny skiers
+  (pair 12) and one boy at Pisa with tourists behind a fence (pair 15) read
+  as crowds and lost their transitions. Worse, a FIRST plan always runs
+  untagged (the cast must exist before tagging), so the gate used the
+  planner's own roster, and listed background extras became fake movers.
+  Census AND roster now mean "clearly visible individuals, tagged or not;
+  distant background figures are scenery". Both boundaries are pinned:
+  ten people seated together with two tagged still count as ten, and a
+  posed family counts every member. `describe_unstageable` logs each
+  camera decision in numbers plus the roster's source (tags vs the
+  planner's reading). It is a prompt-side definition, so judge it on renders. `_tagged_people_block` stops
   prescribing exit-and-entrance on gated pairs, and `_MODE_A_SYSTEM` has a
   matching "TOO MANY PEOPLE TO CHOREOGRAPH" block (hint only; the code is
   the guarantee). The gate reports WHICH rule fired

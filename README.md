@@ -896,10 +896,17 @@ travels through the surroundings, because a transit that keeps faces in shot
 smears them into each other (a real render dragged the group through the
 whip-pan and mushed them mid-clip), while blur over scenery reads as ordinary
 camera speed. The planner also
-reports a per-frame **headcount census** (everyone visible, tagged or not),
-so a crowded frame with only two people tagged still gates correctly. Small
-pairs keep subject staging — this is the only other place camera language is
-allowed, alongside the offscreen last resort below.
+reports a per-frame **headcount of the people who matter in the shot**:
+everyone clearly visible as an individual, tagged or not, so a crowded frame
+with only two people tagged still gates correctly. **Distant background
+figures don't count** — passersby, far-off skiers, tourists behind a fence —
+so one person in front of a busy background keeps a real transition, while a
+posed family group still counts in full. The status log explains each camera
+decision in numbers ("6 people clearly visible (limit 4) and 1 person leave
+or arrive"), and says whether the roster came from your tags or from the
+planner's own reading, which is all a first plan has, since it runs before
+any tags exist. Small pairs keep subject staging — this is the only other
+place camera language is allowed, alongside the offscreen last resort below.
 
 Both thresholds are **config, not constants** (`unstageable_mover_budget` /
 `unstageable_crowd_limit`), because where the line sits is a matter of taste

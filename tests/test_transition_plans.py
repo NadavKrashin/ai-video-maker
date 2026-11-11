@@ -1385,11 +1385,11 @@ class TestTheGateThresholdsAreTunable:
 
         default = mode_a_system()
         assert "more than three people" in default
-        assert "five or more visible people" in default
+        assert "five or more people who matter in the shot" in default
 
         tight = mode_a_system(2, 3)
         assert "more than two people" in tight
-        assert "four or more visible people" in tight
+        assert "four or more people who matter in the shot" in tight
 
     def test_no_placeholder_ever_reaches_the_model(self):
         from ai_video_maker.clients.openai_client import mode_a_system
@@ -1881,3 +1881,135 @@ class TestOutputModerationGetsADebrandedRetry:
                 call, "style", "style(18.jpg)"
             )
         assert len(attempts) == 2  # original + de-branded, then stop
+
+
+class TestOnlyPeopleWhoMatterAreCounted:
+    """Background figures are scenery, not a crowd (user call, 2026-11-12).
+
+    On am-101126-unaq, pairs 12 and 15 each show ONE boy — tobogganing ->
+    skiing in front of a slope full of tiny skiers; jumping on a mountain ->
+    posing at Pisa with a row of tiny tourists behind a fence. The census
+    said "count every visible human figure", so both read as crowds and
+    lost their transition to a camera move. Kling struggles to keep several
+    RECOGNIZABLE people apart; it never has to identify a speck. Posed
+    family groups must still count in full — that is what the gate is for.
+    """
+
+    def _planner_input(self, config, monkeypatch, tmp_path):
+        """Run the real planning call against a recording fake model."""
+        from PIL import Image
+        import json as _json
+        frames = []
+        for name in ("a", "b"):
+            path = tmp_path / f"{name}.png"
+            Image.new("RGB", (64, 36), "white").save(path)
+            frames.append(path)
+        sent = {}
+        reply = _json.dumps({"transitions": [{
+            "pair_index": 1, "difficulty": 2, "start_heads": 1, "end_heads": 1,
+            "start_order": ["the boy"], "end_order": ["the boy"],
+            "motion_prompt": "the boy turns and smiles", "sound_prompt": "wind",
+        }], "characters": []})
+
+        class _Msg:
+            content = reply
+
+        class _Resp:
+            choices = [type("C", (), {"message": _Msg()})()]
+            usage = None
+
+        class _Completions:
+            @staticmethod
+            def create(**kwargs):
+                sent.update(kwargs)
+                return _Resp()
+
+        class _Client:
+            class chat:
+                completions = _Completions()
+
+        client = OpenAIClient(config)
+        monkeypatch.setattr(client, "_ensure_client", lambda: _Client())
+        plans, _ = client.analyze_frame_transitions(frames, "test style")
+        user = sent["messages"][1]["content"]
+        text = " ".join(part["text"] for part in user if part.get("type") == "text")
+        return plans, text, sent["messages"][0]["content"]
+
+    def test_the_census_excludes_background_figures(
+        self, config, monkeypatch, tmp_path
+    ):
+        _, text, _ = self._planner_input(config, monkeypatch, tmp_path)
+        assert "PEOPLE WHO MATTER IN THE SHOT" in text
+        assert "Do NOT count distant background figures" in text
+        assert "count every visible human figure" not in text
+
+    def test_posed_groups_still_count_in_full(
+        self, config, monkeypatch, tmp_path
+    ):
+        # The end-of-movie family photos are exactly what the gate is for.
+        _, text, _ = self._planner_input(config, monkeypatch, tmp_path)
+        assert "A family posed together counts every member" in text
+
+    def test_untagged_but_clearly_visible_people_still_count(
+        self, config, monkeypatch, tmp_path
+    ):
+        # The other boundary: ten people sitting together with two tagged
+        # must not read as two.
+        _, text, _ = self._planner_input(config, monkeypatch, tmp_path)
+        assert "whether or not they are in the cast or the confirmed tags" in text
+
+    def test_the_roster_drops_background_figures_too(
+        self, config, monkeypatch, tmp_path
+    ):
+        # Untagged first plans gate on the planner's roster: background
+        # extras listed there show up as fake movers.
+        _, text, _ = self._planner_input(config, monkeypatch, tmp_path)
+        assert "never the background figures" in text
+
+    def test_the_rule_the_model_is_taught_matches(
+        self, config, monkeypatch, tmp_path
+    ):
+        _, _, system = self._planner_input(config, monkeypatch, tmp_path)
+        assert "never distant background figures" in system
+
+
+class TestTheGateSaysWhy:
+    """A camera decision is explained in numbers, with its roster's source."""
+
+    SIX = [f"person {i}" for i in range(6)]
+
+    def test_a_crowd_is_explained_with_its_count(self):
+        from ai_video_maker.clients.openai_client import describe_unstageable
+        why = describe_unstageable(self.SIX, self.SIX[:5])
+        assert why == "6 people clearly visible (limit 4) and 1 person leave or arrive"
+
+    def test_movers_are_explained_with_the_budget(self):
+        from ai_video_maker.clients.openai_client import describe_unstageable
+        why = describe_unstageable(["a man", "a woman"], ["a boy", "a girl"])
+        assert why == "4 people leave or arrive (budget 3)"
+
+    def test_a_stageable_pair_has_no_explanation(self):
+        from ai_video_maker.clients.openai_client import describe_unstageable
+        assert describe_unstageable(["the boy"], ["the boy"], 11, 1) == ""
+
+    def _data(self, start, end, heads=None):
+        item = {"pair_index": 1, "difficulty": 2, "sound_prompt": "",
+                "motion_prompt": "they walk", "start_order": start,
+                "end_order": end}
+        if heads:
+            item["start_heads"], item["end_heads"] = heads
+        return {"transitions": [item]}
+
+    def test_the_log_names_an_untagged_roster(self, config, caplog):
+        with caplog.at_level("INFO"):
+            _plans(config, self._data(self.SIX, self.SIX[:5]), 1)
+        assert "6 people clearly visible" in caplog.text
+        assert "the planner's own reading" in caplog.text
+
+    def test_the_log_names_a_tagged_roster(self, config, caplog):
+        with caplog.at_level("INFO"):
+            OpenAIClient(config)._coerce_transition_plans(
+                self._data([], []), 1, None,
+                frame_people=[self.SIX, self.SIX[:5]],
+            )
+        assert "roster from your tags" in caplog.text
