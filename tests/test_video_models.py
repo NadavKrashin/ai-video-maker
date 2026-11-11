@@ -48,10 +48,12 @@ class TestTheRegistryItself:
         for model in VIDEO_MODELS:
             assert model.key and model.label and model.model_id
             assert model.start_frame_field
-            # Every model here interpolates to an end frame. A preset without
-            # one would break clip chaining, which is the pipeline's contract.
-            assert model.end_frame_field
+            # Every SELECTABLE model interpolates to an end frame. A preset
+            # without one breaks clip chaining, which is the pipeline's
+            # contract — and is exactly why one is retired.
+            assert model.end_frame_field or model.retired
             assert model.usd_per_second > 0
+            assert model.price_note, f"{model.key}: say where the price came from"
             if model.supports_elements:
                 assert model.elements_field and model.max_elements > 0
             else:
@@ -153,7 +155,7 @@ class TestTheModelDecidesWhetherFacesAreSent:
 
     def test_kling_three_sends_them(self):
         assert _config(video_model="kling-3-pro").elements_enabled()
-        assert _config(video_model="kling-3-turbo-pro").elements_enabled()
+        assert _config(video_model="kling-3-standard").elements_enabled()
 
     def test_two_five_refuses_even_when_the_fields_are_forced(self):
         # The whole reason capability lives on the model: a leftover element
@@ -204,8 +206,150 @@ class TestTheRenderRequestHonoursTheModel:
         args = self._client(config)._build_arguments(
             "s", "e", "m", 5, ["http://face"]
         )
-        assert args["elements"] == [{"frontal_image_url": "http://face"}]
+        # Kling 3 rejects an element with no reference views, so the same
+        # portrait is sent under both fields.
+        assert args["elements"] == [{
+            "frontal_image_url": "http://face",
+            "reference_image_urls": ["http://face"],
+        }]
         # And the end frame survives alongside them — the one thing this
         # pipeline cannot trade away.
         assert args["end_image_url"] == "e"
         assert args["start_image_url"] == "s"
+
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+class TestPickingAModelActuallyChangesTheModel:
+    """The shared config.json spells out fal_model_id (it predates presets).
+
+    "An explicit key beats the preset" then meant a project pinned to Kling 3
+    in the panel still rendered on Kling 2.5 — 2.5's endpoint, 2.5's field
+    names, 2.5's price — while the page said Kling 3. Tested against the LIVE
+    config.json because a hand-made fixture is what hid this.
+    """
+
+    def _pinned(self, tmp_path: Path, override: dict) -> Config:
+        path = tmp_path / "project.json"
+        path.write_text(json.dumps(override), encoding="utf-8")
+        return Config.load(REPO / "config.json", path)
+
+    def test_the_live_shared_config_alone_is_still_kling_two_five(self):
+        config = Config.load(REPO / "config.json")
+        assert config.fal_model_id.endswith("v2.5-turbo/pro/image-to-video")
+        assert config.fal_end_frame_field == "tail_image_url"
+
+    def test_a_project_pin_beats_the_inherited_request_shape(self, tmp_path):
+        config = self._pinned(tmp_path, {"video_model": "kling-3-pro"})
+        assert config.fal_model_id == "fal-ai/kling-video/v3/pro/image-to-video"
+        assert config.fal_start_frame_field == "start_image_url"
+        assert config.fal_end_frame_field == "end_image_url"
+        assert config.pricing.clip_usd_per_second == 0.112
+        assert config.fal_model_arguments == {"generate_audio": False}
+
+    def test_the_other_shared_prices_survive_the_pin(self, tmp_path):
+        shared = Config.load(REPO / "config.json")
+        config = self._pinned(tmp_path, {"video_model": "kling-3-pro"})
+        assert config.pricing.openai_image_usd == shared.pricing.openai_image_usd
+        assert config.pricing.sfx_usd == shared.pricing.sfx_usd
+
+    def test_keys_the_project_writes_itself_still_win(self, tmp_path):
+        config = self._pinned(tmp_path, {
+            "video_model": "kling-3-pro",
+            "fal_end_frame_field": "my_end",
+            "pricing": {"clip_usd_per_second": 0.5},
+        })
+        assert config.fal_end_frame_field == "my_end"
+        assert config.pricing.clip_usd_per_second == 0.5
+        assert config.fal_start_frame_field == "start_image_url"
+
+    def test_a_project_without_a_pin_is_untouched(self, tmp_path):
+        config = self._pinned(tmp_path, {"duration": 10})
+        assert config.fal_model_id.endswith("v2.5-turbo/pro/image-to-video")
+        assert config.pricing.clip_usd_per_second == 0.07
+
+
+class TestModelArguments:
+    def _args(self, key: str) -> dict:
+        from ai_video_maker.clients.video import VideoClient
+        client = VideoClient(_config(video_model=key))
+        return client._build_arguments("s", "e", "m", 5)
+
+    def test_kling_three_is_told_not_to_generate_audio(self):
+        # It is on by default and bills 50% more; the pipeline adds its own.
+        for key in ("kling-3-pro", "kling-3-standard", "kling-o3-pro"):
+            assert self._args(key)["generate_audio"] is False
+
+    def test_two_five_gets_no_new_arguments(self):
+        assert "generate_audio" not in self._args("kling-2.5-turbo-pro")
+
+    def test_two_five_fingerprints_are_unchanged_by_the_new_field(self, tmp_path):
+        # A paid, pending render must stay resumable.
+        from ai_video_maker.clients.video import VideoClient
+        a, b = tmp_path / "a.png", tmp_path / "b.png"
+        a.write_bytes(b"a"); b.write_bytes(b"b")
+        config = _config(video_model="kling-2.5-turbo-pro")
+        assert config.fal_model_arguments == {}
+        with_field = VideoClient(config).fingerprint(a, b, "m", 5)
+        import hashlib
+        expected = hashlib.sha1("|".join([
+            config.fal_model_id, "5",
+            hashlib.sha1(b"a").hexdigest(), hashlib.sha1(b"b").hexdigest(), "m",
+        ]).encode()).hexdigest()
+        assert with_field == expected
+
+    def test_extra_arguments_still_override_the_model(self):
+        from ai_video_maker.clients.video import VideoClient
+        config = _config(
+            video_model="kling-3-pro",
+            fal_extra_arguments={"generate_audio": True},
+        )
+        assert VideoClient(config)._build_arguments("s", "e", "m", 5)[
+            "generate_audio"] is True
+
+
+class TestRetiredPresets:
+    def test_turbo_is_retired_because_it_has_no_end_frame(self):
+        model = get_video_model("kling-3-turbo-pro")
+        assert model.retired and model.end_frame_field == ""
+
+    def test_a_project_pinned_to_it_still_loads(self):
+        assert _config(video_model="kling-3-turbo-pro").video_model \
+            == "kling-3-turbo-pro"
+
+    def test_it_is_not_offered_and_cannot_be_baked_off(self):
+        from ai_video_maker.config import ConfigError, config_for_model
+        from ai_video_maker.video_models import selectable_models
+        assert "kling-3-turbo-pro" not in [m.key for m in selectable_models()]
+        with pytest.raises(ConfigError):
+            config_for_model(_config(), "kling-3-turbo-pro")
+
+
+class TestMovieCosts:
+    def test_each_model_prices_the_same_seconds(self):
+        from ai_video_maker.video_models import movie_costs
+        rows = {r["key"]: r for r in movie_costs(200, "kling-2.5-turbo-pro")}
+        assert rows["kling-2.5-turbo-pro"]["movie_usd"] == 14.0
+        assert rows["kling-2.5-turbo-pro"]["current"] is True
+        assert rows["kling-2.5-turbo-pro"]["delta_usd"] == 0
+        assert rows["kling-3-pro"]["movie_usd"] == 22.4
+        assert rows["kling-3-pro"]["delta_usd"] == 8.4
+        assert rows["kling-4"]["movie_usd"] == 47.0
+        assert "kling-3-turbo-pro" not in rows
+
+    def test_an_unknown_current_model_gives_no_deltas(self):
+        from ai_video_maker.video_models import movie_costs
+        assert all(r["delta_usd"] is None for r in movie_costs(100, ""))
+
+
+class TestConfigForModel:
+    def test_only_the_model_changes(self):
+        from ai_video_maker.config import config_for_model
+        base = _config(video_model="kling-2.5-turbo-pro",
+                       fal_negative_prompt="blurry", max_retries=7)
+        other = config_for_model(base, "kling-3-pro")
+        assert other.fal_model_id.endswith("v3/pro/image-to-video")
+        assert other.pricing.clip_usd_per_second == 0.112
+        assert other.fal_negative_prompt == "blurry" and other.max_retries == 7
+        assert base.fal_model_id.endswith("v2.5-turbo/pro/image-to-video")

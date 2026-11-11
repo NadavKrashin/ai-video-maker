@@ -121,6 +121,11 @@ class VideoClient:
             parts.append(f"neg={self.config.fal_negative_prompt}")
         if self.config.fal_cfg_scale is not None:
             parts.append(f"cfg={self.config.fal_cfg_scale}")
+        if self.config.fal_model_arguments:
+            parts.append(
+                "model_args=" + json.dumps(self.config.fal_model_arguments,
+                                           sort_keys=True)
+            )
         if self.config.fal_extra_arguments:
             parts.append(
                 "extra=" + json.dumps(self.config.fal_extra_arguments,
@@ -207,7 +212,14 @@ class VideoClient:
         # cannot be checked from here.
         if element_urls and c.elements_enabled():
             args[c.fal_elements_field] = [
-                {c.fal_element_image_field: url} for url in element_urls
+                {
+                    c.fal_element_image_field: url,
+                    **(
+                        {c.fal_element_reference_field: [url]}
+                        if c.fal_element_reference_field else {}
+                    ),
+                }
+                for url in element_urls
             ]
         if c.fal_resolution:
             args["resolution"] = c.fal_resolution
@@ -217,7 +229,9 @@ class VideoClient:
             args["negative_prompt"] = c.fal_negative_prompt
         if c.fal_cfg_scale is not None:
             args["cfg_scale"] = c.fal_cfg_scale
-        # Last, so ad-hoc extra arguments can override anything above.
+        # What the model itself needs (audio off, resolution), then the
+        # ad-hoc extra arguments last so they can override anything above.
+        args.update(c.fal_model_arguments)
         args.update(c.fal_extra_arguments)
         return args
 

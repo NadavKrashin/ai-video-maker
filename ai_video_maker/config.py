@@ -10,7 +10,13 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from .costs import Pricing
 from .errors import ConfigError
-from .video_models import VideoModel, get_video_model, model_for_id, model_keys
+from .video_models import (
+    DERIVED_CONFIG_KEYS,
+    VideoModel,
+    get_video_model,
+    model_for_id,
+    model_keys,
+)
 
 
 # Where the closing letter plays relative to the end-credits montage.
@@ -132,6 +138,15 @@ class Config(BaseModel):
     # The key inside each element object that carries the face image URL,
     # e.g. "frontal_image_url" or "image_url".
     fal_element_image_field: str = "frontal_image_url"
+    # Extra views some models REQUIRE beside the frontal image (Kling 3
+    # rejects an element without at least one). When set, the same portrait
+    # is sent under this field too. Filled in by the preset.
+    fal_element_reference_field: str = ""
+    # Arguments the chosen MODEL needs (e.g. {"generate_audio": false} on
+    # Kling 3, which otherwise bills 50% more for audio the pipeline replaces
+    # anyway). Filled in by the preset; applied before fal_extra_arguments,
+    # which still overrides everything.
+    fal_model_arguments: dict[str, Any] = Field(default_factory=dict)
     # How many elements the endpoint accepts. fal's docs describe ONE for the
     # v3 image-to-video endpoints; Kling's own docs describe up to three with
     # start/end frames. 0 keeps the feature off even if a field name is set.
@@ -454,7 +469,7 @@ class Config(BaseModel):
         data = cls._read_json(path, required=True)
         if override_path is not None:
             overrides = cls._read_json(override_path, required=False)
-            data.update(overrides)
+            data = layer_project_overrides(data, overrides)
         data = apply_video_model_preset(data)
         try:
             return cls(**data)
@@ -505,6 +520,63 @@ class Config(BaseModel):
         if preset is not None and not preset.supports_elements:
             return False
         return configured
+
+
+def layer_project_overrides(
+    shared: dict[str, Any], overrides: dict[str, Any]
+) -> dict[str, Any]:
+    """Merge a project's config over the shared one, key over key.
+
+    With one exception that exists because of a real bug: when the PROJECT
+    names a ``video_model``, the request-shape keys it merely INHERITED from
+    the shared config are dropped first, so the preset can fill them in.
+    The shared config.json spells out ``fal_model_id`` and the frame fields
+    (it predates presets), and "an explicit key beats the preset" then meant
+    a project pinned to Kling 3 in the panel still rendered on Kling 2.5 —
+    with 2.5's field names and 2.5's price shown — while the page said
+    Kling 3. Keys the project writes ITSELF still win, so a per-project
+    hand-configured endpoint keeps working.
+    """
+    merged = dict(shared)
+    if str(overrides.get("video_model") or "").strip():
+        for key in DERIVED_CONFIG_KEYS:
+            if key not in overrides:
+                merged.pop(key, None)
+        pricing = dict(merged.get("pricing") or {})
+        pricing.pop("clip_usd_per_second", None)
+        merged["pricing"] = pricing
+        if "pricing" in overrides:
+            # The project's own prices win, but must not erase the shared
+            # image/text/sfx prices by replacing the whole block.
+            merged["pricing"] = {**pricing, **(overrides["pricing"] or {})}
+            overrides = {k: v for k, v in overrides.items() if k != "pricing"}
+    merged.update(overrides)
+    return merged
+
+
+def config_for_model(base: "Config", key: str) -> "Config":
+    """The same config, but rendering on another video model.
+
+    Used by the bake-off to render one pair on several models without
+    writing anything to disk: everything the preset derives is recomputed
+    for ``key`` and everything else (prompts, negative prompt, retries) is
+    carried over untouched, so the models are compared like for like.
+    """
+    preset = get_video_model(key)
+    if preset is None:
+        raise ConfigError(
+            f"Unknown video_model {key!r}. Available: " + ", ".join(model_keys())
+        )
+    if preset.retired:
+        raise ConfigError(f"{key} is retired. {preset.note}")
+    data = base.model_dump()
+    for derived in DERIVED_CONFIG_KEYS:
+        data.pop(derived, None)
+    pricing = dict(data.get("pricing") or {})
+    pricing.pop("clip_usd_per_second", None)
+    data["pricing"] = pricing
+    data["video_model"] = key
+    return Config(**apply_video_model_preset(data))
 
 
 def apply_video_model_preset(data: dict[str, Any]) -> dict[str, Any]:

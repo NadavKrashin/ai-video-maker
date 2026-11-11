@@ -151,3 +151,20 @@ class TestPinningAModel:
         )
         _put(client, "kling-3-pro")
         assert enqueued == []
+
+
+class TestRetiredModelsAreNotOffered:
+    def test_the_picker_list_leaves_them_out(self, client):
+        keys = [m["key"] for m in client.get(
+            "/api/video-models", headers=_auth()).json()["models"]]
+        assert "kling-3-turbo-pro" not in keys
+        assert "kling-3-standard" in keys and "kling-4" in keys
+
+    def test_every_offered_model_says_where_its_price_came_from(self, client):
+        for model in client.get("/api/video-models", headers=_auth()).json()["models"]:
+            assert model["price_note"]
+
+    def test_pinning_a_retired_model_is_refused(self, client):
+        resp = _put(client, "kling-3-turbo-pro")
+        assert resp.status_code == 422
+        assert "retired" in resp.json()["detail"]

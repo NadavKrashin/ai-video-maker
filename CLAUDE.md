@@ -468,6 +468,51 @@ Core design rules:
   new one, and never writes the derived values (a corrected preset must be
   able to reach a project that is already pinned). Pinned by
   tests/test_video_models.py + tests/test_server_video_model.py.
+- THE MODEL PICKER WAS A NO-OP ON THE REAL CONFIG (found 2026-11-11). The
+  shared config.json spells out `fal_model_id` and the frame fields (it
+  predates presets), and "an explicit key beats the preset" was applied to
+  the MERGED dict — so a project pinned to `kling-3-pro` in the panel still
+  rendered on Kling 2.5, with 2.5's field names and price, under a Kling 3
+  label. The tests never saw it because their fixture config had no
+  `fal_model_id`. `layer_project_overrides` (config.py) now drops the
+  request-shape keys a project merely INHERITED when that project names a
+  `video_model`; keys the project writes itself still win. Pinned against
+  the LIVE config.json (TestPickingAModelActuallyChangesTheModel) — a test
+  of config layering that does not load the real shared file is not a test.
+- THE PRESETS WERE RE-READ FROM fal's MODEL PAGES (2026-11-11) and three
+  things were wrong or missing. (1) `kling-3-turbo-pro` has NO end-frame
+  field at all — it is now `retired` (still loads so a pinned project's
+  status page works; never offered; render and bakeoff refuse it). (2) Kling
+  3/O3 generate audio BY DEFAULT and bill ~50% more for it: presets carry
+  `extra_arguments` -> `fal_model_arguments` (`generate_audio: false`),
+  applied before `fal_extra_arguments` and joining the fingerprint only when
+  non-empty, so 2.5's fingerprints are unchanged. (3) A Kling 3 element
+  needs `reference_image_urls` (>=1) beside `frontal_image_url`; the same
+  portrait is sent under both (`fal_element_reference_field`). fal's
+  /pricing page DISAGREED with the model pages for Kling 3 and O3 — the
+  model pages were used. Every preset carries a `price_note` saying where
+  its number came from; keep that when adding one. Still unverified by a
+  render: everything except 2.5, and `kling-4` most of all (field names from
+  a how-to guide, audio behaviour unknown). Veo 3.1's first-last-frame
+  endpoints are being REMOVED 2026-11-17 and Seedance 2.0 is $0.30-0.68/s,
+  which is why neither has a preset.
+- CHOOSING A VIDEO MODEL IS DONE BY WATCHING, AND `bakeoff` IS HOW (user
+  request, 2026-11-11: show "what i am spending now vs what I could be
+  spending"). `bakeoff <project> --clip ID [--models a,b]` renders the same
+  pair on each model into `bakeoff/<clip>__<model>.mp4` with a sidecar json
+  (model, seconds, estimated usd, prompt, or the error). NEVER into
+  `clips/`: it must not replace or stale a real clip, and `combine` must
+  never see it — the test asserts what is left alone. `--clip` is required
+  (a whole-movie bake-off on five models is a five-movie bill), the plan
+  lists every model's price behind the confirm gate, and one model refusing
+  the request is a RESULT (recorded, shown in red in the panel), not a
+  crash. `config_for_model` builds each model's config in memory, so nothing
+  is written to config.json. The picker's cost table
+  (`snapshot()["video_model_costs"]`, `movie_costs` in video_models.py)
+  prices the STORYBOARD's planned seconds, not the clips on disk, so it is
+  there before anything is rendered. Panel: "Compare models" on a clip.
+  The panel pieces were built and compile, but were NOT looked at in a
+  browser (the in-app browser refused localhost that session).
 - MAKING A KNOB CONFIG IS ONLY HALF THE JOB (user question, 2026-09-07:
   "is this editable from the ui?"). Twice I told the user to "just try 2/3 on
   one project's config.json" — which, behind the Cloudflare tunnel, means SSH

@@ -86,7 +86,12 @@ from .models import Storyboard, changed_transition_ids
 from .options import RunOptions
 from .project_settings import coerce_settings, describe_settings
 from .runner import Pipeline
-from .video_models import VIDEO_MODELS, get_video_model, model_keys
+from .video_models import (
+    DERIVED_CONFIG_KEYS,
+    get_video_model,
+    model_keys,
+    selectable_models,
+)
 from .workspace import (
     PROJECT_ROOT,
     PROJECTS_DIR,
@@ -101,6 +106,10 @@ from .workspace import (
 # constructor internals.
 _ALLOWED_COMMANDS = {
     "ingest", "storyboard", "render", "audio", "combine", "publish", "run",
+    # `bakeoff` renders named clips on several video models into bakeoff/,
+    # never into clips/. It spends video credits (one clip per model), so
+    # the panel lists every model and its price before it starts.
+    "bakeoff",
     # `tag` proposes who is in each frame; it writes only frames[].people,
     # never a transition, so it can't invalidate a rendered clip.
     "tag",
@@ -1296,9 +1305,12 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
                     "supports_elements": m.supports_elements,
                     "usd_per_second": m.usd_per_second,
                     "verified": m.verified,
+                    "price_note": m.price_note,
                     "note": m.note,
                 }
-                for m in VIDEO_MODELS
+                # Retired presets still LOAD (a pinned project must not
+                # break) but are never offered.
+                for m in selectable_models()
             ]
         }
 
@@ -1324,6 +1336,11 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
                 detail=f"Unknown model {key!r}. Available: "
                        + ", ".join(model_keys()),
             )
+        if key and get_video_model(key).retired:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{key} is retired. " + get_video_model(key).note,
+            )
         current = _read_project_config(ws)
         # An empty choice REMOVES the pin rather than writing "", so the
         # project goes back to following the shared config.
@@ -1334,10 +1351,7 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         # The preset's field names are derived at load time, never frozen
         # into the file — otherwise a corrected preset could never reach a
         # project that had already been pinned.
-        for derived in ("fal_model_id", "fal_start_frame_field",
-                        "fal_end_frame_field", "fal_elements_field",
-                        "fal_element_image_field", "fal_max_elements",
-                        "fal_element_prompt_template"):
+        for derived in DERIVED_CONFIG_KEYS:
             current.pop(derived, None)
         _write_project_config(ws, current)
         return {"ok": True, "video_model": key}
@@ -1663,6 +1677,7 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
         "styled": lambda ws: ws.styled_images_dir,
         "generated": lambda ws: ws.generated_frames_dir,
         "clips": lambda ws: ws.clips_dir,
+        "bakeoff": lambda ws: ws.bakeoff_dir,
         "output": lambda ws: ws.output_dir,
         # Archived deliveries (output/published/final_vN.mp4) — its own kind
         # because the file route deliberately refuses path separators.

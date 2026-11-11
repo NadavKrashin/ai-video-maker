@@ -269,6 +269,24 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--duration", type=int, choices=sorted(VALID_DURATIONS),
                     help="Force every clip to this length for this run.")
 
+    sp = command("bakeoff",
+                 "Render the named clip(s) on several video models into "
+                 "bakeoff/ so they can be compared side by side. Never "
+                 "touches clips/ or the movie. Shows each model's price and "
+                 "asks before spending clip credits.")
+    _add_common_flags(sp)
+    sp.add_argument("-y", "--yes", action="store_true",
+                    help="Skip the confirmation prompt.")
+    sp.add_argument("--clip", action="append", metavar="ID", required=True,
+                    help="The clip to compare (e.g. 003_to_004). Repeatable; "
+                         "each one is rendered once PER MODEL.")
+    sp.add_argument("--models", default=None,
+                    type=lambda v: [m.strip() for m in v.split(",") if m.strip()],
+                    metavar="A,B",
+                    help="Comma-separated model keys (default: every "
+                         "selectable model). See the panel's picker or "
+                         "video_models.py for the keys.")
+
     sp = command("audio",
                  "Add per-clip SFX + a music bed to the rendered clips, then "
                  "rebuild output/final_video.mp4.")

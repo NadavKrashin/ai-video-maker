@@ -46,9 +46,10 @@ from .clients.openai_client import (
     is_unstageable_pair,
 )
 from .clients.video import VideoClient
-from .config import LETTER_PLACEMENTS, Config
+from .config import LETTER_PLACEMENTS, Config, config_for_model
 from .constants import VALID_DURATIONS
 from .costs import KIND_CLIP, KIND_SFX, CostLedger, estimate_usd
+from .video_models import get_video_model, movie_costs, selectable_models
 from .errors import PipelineCancelled, PipelineError, StoryboardError
 from .clip_flags import ClipFlagStore
 from .feedback import (
@@ -339,6 +340,7 @@ class Pipeline:
             "publish": self.cmd_publish,
             "status": self.cmd_status,
             "flag": self.cmd_flag,
+            "bakeoff": self.cmd_bakeoff,
             "tag": self.cmd_tag,
             "faces": self.cmd_faces,
             "feedback": self.cmd_feedback,
@@ -1401,12 +1403,184 @@ class Pipeline:
         """
         storyboard = self._require_storyboard("render")
         self.summary.input_count = len(storyboard.frames)
+        preset = self.config.video_model_preset()
+        if preset is not None and preset.retired:
+            raise PipelineError(
+                f"This project is pinned to {preset.label}. {preset.note}"
+            )
 
         self._generate_frames(storyboard)
 
         pairs = self._pairs_from_storyboard(storyboard)
         pairs, forced = self._select_clips(pairs)
         self._render_pairs(pairs, forced)
+
+    # ------------------------------ bake-off ------------------------------ #
+    def cmd_bakeoff(self) -> None:
+        """Render the named clip(s) on several video models, side by side.
+
+        The honest way to choose a video model is to watch the SAME pair on
+        each of them; a price list and a spec sheet cannot say which one
+        keeps a face through a transition. Each render lands in
+        ``bakeoff/<clip>__<model>.mp4`` — never in ``clips/`` — so the movie,
+        its stale marks and its audio state are untouched, and nothing here
+        can be picked up by ``combine``.
+
+        Requires ``--clip``: a bake-off of a whole movie on five models is a
+        five-movie bill, so the pairs are always named. Every model spends
+        credits, so the plan (model, seconds, price) is shown and confirmed
+        first. A render that already exists is skipped unless ``--force``.
+        """
+        storyboard = self._require_storyboard("bakeoff")
+        if not self.options.clips:
+            raise PipelineError(
+                "bakeoff needs at least one --clip ID: it renders the same "
+                "pair on every model, so the pairs are always named."
+            )
+        keys = self.options.bakeoff_models or [m.key for m in selectable_models()]
+        unknown = [k for k in keys if get_video_model(k) is None]
+        if unknown:
+            raise PipelineError(
+                f"Unknown model(s): {', '.join(unknown)}. Available: "
+                + ", ".join(m.key for m in selectable_models())
+            )
+        retired = [k for k in keys if get_video_model(k).retired]
+        if retired:
+            raise PipelineError(
+                f"{', '.join(retired)} is retired. "
+                + get_video_model(retired[0]).note
+            )
+
+        original = self.config
+        jobs: list[tuple[Config, ClipPair, Path, list[Path]]] = []
+        try:
+            for key in keys:
+                model_config = config_for_model(original, key)
+                # Pairs are built UNDER the model's config: whether face
+                # elements ride along (and so the @Element wording in the
+                # prompt) is a property of the model.
+                self.config = model_config
+                pairs, _ = self._select_clips(
+                    self._pairs_from_storyboard(storyboard)
+                )
+                for pair in pairs:
+                    clip = self._clip_name(pair[0], pair[1])
+                    dst = self.workspace.bakeoff_dir / f"{clip.stem}__{key}.mp4"
+                    jobs.append((
+                        model_config, pair, dst,
+                        list(self._clip_elements.get(clip.name) or []),
+                    ))
+        finally:
+            self.config = original
+
+        lines = ["Bake-off plan (renders go to bakeoff/, never clips/):"]
+        todo = []
+        total = 0.0
+        for model_config, pair, dst, elements in jobs:
+            preset = model_config.video_model_preset()
+            usd = model_config.pricing.clip(pair[3])
+            if dst.exists() and not self.force:
+                status = "done, skip"
+            else:
+                status = f"RENDER  ~${usd:.2f}"
+                todo.append((model_config, pair, dst, elements))
+                total += usd
+            lines.append(
+                f"  {dst.stem:<44} {pair[3]:>2}s  {status}"
+                + ("" if preset.verified else "   (untested model)")
+            )
+        lines.append(
+            f"  -> {len(todo)} render(s), about ${total:.2f} in video credits "
+            "(estimated from the price table)."
+        )
+        for line in lines:
+            logger.info("%s", line)
+        if not todo:
+            logger.info("Every bake-off render already exists; nothing to do.")
+            return
+        if not self._ask(
+            lines, f"Render {len(todo)} bake-off clip(s) now? [y/N] ",
+            "Bake-off skipped.",
+        ):
+            return
+        if self.dry_run:
+            return
+        self.workspace.bakeoff_dir.mkdir(parents=True, exist_ok=True)
+
+        def work(job: tuple[Config, ClipPair, Path, list[Path]]) -> None:
+            model_config, pair, dst, elements = job
+            start, end, motion, duration, _sound = pair
+            preset = model_config.video_model_preset()
+            # Its own client per model: the request shape, the fal endpoint
+            # and the resume fingerprint all come from the config. State is
+            # shared, keyed by the bake-off filename, so an interrupted
+            # render is resumed instead of bought twice — same as a clip.
+            client = VideoClient(
+                model_config, state=self.state,
+                should_cancel=self.cancel_event.is_set,
+            )
+            try:
+                client.generate_clip(
+                    start, end, motion, duration, dst,
+                    reword=self.openai.reword_motion_prompt,
+                    elements=elements,
+                )
+            except PipelineCancelled:
+                raise
+            except Exception as exc:  # noqa: BLE001 - one model failing
+                # must not sink the others; that IS a bake-off result.
+                logger.error("Bake-off %s failed: %s", dst.name, exc)
+                with self._lock:
+                    self.failed.record(
+                        f"bakeoff:{dst.name}", "bakeoff", str(exc),
+                        model=preset.key,
+                    )
+                dst.with_suffix(".json").write_text(json.dumps({
+                    "clip": dst.stem.split("__")[0], "model": preset.key,
+                    "label": preset.label, "error": str(exc)[:500],
+                }, indent=2), encoding="utf-8")
+                return
+            usd = model_config.pricing.clip(duration)
+            self._record_cost(
+                KIND_CLIP, usd, f"bakeoff {dst.name}", seconds=duration
+            )
+            dst.with_suffix(".json").write_text(json.dumps({
+                "clip": dst.stem.split("__")[0],
+                "model": preset.key,
+                "label": preset.label,
+                "model_id": model_config.fal_model_id,
+                "seconds": duration,
+                "usd": usd,
+                "usd_per_second": model_config.pricing.clip_usd_per_second,
+                "face_elements": len(elements) if model_config.elements_enabled() else 0,
+                "prompt": motion,
+            }, indent=2), encoding="utf-8")
+            logger.info("Bake-off ready: %s (~$%.2f)", dst.name, usd)
+
+        self._map_parallel(todo, work, "Bake-off", "clip")
+
+    def bakeoff_results(self) -> list[dict[str, Any]]:
+        """Every bake-off render on disk, for status and the panel.
+
+        Read from the sidecar json each render writes; a failed render has a
+        sidecar with an ``error`` and no video, and is listed too — a model
+        refusing the request is a result worth seeing.
+        """
+        directory = self.workspace.bakeoff_dir
+        if not directory.is_dir():
+            return []
+        results = []
+        for meta in sorted(directory.glob("*.json")):
+            try:
+                data = json.loads(meta.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            video = meta.with_suffix(".mp4")
+            data["file"] = video.name if video.exists() else ""
+            results.append(data)
+        return results
 
     def _require_storyboard(self, command: str) -> Storyboard:
         path = self.workspace.default_storyboard_json
@@ -2960,6 +3134,10 @@ class Pipeline:
             # the choice and its consequence are never two separate things
             # to keep in step.
             "video_model": self._video_model_state(),
+            # What this movie's clips cost on each selectable model, and the
+            # bake-off renders already made for it.
+            "video_model_costs": self.video_model_costs(storyboard),
+            "bakeoff": self.bakeoff_results(),
             # The handful of config knobs this project may override from the
             # panel, with the value it actually runs on and whether that was
             # pinned here or inherited from the shared config.
@@ -3233,6 +3411,26 @@ class Pipeline:
                 and self.config.cast_references_enabled
             ),
             "usd_per_second": self.config.pricing.clip_usd_per_second,
+            "retired": bool(preset.retired) if preset else False,
+            "note": preset.note if preset else "",
+        }
+
+    def video_model_costs(
+        self, storyboard: Optional[Storyboard]
+    ) -> dict[str, Any]:
+        """What this movie's clips cost on each selectable model.
+
+        Seconds come from the STORYBOARD (what the movie is planned to be),
+        not from the clips on disk, so the comparison is there before
+        anything has been rendered — which is when it is useful.
+        """
+        seconds = float(sum(
+            t.duration for t in (storyboard.transitions if storyboard else [])
+        ))
+        preset = self.config.video_model_preset()
+        return {
+            "clip_seconds": seconds,
+            "models": movie_costs(seconds, preset.key if preset else ""),
         }
 
     def read_face_audit(self) -> dict[str, Any]:
