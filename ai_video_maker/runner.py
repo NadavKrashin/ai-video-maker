@@ -37,6 +37,7 @@ from .clients.cloudinary_client import (
 )
 from .clients.download import download_file
 from .clients.openai_client import (
+    EXIT_STAGING_LIMIT,
     OpenAIClient,
     camera_shift_prompt,
     ends_offscreen,
@@ -44,6 +45,7 @@ from .clients.openai_client import (
     is_camera_transition,
     is_clothing_anchored,
     is_unstageable_pair,
+    overused_exit_staging,
 )
 from .clients.video import VideoClient
 from . import previous_takes
@@ -3225,6 +3227,18 @@ class Pipeline:
                         self.style_reference_plan(storyboard).items()
                     },
                 ),
+                # Prompts that send people out past the camera, listed
+                # only when the movie uses that move more than
+                # EXIT_STAGING_LIMIT times: the body-wipe is a trick once
+                # and a tic by the third time. Visible, never rewritten;
+                # the fix is re-planning or editing the ones that don't
+                # need it.
+                "repeated_exit_staging": [
+                    storyboard.transitions[i].id
+                    for i in overused_exit_staging(
+                        [t.motion_prompt for t in storyboard.transitions]
+                    )
+                ],
                 # Pairs already carrying a camera-family prompt. Exposed so
                 # the panel doesn't have to re-implement the recognition
                 # (`is_camera_transition` is strict-family on purpose, and a
@@ -4512,6 +4526,17 @@ class Pipeline:
                 f"{', '.join(unstageable[:6])}"
                 f"{' …' if len(unstageable) > 6 else ''}\n"
                 "     Re-plan them to get camera transitions instead."
+            )
+
+        # One staging leaned on across the movie (see EXIT_STAGING_LIMIT).
+        exits = (snap["storyboard"] or {}).get("repeated_exit_staging") or []
+        if exits:
+            print(
+                f"  !! {len(exits)} prompts send people out past the camera "
+                f"and back (more than {EXIT_STAGING_LIMIT} reads as a "
+                f"repeated trick): {', '.join(exits[:6])}"
+                f"{' …' if len(exits) > 6 else ''}\n"
+                "     Re-plan them, or edit the ones that don't need it."
             )
 
         for clip in snap["clips"]:

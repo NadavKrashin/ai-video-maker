@@ -244,8 +244,9 @@ Core design rules:
   overloaded 5s prompt (lift-carry-seat-examine) made Kling swap in another
   kid, while a rewritten single-action prompt ("kid runs to the patio ...")
   rendered fine. Kling also can't show cross-ground travel when the subject
-  fills both frames — stage exit-past-camera + re-entry, or world morphs
-  around a steady subject, instead.
+  fills both frames — keep them in frame with one movement in place instead
+  (see SAME PEOPLE, NEW PLACE below; the exit past the camera is no longer
+  the answer to a change of place).
 - THE WORD CAPS ARE GONE (user call, 2026-08-14: "remove the word count
   gate, just make sure that the prompts are to the point"). They existed for
   a real reason — a plan under the beat rules alone wrote 79–113 words per 5s
@@ -717,10 +718,43 @@ Core design rules:
   say "cover this whole route now"; the DISTANCE has to shrink. Prompts
   describe the ARRIVAL only ("takes the last few unhurried steps to the
   bench and settles onto it") and name the pace. Genuinely far-apart frames
-  aren't a walking shot at all: rate 4-5 and stage exit-past-camera +
-  re-entry, or a world morph around a steady subject. Enforced in
+  aren't a walking shot at all: the subject stays in frame with one
+  movement in place and the frames carry the change (2026-11-12; this used
+  to say "rate 4-5 and stage exit-past-camera + re-entry"). Enforced in
   `_MODE_A_SYSTEM` and `_REWORD_MOTION_SYSTEM` (pace anchors are not "risky
   detail" to drop).
+- SAME PEOPLE, NEW PLACE: THEY STAY IN FRAME (user call, 2026-11-12, on
+  am-101126-unaq — one boy growing up, ~30 places). Six of its 29 prompts
+  read "steps forward past the camera and briefly out of frame", all 10s.
+  The rulebook funnelled every same-person-new-place pair there: it offered
+  that exit as staging (a), counted "a different place" as a position change
+  needing a path, said the path "IS the exit past the camera" when no walk
+  fits, and its only worked example was that move. Rendered it is a
+  BODY-WIPE: the body fills the lens and hides a cut (seen on 19_to_20 of
+  the previous order).
+  - Now: such a pair is staged IN PLACE with one acted-out movement read
+    off the end frame's pose (still a concrete verb; "they hold the moment"
+    stays forbidden), and the frames carry the place.
+  - A new SETTING is not a position change; the path rule covers movement
+    WITHIN the picture only.
+  - The exit past the camera is ONLY for getting someone on/off screen or
+    past another person (new arrivals, swaps). Do not re-offer it for a
+    change of place.
+  - An in-place pair is ONE beat, rated 3 at most, so 5s. Otherwise a
+    growing-up movie (setting AND outfit change on nearly every pair)
+    comes back all 10s clips of one gesture.
+  - The planner is told to read its own prompts as a list and not repeat
+    one staging; the exit at most twice per movie.
+  - All of the above is PROMPT-SIDE and not yet judged on a render. The
+    visible check is code: `overused_exit_staging` / `EXIT_STAGING_LIMIT`
+    (2) feed `snapshot()["storyboard"]["repeated_exit_staging"]`, a status
+    line, a "Needs attention" row, a per-clip badge and a plan-time log
+    warning. It is never a silent rewrite.
+  - A single-subject growing-up movie does not need tags (user: "even the
+    tags are not really needed here"); they matter when different people
+    look alike. Never make tagging a precondition.
+  Pinned by TestSamePeopleNewPlaceStayInFrame /
+  TestExitStagingOveruseIsVisible / TestRepeatedExitStagingIsVisible.
 - "RE-PLAN ALL" MUST NOT NAME PAIRS (2026-11-12). The panel sent
   `replan_clips: [every id in the saved storyboard]`. After a photo was
   added, `15_to_17` no longer existed, the job died on "No such

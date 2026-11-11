@@ -1926,6 +1926,30 @@ class TestUnstageablePairsAreVisible:
         assert p.snapshot()["storyboard"]["unstageable_pairs"] == []
 
 
+class TestRepeatedExitStagingIsVisible:
+    """The snapshot lists exit-past-camera prompts only when overused."""
+
+    EXIT = "the boy steps forward past the camera and out of frame, then steps back in and waves"
+
+    def _snapshot(self, make_pipeline, workspace, exits):
+        names = ["a", "b", "c", "d", "e"]
+        p = make_pipeline(analyze_frames=False)
+        _make_frame_pairs(workspace, names)
+        sb = _save_slug_storyboard(workspace, names)
+        for t in sb.transitions[:exits]:
+            t.motion_prompt = self.EXIT
+        sb.save(workspace.default_storyboard_json)
+        return p.snapshot()["storyboard"]["repeated_exit_staging"]
+
+    def test_two_exits_in_a_movie_are_not_flagged(self, make_pipeline, workspace):
+        assert self._snapshot(make_pipeline, workspace, 2) == []
+
+    def test_three_exits_are_all_listed(self, make_pipeline, workspace):
+        assert self._snapshot(make_pipeline, workspace, 3) == [
+            "a_to_b", "b_to_c", "c_to_d"
+        ]
+
+
 class TestReplanSurvivesAPhotoBeingAdded:
     """A requested pair that no longer exists is stale, not a typo.
 

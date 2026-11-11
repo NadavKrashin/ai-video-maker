@@ -738,16 +738,31 @@ _MODE_A_SYSTEM = (
     "images, so it can never show action that needs the subject to shrink "
     "into the distance and come back — walking across a park or room cannot "
     "be staged when the subject fills BOTH frames; the model fakes it with "
-    "an ugly background morph instead. When the setting changes around the "
-    "same prominent subject, stage it as either (a) the subject walking "
-    "out of frame close past the camera and stepping back in afterwards, "
-    "or (b) the subject holding roughly steady — standing, turning in "
-    "place, a small gesture — and letting the two frames carry the change. "
+    "an ugly background morph instead. "
+    "SAME PEOPLE, NEW PLACE — THEY STAY IN FRAME. When the setting changes "
+    "around the same prominent subject (the same person somewhere else: "
+    "the usual pair in a movie of one child growing up, or of one trip "
+    "after another), the staging is that they STAY IN THE PICTURE and do "
+    "ONE real, acted-out movement that ends in the end frame's pose — "
+    "turn to face the other way, raise the arm into the wave, bend into "
+    "the crouch, land the jump, spread the arms — while the two frames "
+    "carry the change of place by themselves. That is not 'holding the "
+    "moment': the person still gets a concrete physical verb, read off "
+    "the pose the END frame shows; they simply do not travel. Do NOT send "
+    "them out past the camera for this. A body walking into the lens "
+    "fills the frame and hides a cut behind it — a trick, and a visible "
+    "tic by the second time a movie uses it: a real plan for one boy in "
+    "thirty places wrote 'steps forward past the camera and briefly out "
+    "of frame' on six pairs. The exit past the camera and the walk back "
+    "in is ONLY for when somebody genuinely has to get on or off screen "
+    "or to the other side of someone (different people arriving, people "
+    "trading sides) — never merely because the place changed. "
     "Describe visible travel only when one of the two frames "
     "already shows the subject small or far away. "
     "EVERY POSITION CHANGE NEEDS A PATH — NOBODY TELEPORTS. When a person "
-    "stands somewhere different in the end frame — the other side of the "
-    "frame, nearer the camera, a different place — the prompt must give "
+    "stands somewhere different WITHIN THE PICTURE in the end frame — the "
+    "other side of the frame, the other side of another person, clearly "
+    "nearer or farther from the camera — the prompt must give "
     "them an ordinary way to get there ON THEIR OWN FEET, and say which "
     "way they go: they walk, step across, turn, cross in front of or "
     "behind the other person, or leave past the camera and come back in. "
@@ -758,7 +773,10 @@ _MODE_A_SYSTEM = (
     "through the air or dissolve them and rebuild them, which reads as a "
     "cut, not a shot. If no ordinary walk fits in the clip's length, then "
     "the path IS the exit past the camera and the walk back in — still a "
-    "path, still on their own feet. "
+    "path, still on their own feet. A new SETTING is not a position "
+    "change: the same person standing mid-frame on a beach and then "
+    "mid-frame on a ski slope has not moved within the picture and needs "
+    "no path at all — see SAME PEOPLE, NEW PLACE above. "
     "PACE AND DISTANCE: a clip can only cover as much ground as its length "
     "allows at a calm, natural pace — roughly a few unhurried steps in 5 "
     "seconds, a short approach in 10. The video model holds the two frames "
@@ -779,9 +797,9 @@ _MODE_A_SYSTEM = (
     "'stroll', 'amble', and 'wander' still tell the model to cover the "
     "whole route, just as 'walk' does — it is the distance that has to "
     "shrink, not the wording. If the two frames really are far apart in "
-    "space, that is not a walking shot at all: rate it 4-5 and stage "
-    "exit-past-camera plus re-entry, or hold the subject steady (a turn in "
-    "place, a small gesture) and let the two frames carry the change. "
+    "space, that is not a walking shot at all: keep the subject in frame "
+    "with one acted-out movement in place (a turn, a wave, a crouch) and "
+    "let the two frames carry the change. "
     "NO OFF-SCREEN HANDS: every action must be performed by a person "
     "visible in the frames, under their own power. NEVER write actions done "
     "TO the subject by an unseen agent — 'is lifted out', 'is carried', "
@@ -990,7 +1008,15 @@ _MODE_A_SYSTEM = (
     "'then', 'where', 'until', or comma-joined verb is another beat. Keep "
     "to ONE (5s) or TWO (10s) and simply drop the rest — the end frame "
     "already shows where everything lands, so the prompt never has to "
-    "narrate the way there. Keep every motion_prompt in "
+    "narrate the way there. "
+    "DO NOT REPEAT ONE STAGING ACROSS THE MOVIE. You are planning these "
+    "pairs together, so before returning them, read your own "
+    "motion_prompts as a list. An exit past the camera may appear at most "
+    "TWICE in a whole movie; if you wrote it more often, restage the "
+    "others in place. Vary the in-place movements too — each one comes "
+    "from what that pair's end frame actually shows, so thirty pairs "
+    "should not all 'turn and smile'. "
+    "Keep every motion_prompt in "
     "present tense; preserve each person's identity, wardrobe, and "
     "environment except for the changes visible between the frames; no hard "
     "cuts, no people who appear in neither frame, no NEW text appearing on "
@@ -1036,7 +1062,11 @@ _MODE_A_SYSTEM = (
     "becomes a 10-second clip, with no quota and no second opinion — so an "
     "inflated rating directly makes the movie longer, slower and twice as "
     "expensive on that pair. Rate 4+ only when the pair genuinely cannot "
-    "play out in five seconds. "
+    "play out in five seconds. A pair you stage IN PLACE — the same "
+    "people staying in frame with one movement while the setting, the "
+    "outfit or their age changes around them — is ONE beat however much "
+    "the pixels differ: rate it 3 at most. The extra five seconds would "
+    "buy no action, only a longer morph of the background. "
     "SOUND: also write sound_prompt — a short phrase describing the diegetic "
     "ambient sound and sound effects for that clip (e.g. 'waves lapping, gulls "
     "calling, soft wind'). Real on-screen/world sounds only — no music, no "
@@ -1987,6 +2017,38 @@ def stages_a_crossing(motion_prompt: str) -> bool:
         any(marker in text for marker in _EXIT_MARKERS)
         and any(marker in text for marker in _RETURN_MARKERS)
     )
+
+
+# How many prompts in one movie may send people out past the camera before
+# it reads as a tic. The move is a body-wipe: someone walks into the lens,
+# their body fills the frame, and the change of scene hides behind it. Once
+# it is a trick. A real plan (am-101126-unaq: one boy in thirty places) used
+# it on SIX pairs, because the rulebook offered it as the staging for "same
+# person, new place" and every pair in that movie is one. The rulebook now
+# keeps people in frame for those pairs, but that is a prompt-side rule, so
+# the count is surfaced (snapshot, status, panel) for a human to see. It is
+# never "fixed" by a silent rewrite.
+EXIT_STAGING_LIMIT = 2
+
+
+def stages_an_exit(motion_prompt: str) -> bool:
+    """Does this prompt send anyone out of the frame at any point?
+
+    True for the exit-and-return staging as well as for a bare exit. The
+    deterministic camera prompts contain no exit marker, so they never count.
+    """
+    text = (motion_prompt or "").lower()
+    return any(marker in text for marker in _EXIT_MARKERS)
+
+
+def overused_exit_staging(prompts: list[str]) -> list[int]:
+    """Indices of the prompts that stage an exit, when a movie overuses it.
+
+    Empty while the movie stays within ``EXIT_STAGING_LIMIT``: one or two
+    exits are a legitimate staging, and flagging them would be noise.
+    """
+    hits = [i for i, prompt in enumerate(prompts) if stages_an_exit(prompt)]
+    return hits if len(hits) > EXIT_STAGING_LIMIT else []
 
 
 def ends_offscreen(motion_prompt: str) -> bool:
@@ -3062,6 +3124,18 @@ class OpenAIClient:
                 )
                 motion = CAMERA_SHIFT_MOTION_PROMPT
             plans.append((motion, duration, sound))
+        # Seen, not rewritten: tell whoever reads the job log that this plan
+        # leans on the exit past the camera. (Per planning call; the
+        # project's status and the panel count across the whole movie.)
+        exits = overused_exit_staging([motion for motion, _, _ in plans])
+        if exits:
+            logger.warning(
+                "%d of the %d prompts planned here send people out past the "
+                "camera (pairs %s); more than %d in one movie reads as a "
+                "repeated trick. Re-plan or edit the ones that don't need it.",
+                len(exits), len(plans),
+                ", ".join(str(i + 1) for i in exits), EXIT_STAGING_LIMIT,
+            )
         return plans
 
     def _restage_swapped_pair(

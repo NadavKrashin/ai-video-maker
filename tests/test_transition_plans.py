@@ -2013,3 +2013,101 @@ class TestTheGateSaysWhy:
                 frame_people=[self.SIX, self.SIX[:5]],
             )
         assert "roster from your tags" in caplog.text
+
+
+class TestSamePeopleNewPlaceStayInFrame:
+    """A change of place is carried by the frames, not by an exit.
+
+    On am-101126-unaq (one boy growing up, thirty places) six of 29 prompts
+    read "steps forward past the camera and briefly out of frame", all at
+    10s. The rulebook had funnelled every same-person-new-place pair there:
+    it offered that exit as staging (a), counted "a different place" as a
+    position change needing a path, and said the path "IS the exit past the
+    camera" when no walk fits. Rendered, the move is a body-wipe hiding a
+    cut. User call, 2026-11-12: keep people in frame; the exit is for when
+    somebody really has to get on or off screen.
+    """
+
+    def _s(self):
+        from ai_video_maker.clients.openai_client import mode_a_system
+        return mode_a_system()
+
+    def test_staying_in_frame_is_the_staging(self):
+        s = self._s()
+        assert "SAME PEOPLE, NEW PLACE — THEY STAY IN FRAME" in s
+        assert "Do NOT send them out past the camera for this" in s
+
+    def test_the_exit_is_no_longer_offered_for_a_change_of_place(self):
+        s = self._s()
+        assert "(a) the subject walking out of frame close past the camera" not in s
+        assert "stage exit-past-camera plus re-entry" not in s
+        assert "never merely because the place changed" in s
+
+    def test_staying_in_frame_still_needs_a_real_movement(self):
+        # Not a licence for "they hold the moment", which stays forbidden.
+        s = self._s()
+        assert "the person still gets a concrete physical verb" in s
+        assert "'they hold the moment'" in s or "they hold the moment" in s
+
+    def test_a_new_setting_is_not_a_position_change(self):
+        s = self._s()
+        assert "A new SETTING is not a position change" in s
+        # The path rule itself still stands for movement within the picture.
+        assert "NOBODY TELEPORTS" in s and "WITHIN THE PICTURE" in s
+
+    def test_the_planner_is_told_not_to_repeat_one_staging(self):
+        s = self._s()
+        assert "DO NOT REPEAT ONE STAGING ACROSS THE MOVIE" in s
+        assert "at most TWICE in a whole movie" in s
+
+    def test_an_in_place_pair_is_one_beat_not_a_long_clip(self):
+        # Otherwise a growing-up movie, where setting AND outfit change on
+        # nearly every pair, comes back all 10-second clips of one gesture.
+        assert "is ONE beat however much the pixels differ: rate it 3 at most" in self._s()
+
+    def test_swaps_and_new_arrivals_keep_their_exit_staging(self):
+        # The exit is restricted, not removed: these still need it.
+        s = self._s()
+        assert "only HALF the staging" in s
+        assert "walk back in" in s
+        assert "ARRANGEMENT SWAP" in s
+
+
+class TestExitStagingOveruseIsVisible:
+    """Count the body-wipe across a movie; show it, never rewrite it."""
+
+    EXIT = "The boy steps forward past the camera and briefly out of frame. He steps back in and waves."
+    STAY = "The boy turns to face the sea and raises both arms."
+
+    def test_an_exit_and_return_counts_as_an_exit(self):
+        from ai_video_maker.clients.openai_client import stages_an_exit
+        assert stages_an_exit(self.EXIT)
+        assert not stages_an_exit(self.STAY)
+        assert not stages_an_exit("")
+
+    def test_camera_prompts_never_count(self):
+        from ai_video_maker.clients.openai_client import (
+            CAMERA_SHIFT_THROUGH_SCENERY_PROMPT, stages_an_exit,
+        )
+        for prompt in (CAMERA_SHIFT_MOTION_PROMPT, CAMERA_SHIFT_TO_SCENE_PROMPT,
+                       CAMERA_SHIFT_THROUGH_SCENERY_PROMPT):
+            assert not stages_an_exit(prompt)
+
+    def test_once_or_twice_is_a_staging_not_a_problem(self):
+        from ai_video_maker.clients.openai_client import overused_exit_staging
+        assert overused_exit_staging([self.EXIT, self.STAY, self.EXIT]) == []
+
+    def test_a_third_use_flags_every_one_of_them(self):
+        from ai_video_maker.clients.openai_client import overused_exit_staging
+        prompts = [self.EXIT, self.STAY, self.EXIT, self.EXIT]
+        assert overused_exit_staging(prompts) == [0, 2, 3]
+
+    def test_planning_warns_but_keeps_the_prompts(self, config, caplog):
+        data = {"transitions": [
+            {"pair_index": i + 1, "difficulty": 2, "sound_prompt": "",
+             "motion_prompt": self.EXIT} for i in range(3)
+        ]}
+        with caplog.at_level("WARNING"):
+            plans = _plans(config, data, 3)
+        assert [m for m, _, _ in plans] == [self.EXIT] * 3  # never rewritten
+        assert "3 of the 3 prompts planned here send people out past the camera" in caplog.text

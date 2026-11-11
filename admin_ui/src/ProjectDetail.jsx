@@ -404,7 +404,7 @@ function SpendCard({ project, cost }) {
   );
 }
 
-function TransitionCard({ project, tr, framesById, clip, edited, placeholder, verdict, planBehind, endsOffscreen, unstageable, isCamera, selected, onToggleSelect, onEdit, onRegenerate, onReplan, onReplanAsCamera, onReplanStagingPeople, onRedoAudio, onFeedback, onToggleFix, onCompare, bakeoff, compareBusy, onRestorePrevious, busy, replanBusy, audioBusy, flagBusy, mediaV }) {
+function TransitionCard({ project, tr, framesById, clip, edited, placeholder, verdict, planBehind, endsOffscreen, repeatedExit, unstageable, isCamera, selected, onToggleSelect, onEdit, onRegenerate, onReplan, onReplanAsCamera, onReplanStagingPeople, onRedoAudio, onFeedback, onToggleFix, onCompare, bakeoff, compareBusy, onRestorePrevious, busy, replanBusy, audioBusy, flagBusy, mediaV }) {
   const startImg = frameName(framesById, tr.start_frame);
   const endImg = frameName(framesById, tr.end_frame);
   const clipFile = tr.output_path.split('/').pop();
@@ -456,6 +456,12 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, ve
           <Badge variant="light" color="red"
             title="This prompt finishes with someone out of the frame, but the clip has to land on the end frame — which shows them. The video model resolves that with a cut or a teleport. Re-plan it, or edit the ending so they come back.">
             ends offscreen
+          </Badge>
+        )}
+        {repeatedExit > 0 && (
+          <Badge variant="light" color="yellow"
+            title={`${repeatedExit} prompts in this movie send someone out past the camera and back. The move hides the change of scene behind a body filling the lens: fine once, a visible repeated trick by the third time. If this pair doesn't need anyone to leave the frame, re-plan it or edit the prompt so they stay in the picture.`}>
+            exit past camera · used {repeatedExit}×
           </Badge>
         )}
         {planBehind && (
@@ -1946,6 +1952,9 @@ export default function ProjectDetail({ name, onBack }) {
   // Prompts that finish with someone out of frame — impossible for a clip
   // pinned to an end frame those people are standing in.
   const offscreenEndings = new Set(snap.storyboard?.ends_offscreen || []);
+  // Prompts that send people out past the camera, listed by the server only
+  // when the movie overuses that move (more than twice).
+  const repeatedExits = new Set(snap.storyboard?.repeated_exit_staging || []);
   // Hand-picked transitions for a batched re-plan. Kept as ids (not
   // indices) so a poll that reorders or drops a transition can't silently
   // move the selection onto a different pair; ids that no longer exist are
@@ -2356,6 +2365,10 @@ export default function ProjectDetail({ name, onBack }) {
         clip: first(sb.placeholder_transitions) },
       { key: 'offscreen', count: (sb.ends_offscreen || []).length, color: 'red',
         label: 'prompt(s) end with someone out of frame', clip: first(sb.ends_offscreen) },
+      { key: 'exits', count: (sb.repeated_exit_staging || []).length, color: 'yellow',
+        label: 'prompts send someone out past the camera and back — a repeated trick',
+        hint: 'Fine once or twice; more than that shows. Re-plan them or edit the ones that don\u2019t need it.',
+        clip: first(sb.repeated_exit_staging) },
       { key: 'unstageable', count: (sb.unstageable_pairs || []).length, color: 'red',
         label: 'pair(s) have too many people moving and need a camera transition',
         clip: first(sb.unstageable_pairs) },
@@ -3469,6 +3482,7 @@ export default function ProjectDetail({ name, onBack }) {
               verdict={(snap.feedback?.by_transition || {})[tr.id]}
               planBehind={outdatedPlans.has(tr.id)}
               endsOffscreen={offscreenEndings.has(tr.id)}
+              repeatedExit={repeatedExits.has(tr.id) ? repeatedExits.size : 0}
               unstageable={unstageablePairs.has(tr.id)}
               isCamera={cameraPairs.has(tr.id)}
               selected={selected.has(tr.id)} onToggleSelect={toggleSelected}
