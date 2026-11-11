@@ -54,6 +54,8 @@ const jobColor = (state) =>
     : state === 'failed' ? 'red'
       // Ran to the end, but some items failed — never green.
       : state === 'partial' ? 'orange'
+      // Cut off by a server restart. Never re-run automatically.
+      : state === 'interrupted' ? 'orange'
         : state === 'cancelled' ? 'gray'
           : state === 'cancelling' ? 'yellow'
             : 'blue';

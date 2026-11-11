@@ -1188,6 +1188,23 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   reaches it exclusively through a Cloudflare Tunnel, with Cloudflare Access
   (email OTP) in front of the app's own token — two auth layers. Server
   logs: `~/Library/Logs/animoments/serve.log`.
+- JOBS SURVIVE A RESTART, AND A DEPLOY REFUSES TO CAUSE ONE MID-JOB
+  (2026-11-11). The JobRunner kept everything in memory, so a deploy or
+  crash erased the queue and the log of the running job. Now:
+  `projects/_learning/jobs.json` (newest 200 jobs, 300 log lines each,
+  atomic write, best-effort — a full disk costs the history, never the job),
+  restored on startup with anything that was queued/running marked
+  `interrupted`. INTERRUPTED JOBS ARE NEVER RE-RUN AUTOMATICALLY: re-running
+  spends money and "the server restarted" is not a human deciding to spend
+  it — same rule as never auto-re-rendering a clip. Nothing polls pending
+  fal renders either; that rule is unchanged. `/api/health` now also returns
+  `busy`/`active_jobs` (a count only — the route is unauthenticated, so it
+  must never name a project or command), and `deploy/deploy.sh` checks it
+  FIRST and exits before pulling anything; `FORCE_DEPLOY=1` overrides. An
+  unreachable server counts as not busy. `JobRunner(history_path=None)`
+  writes nothing, which is what keeps tests out of the real projects/.
+  Pinned by tests/test_server_job_history.py (the deploy guard is tested by
+  running the real script against fake `curl`/`git`).
 - CI (`.github/workflows/ci.yml`): offline tests + pyflakes + panel build on
   every push/PR to dev/main. CD (`deploy.yml`): push to `main` → the mini's
   self-hosted runner runs `deploy/deploy.sh` (refuses a dirty tree, ff-only
