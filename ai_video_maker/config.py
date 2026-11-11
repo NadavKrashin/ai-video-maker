@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -9,7 +10,13 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from .costs import Pricing
 from .errors import ConfigError
-from .video_models import VideoModel, get_video_model, model_for_id, model_keys
+from .video_models import (
+    DERIVED_CONFIG_KEYS,
+    VideoModel,
+    get_video_model,
+    model_for_id,
+    model_keys,
+)
 
 
 # Where the closing letter plays relative to the end-credits montage.
@@ -18,6 +25,11 @@ from .video_models import VideoModel, get_video_model, model_for_id, model_keys
 LETTER_PLACEMENTS: tuple[str, ...] = (
     "over_photos", "after_photos", "on_last_photo",
 )
+
+
+# "" = send nothing. xhigh/max exist only on the newer image models; the API
+# rejects them elsewhere, which is the provider's call to make, not ours.
+IMAGE_QUALITIES = ("", "auto", "low", "medium", "high", "xhigh", "max")
 
 
 class Config(BaseModel):
@@ -42,8 +54,33 @@ class Config(BaseModel):
     avoid_text_only_frames: bool = True
 
     # OpenAI models (safe to edit).
-    openai_image_model: str = "gpt-image-2"
+    # gpt-image-2 is deprecated (removed 2027-02-10). Sunburst is its
+    # editing-precision replacement and was chosen on a side-by-side
+    # (2026-11-11): it keeps real faces far better, at the cost of a less
+    # cartoon look — which is the trade the user asked for.
+    openai_image_model: str = "gpt-image-2.6-sunburst"
     openai_text_model: str = "gpt-5.1"
+    # The canvas the image model draws on, "WIDTHxHEIGHT". The long-standing
+    # 1536x1024 is 3:2, so every styled frame is then centre-cropped to 16:9
+    # by normalize_image — about 8% comes off the top and 8% off the bottom
+    # AFTER the model has composed the picture, which no framing instruction
+    # in the style prompt can see coming (the cropped-heads complaint). A true
+    # 16:9 size such as "2048x1152" removes that crop, and has been the
+    # default since 2026-11-11, after a side-by-side on four real photos (the
+    # user's call). Set "1536x1024" in one project's config.json to get the
+    # old canvas back.
+    openai_image_size: str = "2048x1152"
+    # "" sends no quality (the provider's default, "auto"). "high" spends the
+    # model's detail budget deliberately and costs more per image — update
+    # pricing.openai_image_usd when you change it, or the spend estimate lies.
+    # The shared config.json sets "high": that is what the approved
+    # side-by-side was drawn at. The code default stays unset so a config
+    # that does not mention quality sends nothing.
+    openai_image_quality: str = ""
+    # Name each cast reference in the styling prompt ("Image 2: the bald
+    # man") instead of only saying that references follow. OpenAI's own
+    # guidance for multi-image edits; off until it has been looked at.
+    style_reference_labels: bool = False
 
     # --- fal.ai image-to-video. Auth via FAL_KEY. ---
     # PREFERRED: name a preset here and every fal_* field below is filled in
@@ -101,6 +138,15 @@ class Config(BaseModel):
     # The key inside each element object that carries the face image URL,
     # e.g. "frontal_image_url" or "image_url".
     fal_element_image_field: str = "frontal_image_url"
+    # Extra views some models REQUIRE beside the frontal image (Kling 3
+    # rejects an element without at least one). When set, the same portrait
+    # is sent under this field too. Filled in by the preset.
+    fal_element_reference_field: str = ""
+    # Arguments the chosen MODEL needs (e.g. {"generate_audio": false} on
+    # Kling 3, which otherwise bills 50% more for audio the pipeline replaces
+    # anyway). Filled in by the preset; applied before fal_extra_arguments,
+    # which still overrides everything.
+    fal_model_arguments: dict[str, Any] = Field(default_factory=dict)
     # How many elements the endpoint accepts. fal's docs describe ONE for the
     # v3 image-to-video endpoints; Kling's own docs describe up to three with
     # start/end frames. 0 keeps the feature off even if a field name is set.
@@ -358,6 +404,44 @@ class Config(BaseModel):
     # planning call already carries ~20 frames; newest lessons win.
     max_lessons_in_prompt: int = 25
 
+    @field_validator("openai_image_size")
+    @classmethod
+    def _valid_image_size(cls, value: str) -> str:
+        """Catch a bad canvas here, not as a 400 on a paid styling run.
+
+        The limits are the image API's documented ones: both edges multiples
+        of 16, long:short at most 3:1, and a bounded pixel count. Note that
+        1920x1080 FAILS (1080 is not a multiple of 16) — the nearest true
+        16:9 sizes are 1536x864, 2048x1152 and 2560x1440.
+        """
+        match = re.fullmatch(r"(\d+)x(\d+)", value or "")
+        if not match:
+            raise ValueError("openai_image_size must look like 2048x1152")
+        width, height = int(match.group(1)), int(match.group(2))
+        if width % 16 or height % 16:
+            raise ValueError(
+                "openai_image_size: both edges must be multiples of 16 "
+                "(1920x1080 is not valid; use 2048x1152 for 16:9)"
+            )
+        if max(width, height) > 3 * min(width, height):
+            raise ValueError("openai_image_size: aspect ratio may not exceed 3:1")
+        if not 655_360 <= width * height <= 8_294_400:
+            raise ValueError(
+                "openai_image_size: total pixels must be between 655,360 and "
+                "8,294,400"
+            )
+        return value
+
+    @field_validator("openai_image_quality")
+    @classmethod
+    def _known_image_quality(cls, value: str) -> str:
+        if value not in IMAGE_QUALITIES:
+            raise ValueError(
+                "openai_image_quality must be one of: "
+                + ", ".join(repr(q) for q in IMAGE_QUALITIES)
+            )
+        return value
+
     @field_validator("letter_placement")
     @classmethod
     def _known_letter_placement(cls, value: str) -> str:
@@ -385,7 +469,7 @@ class Config(BaseModel):
         data = cls._read_json(path, required=True)
         if override_path is not None:
             overrides = cls._read_json(override_path, required=False)
-            data.update(overrides)
+            data = layer_project_overrides(data, overrides)
         data = apply_video_model_preset(data)
         try:
             return cls(**data)
@@ -436,6 +520,63 @@ class Config(BaseModel):
         if preset is not None and not preset.supports_elements:
             return False
         return configured
+
+
+def layer_project_overrides(
+    shared: dict[str, Any], overrides: dict[str, Any]
+) -> dict[str, Any]:
+    """Merge a project's config over the shared one, key over key.
+
+    With one exception that exists because of a real bug: when the PROJECT
+    names a ``video_model``, the request-shape keys it merely INHERITED from
+    the shared config are dropped first, so the preset can fill them in.
+    The shared config.json spells out ``fal_model_id`` and the frame fields
+    (it predates presets), and "an explicit key beats the preset" then meant
+    a project pinned to Kling 3 in the panel still rendered on Kling 2.5 —
+    with 2.5's field names and 2.5's price shown — while the page said
+    Kling 3. Keys the project writes ITSELF still win, so a per-project
+    hand-configured endpoint keeps working.
+    """
+    merged = dict(shared)
+    if str(overrides.get("video_model") or "").strip():
+        for key in DERIVED_CONFIG_KEYS:
+            if key not in overrides:
+                merged.pop(key, None)
+        pricing = dict(merged.get("pricing") or {})
+        pricing.pop("clip_usd_per_second", None)
+        merged["pricing"] = pricing
+        if "pricing" in overrides:
+            # The project's own prices win, but must not erase the shared
+            # image/text/sfx prices by replacing the whole block.
+            merged["pricing"] = {**pricing, **(overrides["pricing"] or {})}
+            overrides = {k: v for k, v in overrides.items() if k != "pricing"}
+    merged.update(overrides)
+    return merged
+
+
+def config_for_model(base: "Config", key: str) -> "Config":
+    """The same config, but rendering on another video model.
+
+    Used by the bake-off to render one pair on several models without
+    writing anything to disk: everything the preset derives is recomputed
+    for ``key`` and everything else (prompts, negative prompt, retries) is
+    carried over untouched, so the models are compared like for like.
+    """
+    preset = get_video_model(key)
+    if preset is None:
+        raise ConfigError(
+            f"Unknown video_model {key!r}. Available: " + ", ".join(model_keys())
+        )
+    if preset.retired:
+        raise ConfigError(f"{key} is retired. {preset.note}")
+    data = base.model_dump()
+    for derived in DERIVED_CONFIG_KEYS:
+        data.pop(derived, None)
+    pricing = dict(data.get("pricing") or {})
+    pricing.pop("clip_usd_per_second", None)
+    data["pricing"] = pricing
+    data["video_model"] = key
+    return Config(**apply_video_model_preset(data))
 
 
 def apply_video_model_preset(data: dict[str, Any]) -> dict[str, Any]:

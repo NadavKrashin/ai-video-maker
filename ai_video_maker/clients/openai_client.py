@@ -1077,6 +1077,35 @@ _STYLE_REFERENCE_INSTRUCTION = (
     "the picture."
 )
 
+def reference_label_block(labels: Optional[list[str]]) -> str:
+    """Name each attached image by position: who reference N actually is.
+
+    The generic instruction above says references FOLLOW; it cannot say which
+    reference is which person, so in a four-person photo the model has to
+    work out by resemblance whose face each portrait is — the very judgement
+    the references exist to take away from it. Labels come from the cast's
+    epithets, in the same order the images are attached.
+
+    Returns "" when there is nothing usable to say (no labels, or all blank),
+    so a caller that passes none gets exactly the prompt it always got.
+    """
+    named = [
+        (index, " ".join(label.split()))
+        for index, label in enumerate(labels or [], start=2)
+        if label and label.strip()
+    ]
+    if not named:
+        return ""
+    lines = "; ".join(
+        f"Image {index} is the established face of {label}"
+        for index, label in named
+    )
+    return (
+        " WHICH REFERENCE IS WHO — Image 1 is the photograph to convert. "
+        f"{lines}. Use each reference only for the person it names."
+    )
+
+
 # Small numbers as words, for prompts. The thresholds are config now, so the
 # sentence that teaches them cannot carry a hard-coded numeral any more.
 _NUMBER_WORDS = (
@@ -1947,9 +1976,17 @@ _STORYBOARD_JSON_SHAPE = (
 class OpenAIClient:
     """Thin wrapper around the OpenAI SDK. Easy to swap models/endpoints."""
 
-    # gpt-image models support these sizes; 16:9 1920x1080 is not native, so we
-    # request the closest landscape size and then normalise with Pillow.
-    _IMAGE_API_SIZE = "1536x1024"
+    def _image_request_options(self) -> dict[str, Any]:
+        """Canvas and quality for every image call, from config.
+
+        ``quality`` is only sent when set: an unset key keeps the request
+        byte-identical to what it has always been, so adding the knob cannot
+        change how any existing project styles.
+        """
+        options: dict[str, Any] = {"size": self.config.openai_image_size}
+        if self.config.openai_image_quality:
+            options["quality"] = self.config.openai_image_quality
+        return options
 
     def __init__(self, config: Config) -> None:
         self.config = config
@@ -2022,6 +2059,7 @@ class OpenAIClient:
         style_prompt: str,
         dst: Path,
         references: Optional[list[Path]] = None,
+        reference_labels: Optional[list[str]] = None,
     ) -> None:
         """Edit `src` into the styled look and write a normalised PNG to `dst`.
 
@@ -2045,6 +2083,7 @@ class OpenAIClient:
         ]
         if reference_uploads:
             style_prompt += _STYLE_REFERENCE_INSTRUCTION
+            style_prompt += reference_label_block(reference_labels)
 
         def _call(prompt: str) -> bytes:
             image = io.BytesIO(upload)
@@ -2064,7 +2103,7 @@ class OpenAIClient:
                 model=self.config.openai_image_model,
                 image=payload,
                 prompt=prompt,
-                size=self._IMAGE_API_SIZE,
+                **self._image_request_options(),
             )
             # Billed per returned image, so a rewording retry that finally
             # succeeds pays for each attempt that came back — record here,
@@ -2086,7 +2125,7 @@ class OpenAIClient:
             resp = client.images.generate(
                 model=self.config.openai_image_model,
                 prompt=prompt,
-                size=self._IMAGE_API_SIZE,
+                **self._image_request_options(),
             )
             self._spend(KIND_IMAGE, self.config.pricing.image(), dst.name)
             return base64.b64decode(resp.data[0].b64_json)

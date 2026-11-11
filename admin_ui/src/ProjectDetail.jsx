@@ -7,7 +7,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert, Badge, Button, Card, Checkbox, Divider, Group, Image, Menu, Modal,
   NumberInput, Paper, ScrollArea, SegmentedControl, Select, Stack, Text,
-  Textarea, TextInput, Title, UnstyledButton
+  Table, Textarea, TextInput, Title, UnstyledButton
 } from '@mantine/core';
 import { api, fileUrl } from './api.js';
 import {
@@ -395,7 +395,7 @@ function SpendCard({ project, cost }) {
   );
 }
 
-function TransitionCard({ project, tr, framesById, clip, edited, placeholder, verdict, planBehind, endsOffscreen, unstageable, isCamera, selected, onToggleSelect, onEdit, onRegenerate, onReplan, onReplanAsCamera, onReplanStagingPeople, onRedoAudio, onFeedback, onToggleFix, busy, replanBusy, audioBusy, flagBusy, mediaV }) {
+function TransitionCard({ project, tr, framesById, clip, edited, placeholder, verdict, planBehind, endsOffscreen, unstageable, isCamera, selected, onToggleSelect, onEdit, onRegenerate, onReplan, onReplanAsCamera, onReplanStagingPeople, onRedoAudio, onFeedback, onToggleFix, onCompare, bakeoff, compareBusy, busy, replanBusy, audioBusy, flagBusy, mediaV }) {
   const startImg = frameName(framesById, tr.start_frame);
   const endImg = frameName(framesById, tr.end_frame);
   const clipFile = tr.output_path.split('/').pop();
@@ -567,12 +567,44 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, ve
             Feedback
           </Button>
         )}
+        <Button variant="default" size="xs" loading={compareBusy}
+          onClick={() => onCompare(tr)}
+          title="Render this one pair on every video model, side by side. The movie's own clip is not touched.">
+          Compare models
+        </Button>
         <Button variant="default" size="xs" loading={busy}
           onClick={() => onRegenerate(tr.id)}
           title="Re-render just this clip (save edits first)">
           {clip?.rendered ? 'Regenerate clip' : 'Render this clip'}
         </Button>
       </Group>
+      {(bakeoff || []).length > 0 && (
+        <>
+          <Divider my="sm" label="Model comparison (not part of the movie)" labelPosition="left" />
+          <Group align="flex-start" gap="sm">
+            {bakeoff.map((b) => (
+              <div key={b.model} style={{ width: 240 }}>
+                <Text size="xs" fw={600}>{b.label}</Text>
+                {b.file ? (
+                  <>
+                    <video controls preload="none"
+                      style={{ width: 240, borderRadius: 8, background: '#000' }}
+                      src={fileUrl(project, 'bakeoff', b.file, mediaV)} />
+                    <Text size="xs" c="dimmed">
+                      {b.seconds}s · est. {usd(b.usd)} (${Number(b.usd_per_second).toFixed(3)}/s)
+                      {b.face_elements > 0 ? ` · ${b.face_elements} face ref` : ''}
+                    </Text>
+                  </>
+                ) : (
+                  <Alert color="red" variant="light" p="xs" title="This model refused">
+                    <Text size="xs" style={{ wordBreak: 'break-word' }}>{b.error}</Text>
+                  </Alert>
+                )}
+              </div>
+            ))}
+          </Group>
+        </>
+      )}
     </Card>
   );
 }
@@ -1098,8 +1130,10 @@ function PeoplePanel({
 // consequences — the request shape, the price per second, and whether the
 // cast's faces can be sent at all — so all three are shown next to it rather
 // than left as separate settings to keep in step.
-function VideoModelPicker({ locked, current, models, onPick }) {
+function VideoModelPicker({ locked, current, models, onPick, costs }) {
   const chosen = models.find((m) => m.key === current.key);
+  const rows = costs?.models || [];
+  const seconds = costs?.clip_seconds || 0;
   return (
     <Card withBorder padding="sm" mb="md">
       <Group align="flex-end" gap="sm">
@@ -1138,12 +1172,54 @@ function VideoModelPicker({ locked, current, models, onPick }) {
           </Text>
         </div>
       </Group>
+      {rows.length > 0 && seconds > 0 && (
+        <>
+          <Divider my="sm" />
+          <Text size="sm" fw={600} mb={4}>
+            What this movie's clips cost on each model
+          </Text>
+          <Text size="xs" c="dimmed" mb="xs">
+            {seconds}s of planned clips. Estimated from each model's list
+            price with audio off — clip rendering only; styling, planning and
+            sound cost the same whichever model you pick. To see how a model
+            actually looks, use "Compare models" on a clip below.
+          </Text>
+          <Table withTableBorder={false} verticalSpacing={4} fz="sm">
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>Model</Table.Th>
+                <Table.Th ta="right">Per second</Table.Th>
+                <Table.Th ta="right">This movie</Table.Th>
+                <Table.Th ta="right">vs. now</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {rows.map((r) => (
+                <Table.Tr key={r.key} title={r.price_note}>
+                  <Table.Td>
+                    {r.label}
+                    {r.current && <Badge ml={6} size="xs" variant="light" color="green">in use</Badge>}
+                    {!r.verified && <Badge ml={6} size="xs" variant="light" color="orange">untested</Badge>}
+                  </Table.Td>
+                  <Table.Td ta="right">${r.usd_per_second.toFixed(3)}</Table.Td>
+                  <Table.Td ta="right" fw={r.current ? 700 : 400}>{usd(r.movie_usd)}</Table.Td>
+                  <Table.Td ta="right" c={r.delta_usd > 0 ? 'orange' : r.delta_usd < 0 ? 'green' : 'dimmed'}>
+                    {r.delta_usd == null || r.current ? '—'
+                      : `${r.delta_usd > 0 ? '+' : '−'}${usd(Math.abs(r.delta_usd))}`}
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        </>
+      )}
     </Card>
   );
 }
 
 function RenderPanel({
-  ask, locked, info, onGenerateAll, videoModel, videoModels, onPickModel
+  ask, locked, info, onGenerateAll, videoModel, videoModels, onPickModel,
+  modelCosts
 }) {
   const [motionPrompt, setMotionPrompt] = useState('');
   const [duration, setDuration] = useState('');
@@ -1178,7 +1254,7 @@ function RenderPanel({
         the moment it renders.
       </PanelIntro>
       <VideoModelPicker locked={locked} current={videoModel}
-        models={videoModels} onPick={onPickModel} />
+        models={videoModels} onPick={onPickModel} costs={modelCosts} />
       {info.outdated > 0 && (
         <Alert color="orange" variant="light" mb="md"
           title={`${info.outdated} rendered clip(s) are outdated`}>
@@ -1935,6 +2011,35 @@ export default function ProjectDetail({ name, onBack }) {
     });
   };
 
+  // Render ONE pair on every selectable model, into bakeoff/ — never into
+  // clips/. Choosing a video model from a price list is guessing; this is
+  // how you look. Every model is a paid render, so each is listed with its
+  // price for this clip's length before anything starts.
+  const compareModels = (tr) => {
+    if (needsSave()) return;
+    const done = new Set((snap.bakeoff || [])
+      .filter((b) => b.clip === tr.id && b.file).map((b) => b.model));
+    const todo = videoModels.filter((m) => !done.has(m.key));
+    if (!todo.length) {
+      notify('Every model has already been rendered for this clip.', 'gray');
+      return;
+    }
+    const total = todo.reduce((sum, m) => sum + m.usd_per_second * tr.duration, 0);
+    ask({
+      title: `Compare video models on ${tr.id}?`,
+      lines: [
+        `Renders this ${tr.duration}s clip once on each model below, with the same frames and the same prompt:`,
+        ...todo.map((m) =>
+          `• ${m.label} — about ${usd(m.usd_per_second * tr.duration)}${m.verified ? '' : ' (untested here: it may refuse the request, which costs nothing)'}`),
+        `Total: about ${usd(total)} in video credits (estimated from list prices).`,
+        'The results appear under this clip. The movie\'s own clip, its audio and its "outdated" mark are not touched, and nothing here is used by Combine.'
+      ],
+      cost: 'fal',
+      label: `Render ${todo.length} comparison${todo.length === 1 ? '' : 's'}`,
+      action: () => run('bakeoff', { clips: [tr.id], bakeoff_models: todo.map((m) => m.key) }, `compare ${tr.id}`)
+    });
+  };
+
   // Fetch a render that was already submitted and billed. It runs the same
   // render action, but the pipeline resumes the persisted request_id instead
   // of submitting again — so this costs nothing as long as the plan is
@@ -2465,7 +2570,7 @@ export default function ProjectDetail({ name, onBack }) {
     render: <RenderPanel ask={ask} locked={locked} info={info}
       onGenerateAll={() => { if (!needsSave()) generateAll(snap); }}
       videoModel={snap.video_model || {}} videoModels={videoModels}
-      onPickModel={pickVideoModel} />,
+      onPickModel={pickVideoModel} modelCosts={snap.video_model_costs} />,
     audio: <AudioPanel ask={ask} locked={locked} info={info}
       onUploadMusic={uploadMusic} onRemoveMusic={removeMusic}
       onFetchMusicUrl={fetchMusicUrl} musicBusy={musicBusy} />,
@@ -3020,6 +3125,9 @@ export default function ProjectDetail({ name, onBack }) {
               selected={selected.has(tr.id)} onToggleSelect={toggleSelected}
               onEdit={editTransition}
               onRegenerate={regenerate} onReplan={replanPrompt}
+              onCompare={compareModels}
+              bakeoff={(snap.bakeoff || []).filter((b) => b.clip === tr.id)}
+              compareBusy={busyAction === `compare ${tr.id}`}
               onReplanAsCamera={replanAsCamera}
               onReplanStagingPeople={replanStagingPeople} onRedoAudio={redoAudio}
               onToggleFix={toggleNeedsFix} flagBusy={flagBusy === tr.id}

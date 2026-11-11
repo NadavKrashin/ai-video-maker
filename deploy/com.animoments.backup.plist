@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Nightly snapshot of projects/ (deploy/backup.sh) at 04:00.
+
+     BEFORE INSTALLING, edit the one value marked EDIT ME below: BACKUP_DEST
+     must point at a folder that already exists on a DIFFERENT disk from the
+     one projects/ lives on. The script refuses a destination that is not
+     there, so an unplugged disk is a logged failure, never a silent "backup"
+     onto the internal drive.
+
+     Install (as the logged-in user, like the server agent):
+
+       mkdir -p ~/Library/Logs/animoments
+       cp deploy/com.animoments.backup.plist ~/Library/LaunchAgents/
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.animoments.backup.plist
+
+     Run once now:   launchctl kickstart gui/$(id -u)/com.animoments.backup
+     Log:            ~/Library/Logs/animoments/backup.log
+
+     If the log shows "Operation not permitted" for an external disk, macOS
+     is blocking launchd from removable volumes: grant /bin/bash access under
+     System Settings > Privacy & Security > Files and Folders (or Full Disk
+     Access). That is a security setting, so it is yours to change.
+
+     launchd runs a missed 04:00 job when the machine next wakes, so a mini
+     that was asleep overnight still gets its snapshot.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.animoments.backup</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/atlas/production/ai-video-maker/deploy/backup.sh</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- EDIT ME: an existing folder on another disk. -->
+    <key>BACKUP_DEST</key>
+    <string>/Volumes/CHANGE-ME/animoments-backups</string>
+    <key>PROJECTS_DIR</key>
+    <string>/Users/atlas/production/ai-video-maker/projects</string>
+    <!-- Snapshots kept. Unchanged files are hard links, so this is cheap. -->
+    <key>BACKUP_KEEP</key>
+    <string>30</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>4</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/atlas/Library/Logs/animoments/backup.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/atlas/Library/Logs/animoments/backup.log</string>
+</dict>
+</plist>

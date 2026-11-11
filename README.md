@@ -295,6 +295,13 @@ on every push/PR to either branch; pushing `main` triggers
 self-hosted runner: fast-forward, reinstall, retest, rebuild the panel,
 restart the service, health-check. Never bind `0.0.0.0`; never port-forward.
 
+**Back up `projects/`.** It is not in git and cannot be regenerated.
+`deploy/backup.sh` takes dated, hard-linked snapshots to a folder on another
+disk (`BACKUP_DEST=/Volumes/<disk>/animoments-backups bash deploy/backup.sh`),
+and `deploy/com.animoments.backup.plist` runs it nightly. Neither is active
+until you install it with a real destination — see the runbook's Backups
+section, which also covers restoring.
+
 ### The Firebase order ledger (optional, recommended)
 
 The web frontend writes every paid order to Firestore (collection `orders`:
@@ -1003,11 +1010,43 @@ field names does not fail loudly: it silently drops the end frame, and the
 movie stops landing on its photos. So name a preset instead and every `fal_*`
 field is filled in together:
 
-| `video_model` | Model | Frame fields | Cast faces | Price |
+| `video_model` | Model | Frame fields | Cast faces | Price (audio off) |
 |---|---|---|---|---|
 | `kling-2.5-turbo-pro` | Kling 2.5 Turbo Pro (default) | `image_url` / `tail_image_url` | **no** | $0.07/s |
+| `kling-3-standard` | Kling 3.0 Standard | `start_image_url` / `end_image_url` | **yes** (1) | $0.084/s |
 | `kling-3-pro` | Kling 3.0 Pro | `start_image_url` / `end_image_url` | **yes** (1) | $0.112/s |
-| `kling-3-turbo-pro` | Kling 3.0 Turbo Pro | `start_image_url` / `end_image_url` | **yes** (1) | $0.14/s |
+| `kling-o3-pro` | Kling O3 Pro | `image_url` / `end_image_url` | **no** | $0.112/s |
+| `kling-4` | Kling 4.0 at 1080p | `start_image_url` / `end_image_url` | **no** | $0.235/s |
+
+Prices and field names were read from each model's fal page on 2026-11-11.
+Only Kling 2.5 has actually been rendered from here; the rest are marked
+"untested" in the panel. Kling 3 and O3 generate audio by default and charge
+about 50% more for it, so their presets send `generate_audio: false` — the
+pipeline adds its own sound in the audio step. `kling-3-turbo-pro` is
+**retired**: that endpoint has no end-frame input, so a clip rendered with it
+does not land on the next photo. A project still pinned to it loads, but
+cannot render until another model is picked.
+
+**What a model costs for your movie.** The Render step's picker lists every
+model with what *this* storyboard's clips would cost on it and the difference
+from the model in use (`snapshot()["video_model_costs"]`). Clip rendering
+only: styling, planning and sound cost the same whichever model is picked.
+
+**Compare models on one clip (`bakeoff`).** A price list cannot say which
+model keeps a face through a transition, so render the same pair on each:
+
+```bash
+python pipeline.py bakeoff myfilm --clip 06_to_07                      # every model
+python pipeline.py bakeoff myfilm --clip 06_to_07 --models kling-2.5-turbo-pro,kling-3-pro
+```
+
+Each render lands in `projects/<name>/bakeoff/<clip>__<model>.mp4` — never in
+`clips/` — so the movie, its "outdated" marks and its audio are untouched and
+`combine` never sees them. The plan lists every model with its price and asks
+before spending; an existing render is skipped; one model refusing the
+request is recorded as a result and does not stop the others. In the panel it
+is the **Compare models** button on a clip, and the results play side by side
+under it.
 
 Whether the cast's face references are sent is a property of the **model**,
 not a separate switch: Kling 2.5 cannot read them and never gets them, even
@@ -1015,15 +1054,19 @@ if the element fields are set by hand; Kling 3 can and does. That is the one
 thing that must not be possible to leave half-configured.
 
 Any `fal_*` key you set explicitly still beats the preset, so experiments
-need no new preset and every existing config keeps working untouched. Pricing
+need no new preset and every existing config keeps working untouched. One
+rule decides between layers: a `video_model` named in a **project's**
+`config.json` beats request fields that project merely inherited from the
+shared config (which still spells out `fal_model_id` from before presets
+existed); fields the project writes itself still win. Pricing
 follows the model too, unless you pin your own — otherwise switching to a
 model that costs 60% more would keep reporting the old estimate.
 
 The panel's Render step has a picker (it writes `video_model` into that one
-project's `config.json`; nothing else in the studio changes). The Kling 3
-entries come from fal's published docs and have **not been rendered from
-here** — try a single clip with `render <project> --clip ID` and check the
-end frame is honoured before committing a whole movie.
+project's `config.json`; nothing else in the studio changes). Every model
+other than Kling 2.5 comes from fal's published pages and has **not been
+rendered from here** — compare one clip with `bakeoff` and check the end
+frame is honoured before committing a whole movie.
 
 - **Start frame** → `fal_start_frame_field` (`image_url`). **End frame** →
   `fal_end_frame_field` (`tail_image_url`); set it to `""` for start-frame-only.
@@ -1293,6 +1336,7 @@ which are project-less).
 | `storyboard` | `--force`, `--dry-run`, `--concurrency N`, `--style-prompt`, `--no-analyze`, `--replan-all` (rewrite every prompt from the current cast + tags), `--no-tag` (skip the identity proposal), `--replan-clip ID` (repeatable; fresh motion prompt for that pair), `--camera` (with either re-plan flag: make those pairs camera transitions — free, no AI call), `--stage-people` (the opposite override: keep the people choreography on pairs the gate would make camera moves), `--restyle-frame NAME` (repeatable; re-style that frame, e.g. `2.png`, marking adjacent clips outdated), `--duration 5\|10`, `--idea`, `--idea-file PATH`, `--frame-count N` |
 | `flag` | `--clip ID` (required; which rendered clip), `--clear` (tick it off instead) — plus an optional positional note |
 | `render` | `--force`, `--dry-run`, `--concurrency N`, `-y/--yes`, `--clip ID` (repeatable), `--motion-prompt`, `--duration 5\|10`, `--add-audio`, `--no-audio` |
+| `bakeoff` | `--clip ID` (required, repeatable), `--models A,B` (default: every selectable model), `--force`, `--dry-run`, `-y/--yes` — renders the clip once per model into `bakeoff/`, never `clips/` |
 | `audio` | `--force`, `--dry-run`, `--concurrency N`, `--clip ID` (repeatable; redo that clip's audio), `--music-file PATH`, `--music-url URL` |
 | `combine` | `--force`, `--dry-run`, `--music-file PATH`, `--music-url URL`, `--add-audio`, `--no-audio`, `--final`, `--[no-]intro`, `--[no-]credits-photos`, `--[no-]letter`, `--letter-placement {over_photos,after_photos,on_last_photo}` |
 | `publish` | `--dry-run` (print the name only), `-y/--yes` |
@@ -1525,6 +1569,9 @@ bed costs nothing — it is your own file). Requires `ffmpeg`/`ffprobe` on your
 | `cast_references_enabled` | Editable in the panel ([Project settings](#project-settings)). `true` (default): styling a tagged frame is anchored to the cast's canonical faces. `false` restores the old per-photo behaviour. Untagged projects are unaffected either way. |
 | `face_reference_crop` | Side of the face crop for a frame with one tagged person, as a fraction of the frame height (default `0.5`); a fuller frame divides it down. |
 | `max_style_references` | How many cast faces may ride along with one styling call (default `4`). When a frame has more tagged people, the ones who appear in the most frames win. |
+| `openai_image_size` | The canvas the image model draws on, `WIDTHxHEIGHT` (default `2048x1152`, a true 16:9 canvas). The previous default, `1536x1024`, is 3:2, so each styled frame was centre-cropped to 16:9 afterwards — about 8% off the top and bottom, after the picture was composed; set it in one project's `config.json` to get that back. A larger canvas may cost more per image: check `pricing.openai_image_usd`. Both edges must be multiples of 16, so `1920x1080` is refused. Applies to the next styling of a frame; nothing is re-styled by changing it. |
+| `openai_image_quality` | `""` (default) sends no quality, i.e. the provider's `auto`. `low` / `medium` / `high` (and `xhigh` / `max` on the newer image models) set it explicitly. Higher quality costs more per image: update `pricing.openai_image_usd` alongside it or the spend estimate is wrong. |
+| `style_reference_labels` | `false` (default). `true` names each cast reference in the styling prompt ("Image 2 is the established face of the bald man"), using the cast's epithets, instead of only saying that references follow. |
 
 All spending figures are **estimates** derived from these prices — see
 [What it costs](#what-it-costs-spending).

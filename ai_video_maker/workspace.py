@@ -111,6 +111,18 @@ class Workspace:
         return self.root / "output"
 
     @property
+    def bakeoff_dir(self) -> Path:
+        """One pair rendered on several video models, to compare by eye.
+
+        Deliberately NOT under clips/: nothing in here is part of the movie,
+        `combine` never looks at it, and a bake-off must not be able to
+        replace or stale a real clip. Files are flat
+        (`<clip>__<model>.mp4`) because the media route refuses path
+        separators.
+        """
+        return self.root / "bakeoff"
+
+    @property
     def logs_dir(self) -> Path:
         return self.root / "logs"
 

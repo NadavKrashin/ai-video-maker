@@ -36,6 +36,9 @@ class RunOptions:
     frame_count: Optional[int] = None
     # render: limit to (and force-redo) these clips, e.g. ["003_to_004"].
     clips: Optional[list[str]] = None
+    # bakeoff: which video models to render the named clip(s) on (preset
+    # keys). None = every selectable model.
+    bakeoff_models: Optional[list[str]] = None
     # storyboard: force a fresh vision plan for these transitions even though
     # their frames didn't change (e.g. ["003_to_004"]) — the per-clip "write
     # me a new motion prompt" knob. Hand edits elsewhere stay untouched.
@@ -146,6 +149,7 @@ class RunOptions:
             idea_file=get("idea_file"),
             frame_count=get("frame_count"),
             clips=get("clip"),
+            bakeoff_models=get("models"),
             replan_clips=get("replan_clip"),
             restyle_frames=get("restyle_frame"),
             order=get("order"),

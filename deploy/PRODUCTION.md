@@ -202,18 +202,54 @@ a self-hosted runner must never run untrusted PR code).
 styling always stay behind explicit human action or the opt-in watcher —
 deploys never touch projects, never re-render, never spend credits.
 
-### Backups — currently NONE (fix this)
-
-As of 2026-07-26 this machine has **no Time Machine destination and no
-snapshots**: `tmutil destinationinfo` returns "No destinations configured".
-That is not a theoretical gap. On 2026-07-26, 606 MB of styled frames,
-rendered clips, storyboards and finished movies across four projects were
-destroyed by a single `git checkout`, and with no backup the loss was
-permanent. Only the input photos of Cloudinary-sourced orders survived,
-because they live on Cloudinary.
+### Backups — `deploy/backup.sh` (schedule it; it is NOT on by default)
 
 `projects/` is the ONLY irreplaceable data on this box — everything else is
 in git or reinstallable, and its contents cost real API credits to produce.
-Attach an external disk and enable Time Machine, or schedule an rsync of
-`~/production/ai-video-maker/projects` to another machine. Do it before
-generating anything you would mind losing.
+On 2026-07-26, 606 MB of styled frames, rendered clips, storyboards and
+finished movies across four projects were destroyed by a single
+`git checkout`, and with no backup the loss was permanent.
+
+`deploy/backup.sh` writes a dated, complete snapshot of `projects/` to
+`$BACKUP_DEST/projects-YYYYmmdd-HHMMSS/`. Unchanged files are hard links to
+the previous snapshot, so 30 snapshots cost roughly one copy plus what
+changed. It never writes to `projects/`, refuses a destination that does not
+exist (an unplugged disk must not become a "backup" onto the internal one),
+refuses an empty source, and prunes only its own complete snapshots beyond
+`BACKUP_KEEP` (default 30).
+
+**The script existing is not a backup.** Until the schedule below is
+installed with a real destination and its log shows a snapshot, there is
+still none — `tmutil destinationinfo` reported "No destinations configured"
+on both machines as of 2026-11-11.
+
+```bash
+# once, by hand, to see it work:
+BACKUP_DEST=/Volumes/<disk>/animoments-backups bash deploy/backup.sh
+
+# nightly at 04:00: edit BACKUP_DEST in the plist first, then
+mkdir -p ~/Library/Logs/animoments
+cp deploy/com.animoments.backup.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.animoments.backup.plist
+tail ~/Library/Logs/animoments/backup.log
+```
+
+The destination must be a DIFFERENT disk (external drive, another machine's
+mounted share). A folder on the same disk survives a bad `git checkout` but
+not the disk. For off-site cover, point a cloud sync client at the backup
+folder — not at `projects/` itself: a sync client once bumped every mtime in
+there.
+
+**Restoring.** Snapshots are plain folders. Copy the project back out —
+never rsync a snapshot over the live `projects/`, and never while a job is
+running:
+
+```bash
+ls /Volumes/<disk>/animoments-backups/            # pick a snapshot
+cp -R /Volumes/<disk>/animoments-backups/projects-<stamp>/<project> \
+      ~/production/ai-video-maker/projects/<project>
+```
+
+If the project folder still exists in a damaged state, move it aside first
+(`mv <project> <project>.damaged`) rather than copying on top of it.
+Pinned by tests/test_backup_script.py, which runs the real script.

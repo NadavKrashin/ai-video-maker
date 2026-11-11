@@ -380,6 +380,50 @@ Core design rules:
   all of this work with NO pipeline reordering: the first styling has no
   tags, and the tags arriving afterwards land on the next deliberate
   `--restyle-frame`. Pinned by tests/test_cast_references.py.
+- THE STYLED FRAME WAS BEING CROPPED AFTER IT WAS COMPOSED (found
+  2026-11-11, code read — NOT yet confirmed on a render). The image call
+  asked for 1536x1024 (3:2) while the prompt says "Output in 16:9", then
+  `normalize_image` centre-cropped to 1920x1080: ~8% off the top and ~8% off
+  the bottom, which no framing instruction can anticipate. A likely
+  mechanical contributor to the cropped-heads complaint that the FRAMING
+  prompt section has been fighting with words. First evidence, 4 photos of
+  am-160726-bd2c at 2048x1152 + quality high (`projects/_canvas_test/
+  comparison.jpg`): gpt-image-2 accepts both, every new frame has headroom,
+  and frame 06 — whose bald man is cut at the top edge today — comes back
+  whole. Small sample, one draw each, canvas and quality changed together. `openai_image_size` is config
+  now (validated: multiples of 16, so 1920x1080 is REFUSED — use 2048x1152),
+  with `openai_image_quality` and `style_reference_labels` (names each cast
+  reference by position, per OpenAI's multi-image guidance) beside it. THE
+  CANVAS DEFAULT IS NOW 2048x1152 (user call, 2026-11-11, after looking at
+  that side-by-side). QUALITY AND LABELS STAY OFF: quality was changed in
+  the same test as the canvas, so its effect on likeness is not isolated
+  (frame 05's eyes looked larger — the rejected direction), and labels have
+  not been looked at at all. Same lesson as the gate thresholds: try them in
+  ONE project's config.json with `storyboard --restyle-frame` first. Existing
+  styled frames are NOT re-styled by the new default; it lands on the next
+  styling of each frame. `pricing.openai_image_usd` (0.19) has not been
+  re-checked against the larger canvas. Pinned by tests/test_image_request_options.py.
+- FIRST MIGRATION TEST (2026-11-11, am-160726-bd2c; outputs in
+  `projects/_canvas_test/` and `projects/_plan_test_gpt51|gpt6sol/`). Both
+  replacements run on the existing code unchanged. IMAGES:
+  `gpt-image-2.6-sunburst` holds the real faces far better than gpt-image-2
+  but comes back close to a retouched photograph. I read that as the
+  "stayed too realistic" failure; the user read it as closer to what they
+  want (see THE STYLE DIAL MOVED TOWARD REALISM), so it may be nearly a
+  drop-in after all. PLANNING, same 29 pairs under today's code: gpt-5.1 built a
+  34-entry cast with clothing-anchored epithets, averaged 61 words a prompt
+  (max 137) and got 9 camera transitions; `gpt-6-sol` built a 12-entry cast,
+  averaged 32 words (max 46), and got 18 camera transitions + 12 ten-second
+  clips. Tighter and cleaner, but 62% of the movie became camera moves —
+  watch renders before adopting. Two loose ends it surfaced, neither
+  investigated: the offscreen LAST-RESORT camera prompt kept its pair's 10s
+  (21_to_22) although "a camera transition is ALWAYS 5s", and gpt-6-sol
+  wrote its own camera-move prompts at 10s on two pairs (07_to_08,
+  08_to_09) that are not the code's deterministic family.
+- THE TEXT MODEL IN config.json IS DEPRECATED (checked 2026-11-11):
+  `gpt-5.1` is removed 2027-04-01 (replacement `gpt-6-sol`). The swap
+  changes every plan, so migrate with rendered clips to look at. The image
+  model was already migrated (`gpt-image-2` is removed 2027-02-10).
 - ...AND THE DRIFT THAT ALREADY HAPPENED IS FINDABLE (same day). `faces`
   (cmd_faces) rebuilds the sheet for free; `faces --audit` is one vision
   call comparing every tagged appearance of each cast member and naming the
@@ -424,6 +468,51 @@ Core design rules:
   new one, and never writes the derived values (a corrected preset must be
   able to reach a project that is already pinned). Pinned by
   tests/test_video_models.py + tests/test_server_video_model.py.
+- THE MODEL PICKER WAS A NO-OP ON THE REAL CONFIG (found 2026-11-11). The
+  shared config.json spells out `fal_model_id` and the frame fields (it
+  predates presets), and "an explicit key beats the preset" was applied to
+  the MERGED dict — so a project pinned to `kling-3-pro` in the panel still
+  rendered on Kling 2.5, with 2.5's field names and price, under a Kling 3
+  label. The tests never saw it because their fixture config had no
+  `fal_model_id`. `layer_project_overrides` (config.py) now drops the
+  request-shape keys a project merely INHERITED when that project names a
+  `video_model`; keys the project writes itself still win. Pinned against
+  the LIVE config.json (TestPickingAModelActuallyChangesTheModel) — a test
+  of config layering that does not load the real shared file is not a test.
+- THE PRESETS WERE RE-READ FROM fal's MODEL PAGES (2026-11-11) and three
+  things were wrong or missing. (1) `kling-3-turbo-pro` has NO end-frame
+  field at all — it is now `retired` (still loads so a pinned project's
+  status page works; never offered; render and bakeoff refuse it). (2) Kling
+  3/O3 generate audio BY DEFAULT and bill ~50% more for it: presets carry
+  `extra_arguments` -> `fal_model_arguments` (`generate_audio: false`),
+  applied before `fal_extra_arguments` and joining the fingerprint only when
+  non-empty, so 2.5's fingerprints are unchanged. (3) A Kling 3 element
+  needs `reference_image_urls` (>=1) beside `frontal_image_url`; the same
+  portrait is sent under both (`fal_element_reference_field`). fal's
+  /pricing page DISAGREED with the model pages for Kling 3 and O3 — the
+  model pages were used. Every preset carries a `price_note` saying where
+  its number came from; keep that when adding one. Still unverified by a
+  render: everything except 2.5, and `kling-4` most of all (field names from
+  a how-to guide, audio behaviour unknown). Veo 3.1's first-last-frame
+  endpoints are being REMOVED 2026-11-17 and Seedance 2.0 is $0.30-0.68/s,
+  which is why neither has a preset.
+- CHOOSING A VIDEO MODEL IS DONE BY WATCHING, AND `bakeoff` IS HOW (user
+  request, 2026-11-11: show "what i am spending now vs what I could be
+  spending"). `bakeoff <project> --clip ID [--models a,b]` renders the same
+  pair on each model into `bakeoff/<clip>__<model>.mp4` with a sidecar json
+  (model, seconds, estimated usd, prompt, or the error). NEVER into
+  `clips/`: it must not replace or stale a real clip, and `combine` must
+  never see it — the test asserts what is left alone. `--clip` is required
+  (a whole-movie bake-off on five models is a five-movie bill), the plan
+  lists every model's price behind the confirm gate, and one model refusing
+  the request is a RESULT (recorded, shown in red in the panel), not a
+  crash. `config_for_model` builds each model's config in memory, so nothing
+  is written to config.json. The picker's cost table
+  (`snapshot()["video_model_costs"]`, `movie_costs` in video_models.py)
+  prices the STORYBOARD's planned seconds, not the clips on disk, so it is
+  there before anything is rendered. Panel: "Compare models" on a clip.
+  The panel pieces were built and compile, but were NOT looked at in a
+  browser (the in-app browser refused localhost that session).
 - MAKING A KNOB CONFIG IS ONLY HALF THE JOB (user question, 2026-09-07:
   "is this editable from the ui?"). Twice I told the user to "just try 2/3 on
   one project's config.json" — which, behind the Cloudflare tunnel, means SSH
@@ -640,6 +729,25 @@ Core design rules:
   Every transition therefore declares a `pair_index` that code re-aligns by
   (`_realign_by_pair_index`), and motion prompts must END at exactly what
   the end frame shows. Don't remove either guard.
+- THE STYLE DIAL MOVED TOWARD REALISM (user, 2026-11-11, on seeing
+  gpt-image-2.6-sunburst beside gpt-image-2): "I actually dont want it more
+  cartoon, I actually might want it a bit more real so the people look more
+  similar." LIKENESS NOW OUTRANKS CARTOON-NESS. This supersedes the earlier
+  rejection of "outputs that stayed too realistic" recorded in the next
+  bullet — do NOT push a model back toward cartoon to satisfy that older
+  text. The user then picked the look: the sunburst column of
+  `projects/_canvas_test/model_comparison.jpg`. THAT LOOK IS A COMBINATION
+  and all of it is now the shared default: `gpt-image-2.6-sunburst` +
+  canvas 2048x1152 + quality `high` + the UNCHANGED `style_prompt`. The
+  prompt still says "never like a photograph" and that is deliberate: those
+  exact words, on this model, produced the frames the user approved, so
+  softening them would ship a look nobody has seen. If the prompt is ever
+  reworded for this model, render a side-by-side first. Still animated,
+  still no beautifying — the people-first, hair, eyewear and framing rules
+  all stand. `pricing.openai_image_usd` (0.19) predates this model and
+  quality: sunburst is billed per token ($30 / 1M image-output tokens) and
+  the real per-image cost has NOT been measured, so image spend estimates
+  are unverified until checked against an invoice.
 - Styling must preserve LIKENESS while being an unmistakable Pixar-style
   cartoon: the whole scene (people, clothing, background) renders as a
   stylized 3D animated film still — never near-photorealistic — but with
@@ -1105,10 +1213,34 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   above shipped a half-fix: `git rm --cached` was staged but the `.gitignore`
   edit was not, and `git commit` silently committed only the staged part, so
   the dangerous pattern reached `main` anyway.
-- **`projects/` is irreplaceable and (as of 2026-07-26) UNBACKED** — no Time
-  Machine destination, no snapshots. Its contents cost real API credits.
-  Count/checksum before and after ANY operation that moves, relinks or
-  recreates it, and refuse to do such an operation while a job is running.
+- **`projects/` is irreplaceable, and ASSUME IT IS UNBACKED until a log says
+  otherwise.** `deploy/backup.sh` (2026-11-11) takes hard-linked dated
+  snapshots to `$BACKUP_DEST` and `deploy/com.animoments.backup.plist`
+  schedules it nightly — but the script existing is not a backup: it needs a
+  destination on another disk and has to be installed per machine. Check
+  `~/Library/Logs/animoments/backup.log` before relying on it. Its contents
+  cost real API credits. Count/checksum before and after ANY operation that
+  moves, relinks or recreates it, and refuse to do such an operation while a
+  job is running. Restoring is a manual copy OUT of a snapshot (runbook),
+  never an rsync over the live folder.
+- ON THE MACBOOK THIS REPO LIVES IN iCLOUD-SYNCED `Documents`, AND iCLOUD
+  EVICTS FILES (2026-11-11). `du` said `projects/` was 1.1 GB; it is 4.7 GB,
+  the rest being cloud-only placeholders — and 13,820 files of `.venv` were
+  placeholders too. Anything that reads them blocks while iCloud fetches one
+  file at a time, with NO output and NO network activity of its own: a
+  styling script sat for 18 minutes inside `import openai` and looked exactly
+  like a hung API call. Diagnose with
+  `find <dir> -type f -flags +dataless | wc -l`; fix by reading the files
+  (`find .venv -type f -flags +dataless -print0 | xargs -0 -P 24 -n 20 cat
+  >/dev/null`). Also: macOS has no `timeout` command — `timeout 100 cmd`
+  fails as "command not found" and a trailing `;` hides it.
+- THERE ARE TWO MACHINES, not just two checkouts: the Mac mini (user
+  `atlas`, production + the self-hosted runner) and the user's MacBook,
+  where sessions usually run. On the MacBook `projects/` is a REAL 1.1 GB
+  directory (not a symlink), there is no `~/production`, and no serve log —
+  so from here you cannot see whether a job is running on the mini, and a
+  deploy sits "queued" whenever the mini is off (`gh api
+  repos/<owner>/<repo>/actions/runners` shows `mac-mini offline`).
 - `projects/` is gitignored and holds the user's real movies (e.g. `Matan`,
   `Entebbe`, `Hila`) — treat their contents as user data: don't delete,
   regenerate, or overwrite without asking. `ai_video_maker.egg-info/` is
@@ -1131,8 +1263,10 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
 - `config.json` at the repo root is the user's live shared config. Current
   model choices are deliberate: Kling v2.5 Turbo Pro (`video_model` /
   `fal_model_id`),
-  `gpt-image-2` for images (user wants OpenAI images), `gpt-5.1` for
-  text/vision planning. The gpt-5 model line rejects non-default `temperature`
+  `gpt-image-2.6-sunburst` for images (user wants OpenAI images; switched
+  from the deprecated `gpt-image-2` on 2026-11-11), `gpt-5.1` for
+  text/vision planning (deprecated, removal 2027-04-01 — `gpt-6-sol` tested
+  but not adopted, see FIRST MIGRATION TEST). The gpt-5 model line rejects non-default `temperature`
   — don't add temperature params to chat calls.
 - Per-project overrides: a `projects/<name>/config.json` is merged key-over-key
   on top of the shared config.
