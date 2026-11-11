@@ -1532,6 +1532,9 @@ bed costs nothing — it is your own file). Requires `ffmpeg`/`ffprobe` on your
 | `cast_references_enabled` | Editable in the panel ([Project settings](#project-settings)). `true` (default): styling a tagged frame is anchored to the cast's canonical faces. `false` restores the old per-photo behaviour. Untagged projects are unaffected either way. |
 | `face_reference_crop` | Side of the face crop for a frame with one tagged person, as a fraction of the frame height (default `0.5`); a fuller frame divides it down. |
 | `max_style_references` | How many cast faces may ride along with one styling call (default `4`). When a frame has more tagged people, the ones who appear in the most frames win. |
+| `openai_image_size` | The canvas the image model draws on, `WIDTHxHEIGHT` (default `1536x1024`). That default is 3:2, so each styled frame is centre-cropped to 16:9 afterwards — about 8% off the top and bottom, after the picture was composed. `2048x1152` is a true 16:9 canvas and removes the crop. Both edges must be multiples of 16, so `1920x1080` is refused. Applies to the next styling of a frame; nothing is re-styled by changing it. |
+| `openai_image_quality` | `""` (default) sends no quality, i.e. the provider's `auto`. `low` / `medium` / `high` (and `xhigh` / `max` on the newer image models) set it explicitly. Higher quality costs more per image: update `pricing.openai_image_usd` alongside it or the spend estimate is wrong. |
+| `style_reference_labels` | `false` (default). `true` names each cast reference in the styling prompt ("Image 2 is the established face of the bald man"), using the cast's epithets, instead of only saying that references follow. |
 
 All spending figures are **estimates** derived from these prices — see
 [What it costs](#what-it-costs-spending).

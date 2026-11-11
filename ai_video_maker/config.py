@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -18,6 +19,11 @@ from .video_models import VideoModel, get_video_model, model_for_id, model_keys
 LETTER_PLACEMENTS: tuple[str, ...] = (
     "over_photos", "after_photos", "on_last_photo",
 )
+
+
+# "" = send nothing. xhigh/max exist only on the newer image models; the API
+# rejects them elsewhere, which is the provider's call to make, not ours.
+IMAGE_QUALITIES = ("", "auto", "low", "medium", "high", "xhigh", "max")
 
 
 class Config(BaseModel):
@@ -44,6 +50,23 @@ class Config(BaseModel):
     # OpenAI models (safe to edit).
     openai_image_model: str = "gpt-image-2"
     openai_text_model: str = "gpt-5.1"
+    # The canvas the image model draws on, "WIDTHxHEIGHT". The long-standing
+    # 1536x1024 is 3:2, so every styled frame is then centre-cropped to 16:9
+    # by normalize_image — about 8% comes off the top and 8% off the bottom
+    # AFTER the model has composed the picture, which no framing instruction
+    # in the style prompt can see coming (the cropped-heads complaint). A true
+    # 16:9 size such as "2048x1152" removes that crop. The default stays where
+    # it was until a side-by-side on real photos says otherwise: this changes
+    # how every frame of every project is drawn.
+    openai_image_size: str = "1536x1024"
+    # "" sends no quality (the provider's default, "auto"). "high" spends the
+    # model's detail budget deliberately and costs more per image — update
+    # pricing.openai_image_usd when you change it, or the spend estimate lies.
+    openai_image_quality: str = ""
+    # Name each cast reference in the styling prompt ("Image 2: the bald
+    # man") instead of only saying that references follow. OpenAI's own
+    # guidance for multi-image edits; off until it has been looked at.
+    style_reference_labels: bool = False
 
     # --- fal.ai image-to-video. Auth via FAL_KEY. ---
     # PREFERRED: name a preset here and every fal_* field below is filled in
@@ -357,6 +380,44 @@ class Config(BaseModel):
     # with the instructions they refine for the model's attention, and a
     # planning call already carries ~20 frames; newest lessons win.
     max_lessons_in_prompt: int = 25
+
+    @field_validator("openai_image_size")
+    @classmethod
+    def _valid_image_size(cls, value: str) -> str:
+        """Catch a bad canvas here, not as a 400 on a paid styling run.
+
+        The limits are the image API's documented ones: both edges multiples
+        of 16, long:short at most 3:1, and a bounded pixel count. Note that
+        1920x1080 FAILS (1080 is not a multiple of 16) — the nearest true
+        16:9 sizes are 1536x864, 2048x1152 and 2560x1440.
+        """
+        match = re.fullmatch(r"(\d+)x(\d+)", value or "")
+        if not match:
+            raise ValueError("openai_image_size must look like 2048x1152")
+        width, height = int(match.group(1)), int(match.group(2))
+        if width % 16 or height % 16:
+            raise ValueError(
+                "openai_image_size: both edges must be multiples of 16 "
+                "(1920x1080 is not valid; use 2048x1152 for 16:9)"
+            )
+        if max(width, height) > 3 * min(width, height):
+            raise ValueError("openai_image_size: aspect ratio may not exceed 3:1")
+        if not 655_360 <= width * height <= 8_294_400:
+            raise ValueError(
+                "openai_image_size: total pixels must be between 655,360 and "
+                "8,294,400"
+            )
+        return value
+
+    @field_validator("openai_image_quality")
+    @classmethod
+    def _known_image_quality(cls, value: str) -> str:
+        if value not in IMAGE_QUALITIES:
+            raise ValueError(
+                "openai_image_quality must be one of: "
+                + ", ".join(repr(q) for q in IMAGE_QUALITIES)
+            )
+        return value
 
     @field_validator("letter_placement")
     @classmethod

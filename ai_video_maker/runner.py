@@ -663,6 +663,9 @@ class Pipeline:
         frame_pairs = self._style_images(
             images, recorded_sources, style_notes,
             self.style_reference_plan(saved),
+            reference_labels={
+                c.id: c.epithet for c in (saved.characters if saved else [])
+            },
         )
         if len(frame_pairs) < 2:
             logger.warning(
@@ -754,6 +757,7 @@ class Pipeline:
         recorded_sources: dict[str, str],
         style_notes: Optional[dict[str, str]] = None,
         references: Optional[dict[str, tuple[list[Path], str]]] = None,
+        reference_labels: Optional[dict[str, str]] = None,
     ) -> list[tuple[Path, Path]]:
         """Style every input; return ordered (source, styled) pairs on disk.
 
@@ -857,8 +861,17 @@ class Pipeline:
             rel = dst.relative_to(self.workspace.root).as_posix()
             ref_paths, ref_stamp = references.get(rel, ([], ""))
             try:
+                # Cast id (the reference file's stem) -> epithet, in the
+                # order the references are attached. Only passed when asked
+                # for, so the call is unchanged for everyone else.
+                labels = (
+                    [(reference_labels or {}).get(p.stem, "") for p in ref_paths]
+                    if self.config.style_reference_labels else None
+                )
+                extra = {"reference_labels": labels} if labels and any(labels) else {}
                 self.openai.style_image(
-                    src, prompt_for(dst), dst, references=ref_paths or None
+                    src, prompt_for(dst), dst,
+                    references=ref_paths or None, **extra,
                 )
                 if not verify_dimensions(dst, self.config.target_width, self.config.target_height):
                     # Remove the bad file: leaving it would make the next run

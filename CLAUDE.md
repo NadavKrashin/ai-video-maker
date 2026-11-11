@@ -380,6 +380,24 @@ Core design rules:
   all of this work with NO pipeline reordering: the first styling has no
   tags, and the tags arriving afterwards land on the next deliberate
   `--restyle-frame`. Pinned by tests/test_cast_references.py.
+- THE STYLED FRAME WAS BEING CROPPED AFTER IT WAS COMPOSED (found
+  2026-11-11, code read — NOT yet confirmed on a render). The image call
+  asked for 1536x1024 (3:2) while the prompt says "Output in 16:9", then
+  `normalize_image` centre-cropped to 1920x1080: ~8% off the top and ~8% off
+  the bottom, which no framing instruction can anticipate. A likely
+  mechanical contributor to the cropped-heads complaint that the FRAMING
+  prompt section has been fighting with words. `openai_image_size` is config
+  now (validated: multiples of 16, so 1920x1080 is REFUSED — use 2048x1152),
+  with `openai_image_quality` and `style_reference_labels` (names each cast
+  reference by position, per OpenAI's multi-image guidance) beside it. ALL
+  THREE DEFAULT TO THE OLD BEHAVIOUR on purpose — same lesson as the gate
+  thresholds: flip the shared default only after the user has looked at a
+  side-by-side on real photos. Try them in ONE project's config.json and
+  `storyboard --restyle-frame`. Pinned by tests/test_image_request_options.py.
+- BOTH OPENAI MODELS IN config.json ARE DEPRECATED (checked 2026-11-11):
+  `gpt-image-2` is removed 2027-02-10 (replacement `gpt-image-2.6-sunburst`)
+  and `gpt-5.1` on 2027-04-01 (replacement `gpt-6-sol`). Each swap changes
+  every frame / every plan, so migrate with a side-by-side on one order.
 - ...AND THE DRIFT THAT ALREADY HAPPENED IS FINDABLE (same day). `faces`
   (cmd_faces) rebuilds the sheet for free; `faces --audit` is one vision
   call comparing every tagged appearance of each cast member and naming the
