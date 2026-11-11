@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
@@ -85,6 +85,13 @@ class Config(BaseModel):
     # man") instead of only saying that references follow. OpenAI's own
     # guidance for multi-image edits; off until it has been looked at.
     style_reference_labels: bool = False
+    # How cartoon or lifelike styled frames come out, on the SAME image model
+    # (style_realism.py). "lifelike" adds nothing to style_prompt: it is the
+    # approved look of gpt-image-2.6-sunburst. "cartoon" layers on the
+    # classic animated-feature rendering the studio shipped before that
+    # model, while every likeness rule still governs. Usually set per project
+    # in the panel's Project settings; lands on frames styled from then on.
+    style_realism: Literal["cartoon", "lifelike"] = "lifelike"
 
     # --- fal.ai image-to-video. Auth via FAL_KEY. ---
     # PREFERRED: name a preset here and every fal_* field below is filled in

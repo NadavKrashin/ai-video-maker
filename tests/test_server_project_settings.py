@@ -215,3 +215,35 @@ class TestCoerceDirectly:
         assert coerce_settings({"cast_references_enabled": False}) == {
             "cast_references_enabled": False
         }
+
+
+class TestTheLookFromThePanel:
+    """The Look switch (Storyboard step + settings card) through the real API."""
+
+    def test_choosing_cartoon_is_saved_for_the_project(self, client):
+        resp = _put(client, {"style_realism": "cartoon"})
+        assert resp.status_code == 200
+        assert _saved() == {"style_realism": "cartoon"}
+        row = _by_key(resp)["style_realism"]
+        assert row["value"] == "cartoon" and row["pinned"] is True
+
+    def test_a_made_up_look_is_refused_and_nothing_is_written(self, client):
+        resp = _put(client, {"style_realism": "photorealistic"})
+        assert resp.status_code == 422
+        assert _saved() == {}
+
+    def test_the_project_then_loads_with_that_look(self, client, tmp_path):
+        # The same load path every storyboard/restyle job goes through:
+        # shared config, then this project's overrides on top.
+        _put(client, {"style_realism": "cartoon"})
+        ws = Workspace.for_project(PROJECT)
+        config = Config.load(tmp_path / "config.json", ws.project_config_file)
+        assert config.style_realism == "cartoon"
+
+    def test_the_panel_gets_the_choices_to_render(self, client):
+        rows = client.get(f"/api/projects/{PROJECT}", headers=_auth()).json()
+        settings = (rows.get("snapshot") or rows).get("settings") or rows.get("settings")
+        row = next(s for s in settings if s["key"] == "style_realism")
+        assert row["kind"] == "choice"
+        assert [c["value"] for c in row["choices"]] == ["cartoon", "lifelike"]
+        assert row["value"] == "lifelike" and row["pinned"] is False

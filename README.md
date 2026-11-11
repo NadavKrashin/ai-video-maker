@@ -987,6 +987,30 @@ taste that only watching a render settles — so the project page has a
 | `unstageable_crowd_limit` | above this many people, any change to the group hands the pair to the camera |
 | `cast_references_enabled` | send each person's canonical face when styling a photo of them |
 | `fal_elements_partial` | on an element-capable model, pin one face when not everyone fits |
+| `style_realism` | the **Look**: *Lifelike* (the current default) or *Classic cartoon* — see below |
+
+**Choosing the look (lifelike or classic cartoon).** The current image model
+(`gpt-image-2.6-sunburst`) keeps people's real faces far better than the one
+before it, and its frames come out noticeably more lifelike. Some customers
+will want the classic cartoon look of the earlier movies instead, so the look
+is a per-project choice, still on the same model:
+
+- **Lifelike (current)** sends the style prompt exactly as it is, with no
+  change at all.
+- **Classic cartoon** adds a rendering layer on top: smooth cartoon skin,
+  sculpted hair, simplified fabric, warm animated-film lighting and painterly
+  backgrounds. It changes **rendering, never the people**. Every likeness rule
+  still applies, and it does not enlarge eyes, slim faces or exaggerate
+  proportions.
+
+Pick it in the **Storyboard** step, where a *Look* switch sits above the
+idea box and saves immediately, or in the Project settings card. Both edit
+the same setting, stored in the project's `config.json` as `style_realism`,
+so a later re-style of one photo comes back in the same look as the rest.
+It applies to photos styled from then on. Photos that are already styled
+keep their look until you run Storyboard with **Force re-style all photos**,
+which spends image credits on every photo. It also applies to frames
+invented from an idea.
 
 Each row shows whether the value is **set for this project** or inherited as
 the **studio default**, with a Reset that removes the override rather than
@@ -1615,12 +1639,13 @@ bed costs nothing — it is your own file). Requires `ffmpeg`/`ffprobe` on your
 | `max_lessons_in_prompt` | How many active rules ride along with one call (default `25`, newest win). |
 | `clip_review_frames` | How many stills are sampled across a clip when the reviewer watches it (default `8`). |
 | `unstageable_mover_budget` | How many people may leave or arrive between two frames and still be choreographed individually (default `3`). Editable in the panel ([Project settings](#project-settings)). Above it, the pair gets a deterministic camera transition instead — see [When the camera takes over](#when-the-camera-takes-over). |
-| `unstageable_crowd_limit` | Above this many visible people in either frame, ANY roster change hands the pair to the camera (default `4`). Editable in the panel ([Project settings](#project-settings)). A group that is the same on both sides is never gated by this. |
+| `unstageable_crowd_limit` | Above this many people who matter in the shot (clearly visible individuals; small background figures don't count) in either frame, ANY roster change hands the pair to the camera (default `4`). Editable in the panel ([Project settings](#project-settings)). A group that is the same on both sides is never gated by this. |
 | `cast_references_enabled` | Editable in the panel ([Project settings](#project-settings)). `true` (default): styling a tagged frame is anchored to the cast's canonical faces. `false` restores the old per-photo behaviour. Untagged projects are unaffected either way. |
 | `face_reference_crop` | Side of the face crop for a frame with one tagged person, as a fraction of the frame height (default `0.5`); a fuller frame divides it down. |
 | `max_style_references` | How many cast faces may ride along with one styling call (default `4`). When a frame has more tagged people, the ones who appear in the most frames win. |
 | `openai_image_size` | The canvas the image model draws on, `WIDTHxHEIGHT` (default `2048x1152`, a true 16:9 canvas). The previous default, `1536x1024`, is 3:2, so each styled frame was centre-cropped to 16:9 afterwards — about 8% off the top and bottom, after the picture was composed; set it in one project's `config.json` to get that back. A larger canvas may cost more per image: check `pricing.openai_image_usd`. Both edges must be multiples of 16, so `1920x1080` is refused. Applies to the next styling of a frame; nothing is re-styled by changing it. |
 | `openai_image_quality` | `""` (default) sends no quality, i.e. the provider's `auto`. `low` / `medium` / `high` (and `xhigh` / `max` on the newer image models) set it explicitly. Higher quality costs more per image: update `pricing.openai_image_usd` alongside it or the spend estimate is wrong. |
+| `style_realism` | `"lifelike"` (default) or `"cartoon"`. The look of styled frames on the same image model: `lifelike` sends `style_prompt` unchanged; `cartoon` adds a classic-cartoon rendering layer (skin, hair, fabric, light, background — never faces or proportions). Editable in the panel (Storyboard step *Look* switch, or [Project settings](#project-settings)). Lands on frames styled from then on. |
 | `style_reference_labels` | `false` (default). `true` names each cast reference in the styling prompt ("Image 2 is the established face of the bald man"), using the cast's epithets, instead of only saying that references follow. |
 
 All spending figures are **estimates** derived from these prices — see
