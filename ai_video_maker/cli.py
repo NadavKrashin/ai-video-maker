@@ -269,6 +269,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--duration", type=int, choices=sorted(VALID_DURATIONS),
                     help="Force every clip to this length for this run.")
 
+    sp = command("restore-take",
+                 "Put back the take a clip's last re-render replaced. The "
+                 "two takes are swapped, so running it again undoes it. "
+                 "Free; nothing is rendered.")
+    sp.add_argument("--clip", action="append", metavar="ID", required=True,
+                    help="The clip to restore (e.g. 003_to_004). Repeatable.")
+
     sp = command("bakeoff",
                  "Render the named clip(s) on several video models into "
                  "bakeoff/ so they can be compared side by side. Never "

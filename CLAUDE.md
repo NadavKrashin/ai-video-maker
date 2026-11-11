@@ -1030,9 +1030,48 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   predates that record and was Kling 2.5 (`_LEGACY_CLIP_USD_PER_SECOND`).
   General shape of the trap: a price that follows the CURRENT setting must
   never be applied to work that was bought under a previous one.
-  Still not done from the Phase 6 list: source photo beside the styled frame,
-  keeping the previous take of a re-rendered clip, a phone layout pass, and
-  server-sent events instead of the 3s poll.
+- A RE-RENDER KEEPS THE TAKE IT REPLACES (2026-11-11, previous_takes.py).
+  Regenerating a clip overwrote a paid render in place; if the re-roll was
+  worse the only way back was to pay again. `_generate_clips` now COPIES the
+  existing clip to `clips_previous/<id>.mp4` (a sibling of clips/, never
+  inside it — everything in clips/ is treated as the movie) with a sidecar
+  of what it was rendered from and its sfx/fade/model state. Rules that must
+  stay: ONE previous take per clip (an undo, not a history — a version
+  folder grows 35 MB per click); a COPY before the render, never a move (the
+  render may fail and the current clip must survive); restore SWAPS the two
+  files, so restoring is itself undoable and nothing ever deletes a clip;
+  the sfx/fade/model state TRAVELS with the file (or the audio step lays a
+  second SFX track over a restored clip that already has one); the restored
+  file gets a fresh mtime so "final movie is out of date" fires; and a
+  restored take is marked outdated only when it is KNOWN to differ from the
+  plan — renders now record `prompt`/`duration` in `clip:<name>` state for
+  exactly this, and a take with no record answers `matches_plan: None`
+  rather than guessing. `restore-take <project> --clip ID`,
+  `POST /api/projects/<n>/clips/<id>/restore-previous` (instant, so not a
+  job; 409 while a job runs on the project), panel: "Previous take" under
+  the clip. Pinned by tests/test_previous_takes.py.
+- THE PANEL ASKS "DID ANYTHING CHANGE?" BEFORE FETCHING THE PROJECT
+  (2026-11-11). While a job ran, the page re-fetched the whole project
+  (snapshot + storyboard + letter) every 3s to learn "no change" on nearly
+  every tick. `GET /api/projects/<n>/pulse` answers that with a few stat
+  calls — job states plus count/newest-mtime/size of each folder the
+  snapshot is built from — and the panel fetches the project only when
+  `version` moves (and at least every 30s regardless, so a missed change can
+  delay the page but never strand it; an older server without the route
+  falls back to the full fetch). Two traps the tests caught, keep both: the
+  RUN LOG must not be signed (it grows on every line a job prints, which
+  would make this a costlier way of doing what it replaced — only
+  state.json and costs.json are tracked in logs/), and the project ROOT is
+  signed files-only (a sub-folder's mtime moves whenever a file is created
+  in it). This is NOT server-sent events, on purpose: EventSource cannot
+  send the Bearer header, and `?token=` is reserved for the media route.
+- THE PHONE PASS FOUND ONE REAL PROBLEM (2026-11-11, checked at 375px in a
+  browser): nothing overflows, but the six step tiles stack to more than a
+  screen, so the options a tap opens appeared below the fold and the tap
+  looked dead. The opened panel now scrolls into view under 48em (desktop
+  is left alone). The review queue is full-screen on a phone and hides its
+  keyboard hints. The source photo beside each styled frame was ALREADY in
+  the Photos section; I listed it as missing without looking.
 - DELETING A PROJECT IS THE ONE IRREVERSIBLE PANEL ACTION (user request,
   2026-08-16). `DELETE /api/projects/<n>?confirm=<n>` + a red button at the
   BOTTOM of the project page (deliberately far from the step tiles).

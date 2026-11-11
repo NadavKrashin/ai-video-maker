@@ -111,6 +111,16 @@ class Workspace:
         return self.root / "output"
 
     @property
+    def previous_clips_dir(self) -> Path:
+        """The take each re-rendered clip replaced (see previous_takes.py).
+
+        A sibling of clips/, never inside it: everything in clips/ is treated
+        as part of the movie, and a previous take must not be combined,
+        listed as a stray, or counted as a rendered clip.
+        """
+        return self.root / "clips_previous"
+
+    @property
     def bakeoff_dir(self) -> Path:
         """One pair rendered on several video models, to compare by eye.
 

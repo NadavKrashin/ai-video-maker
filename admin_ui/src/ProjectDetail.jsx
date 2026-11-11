@@ -404,7 +404,7 @@ function SpendCard({ project, cost }) {
   );
 }
 
-function TransitionCard({ project, tr, framesById, clip, edited, placeholder, verdict, planBehind, endsOffscreen, unstageable, isCamera, selected, onToggleSelect, onEdit, onRegenerate, onReplan, onReplanAsCamera, onReplanStagingPeople, onRedoAudio, onFeedback, onToggleFix, onCompare, bakeoff, compareBusy, busy, replanBusy, audioBusy, flagBusy, mediaV }) {
+function TransitionCard({ project, tr, framesById, clip, edited, placeholder, verdict, planBehind, endsOffscreen, unstageable, isCamera, selected, onToggleSelect, onEdit, onRegenerate, onReplan, onReplanAsCamera, onReplanStagingPeople, onRedoAudio, onFeedback, onToggleFix, onCompare, bakeoff, compareBusy, onRestorePrevious, busy, replanBusy, audioBusy, flagBusy, mediaV }) {
   const startImg = frameName(framesById, tr.start_frame);
   const endImg = frameName(framesById, tr.end_frame);
   const clipFile = tr.output_path.split('/').pop();
@@ -588,6 +588,28 @@ function TransitionCard({ project, tr, framesById, clip, edited, placeholder, ve
           {clip?.rendered ? 'Regenerate clip' : 'Render this clip'}
         </Button>
       </Group>
+      {clip?.rendered && clip?.previous && (
+        <>
+          <Divider my="sm" label="Previous take (what the last re-render replaced)" labelPosition="left" />
+          <Group align="center" gap="md">
+            <video controls preload="none"
+              style={{ width: 260, maxWidth: '100%', borderRadius: 8, background: '#000' }}
+              src={fileUrl(project, 'previous', clipFile, mediaV)} />
+            <Stack gap={4} style={{ flex: 1, minWidth: 180 }}>
+              <Text size="xs" c="dimmed">
+                Kept so you can compare. If the new take is worse, put this
+                one back — the two are swapped, so you can always undo it.
+              </Text>
+              <div>
+                <Button size="xs" variant="default"
+                  onClick={() => onRestorePrevious(tr.id)}>
+                  Use the previous take
+                </Button>
+              </div>
+            </Stack>
+          </Group>
+        </>
+      )}
       {(bakeoff || []).length > 0 && (
         <>
           <Divider my="sm" label="Model comparison (not part of the movie)" labelPosition="left" />
@@ -1666,6 +1688,8 @@ function ReviewQueue({ project, clips, startAt, mediaV, flagBusy, onFlag, onClos
   if (!clip) return null;
   return (
     <Modal opened onClose={onClose} size="xl" centered
+      fullScreen={typeof window !== 'undefined'
+        && window.matchMedia('(max-width: 48em)').matches}
       title={`Review clips · ${index + 1} of ${clips.length}`}>
       <Group justify="space-between" mb="xs">
         <Group gap="xs">
@@ -1673,7 +1697,8 @@ function ReviewQueue({ project, clips, startAt, mediaV, flagBusy, onFlag, onClos
           {clip.needs_fix && <Badge color="red" variant="filled">needs fixing</Badge>}
           {clip.stale && <Badge color="orange" variant="light">outdated</Badge>}
         </Group>
-        <Text size="xs" c="dimmed">
+        {/* Keyboard hints are noise on a touch screen. */}
+        <Text size="xs" c="dimmed" visibleFrom="sm">
           → next · ← back · F needs fixing · G good, next
         </Text>
       </Group>
@@ -1768,6 +1793,17 @@ export default function ProjectDetail({ name, onBack }) {
   const [videoModels, setVideoModels] = useState([]);
   const pollRef = useRef(null);
   const fileInputRef = useRef(null);
+  // On a phone the six step tiles stack to more than a screen, so the
+  // options a tap opens appeared BELOW the fold and the tap looked like it
+  // did nothing. Bring them into view. Desktop is left alone: there the
+  // panel opens right under the tile row and scrolling would only jolt.
+  const panelRef = useRef(null);
+  useEffect(() => {
+    if (!openPanel || !panelRef.current) return;
+    if (window.matchMedia('(max-width: 48em)').matches) {
+      panelRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [openPanel]);
 
   useEffect(() => {
     api.videoModels()
@@ -1837,7 +1873,33 @@ export default function ProjectDetail({ name, onBack }) {
       return undefined;
     }
     setShowPhotos(true); // watching the frames arrive is the point of waiting
-    pollRef.current = setInterval(() => load().catch(() => {}), 3000);
+    // Ask the cheap question ("did anything change?") every 2s and fetch the
+    // whole project only when the answer is yes. The full fetch every 3s
+    // rebuilt and shipped the entire snapshot through the tunnel to learn
+    // "no change" on almost every tick of a long render. A full refresh
+    // still happens at least every 30s, so a pulse that somehow missed a
+    // change can only ever delay the page, never strand it.
+    let lastVersion = '';
+    let lastFull = Date.now();
+    let busy = false;
+    const tick = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        const pulse = await api.pulse(name);
+        const overdue = Date.now() - lastFull > 30000;
+        if (pulse.version !== lastVersion || overdue || !pulse.active) {
+          lastVersion = pulse.version;
+          lastFull = Date.now();
+          await load();
+        }
+      } catch {
+        // An older server without /pulse, or a blip: fall back to the full
+        // fetch so the page keeps updating either way.
+        await load().catch(() => {});
+      } finally { busy = false; }
+    };
+    pollRef.current = setInterval(tick, 2000);
     return () => clearInterval(pollRef.current);
   }, [activeJobId, load]);
 
@@ -2137,6 +2199,36 @@ export default function ProjectDetail({ name, onBack }) {
       cost: 'fal', danger: exists,
       label: exists ? 'Regenerate' : 'Render',
       action: () => run('render', { clips: [clipId] }, `render ${clipId}`)
+    });
+  };
+
+  // Put back the take the last re-render replaced. It changes which clip is
+  // in the movie, so it is confirmed — but it costs nothing and swaps rather
+  // than overwrites, so the modal says it can be undone.
+  const restorePrevious = (clipId) => {
+    ask({
+      title: `Use the previous take of ${clipId}?`,
+      lines: [
+        `Swaps clips/${clipId}.mp4 with the take its last re-render replaced.`,
+        'Nothing is rendered and nothing is deleted: the current take becomes the "previous" one, so doing this again swaps them back.',
+        'If the previous take was rendered from a different prompt or length than the storyboard has now, it will be marked "outdated".',
+        'The final movie will need combining again to include it.'
+      ],
+      cost: 'free',
+      label: 'Use previous take',
+      action: async () => {
+        try {
+          const r = await api.restorePreviousTake(name, clipId);
+          notify(
+            r.matches_plan === false
+              ? `${clipId}: previous take restored — it was made from a different prompt, so it is marked outdated.`
+              : `${clipId}: previous take restored.`,
+            r.matches_plan === false ? 'orange' : 'green'
+          );
+          setMediaV((v) => v + 1);
+          await load();
+        } catch (e) { notify(`Could not restore: ${e.message}`, 'red'); }
+      }
     });
   };
 
@@ -2864,10 +2956,10 @@ export default function ProjectDetail({ name, onBack }) {
           </StepTile>
         </Group>
         {openPanel && (
-          <>
+          <div ref={panelRef}>
             <Divider my="sm" />
             {panels[openPanel]}
-          </>
+          </div>
         )}
       </Card>
 
@@ -3039,7 +3131,7 @@ export default function ProjectDetail({ name, onBack }) {
               styling {styledImages.length} / {inputImages.length}
             </Badge>
           )}
-          <Text size="xs" c="dimmed" style={{ flex: 1 }}>
+          <Text size="xs" c="dimmed" style={{ flex: '1 1 220px' }}>
             {styling
               ? 'Frames appear here as they come back from the styler.'
               : 'Movie order follows the filenames (sorted). Each photo shows '
@@ -3346,6 +3438,7 @@ export default function ProjectDetail({ name, onBack }) {
               onEdit={editTransition}
               onRegenerate={regenerate} onReplan={replanPrompt}
               onCompare={compareModels}
+              onRestorePrevious={restorePrevious}
               bakeoff={(snap.bakeoff || []).filter((b) => b.clip === tr.id)}
               compareBusy={busyAction === `compare ${tr.id}`}
               onReplanAsCamera={replanAsCamera}
