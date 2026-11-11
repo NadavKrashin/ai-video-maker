@@ -513,6 +513,19 @@ Core design rules:
   there before anything is rendered. Panel: "Compare models" on a clip.
   The panel pieces were built and compile, but were NOT looked at in a
   browser (the in-app browser refused localhost that session).
+- FIRST BAKE-OFF (2026-11-11, clip 06_to_07 of `_plan_test_gpt51`: a
+  four-person selfie -> three men, 10s, people leaving and arriving). Kling
+  2.5 Turbo Pro, 3.0 Standard, 3.0 Pro and O3 Pro ALL accepted the request,
+  returned NO audio stream (so `generate_audio: false` is honoured) and
+  landed on the end frame — those three presets are now `verified`. Facts
+  from the files: 3.0 Standard returns 1280x720 (everything else 1920x1080)
+  at 24fps. My read of sampled STILLS only, which cannot show motion
+  artefacts: 2.5 drifted toward a photoreal look mid-clip and bent the
+  woman's head back; 3.0 Standard and Pro held the drawn style; O3 Pro may
+  have carried one man across instead of staging his exit. The user's eye on
+  the videos decides — do not adopt on this paragraph. Not tested: face
+  elements with an end frame, Kling 4. Side note worth keeping for the
+  encode work: re-encoding a 35 MB Kling clip at CRF 21 gave 7 MB.
 - MAKING A KNOB CONFIG IS ONLY HALF THE JOB (user question, 2026-09-07:
   "is this editable from the ui?"). Twice I told the user to "just try 2/3 on
   one project's config.json" — which, behind the Cloudflare tunnel, means SSH

@@ -67,12 +67,18 @@ class TestTheRegistryItself:
         assert model is not None and model.verified
         assert model.model_id.endswith("v2.5-turbo/pro/image-to-video")
 
-    def test_kling_three_is_offered_and_flagged_unverified(self):
-        # Its request shape came from fal's docs, not from a render made
-        # here. Saying so is what tells someone to try one clip first.
-        model = get_video_model("kling-3-pro")
+    def test_an_unrendered_model_is_flagged_and_says_so(self):
+        # A request shape that came from documentation, not from a render
+        # made here. Saying so is what tells someone to try one clip first.
+        model = get_video_model("kling-4")
         assert model is not None and not model.verified
         assert "one clip" in model.note.lower()
+
+    def test_the_models_rendered_in_the_first_bakeoff_are_verified(self):
+        for key in ("kling-3-standard", "kling-3-pro", "kling-o3-pro"):
+            assert get_video_model(key).verified
+        # ...and the one that came back at 720p says so where it is picked.
+        assert "720" in get_video_model("kling-3-standard").note
 
     def test_an_unknown_key_is_simply_absent(self):
         assert get_video_model("kling-99") is None
