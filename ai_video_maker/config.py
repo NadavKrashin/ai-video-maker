@@ -55,10 +55,11 @@ class Config(BaseModel):
     # by normalize_image — about 8% comes off the top and 8% off the bottom
     # AFTER the model has composed the picture, which no framing instruction
     # in the style prompt can see coming (the cropped-heads complaint). A true
-    # 16:9 size such as "2048x1152" removes that crop. The default stays where
-    # it was until a side-by-side on real photos says otherwise: this changes
-    # how every frame of every project is drawn.
-    openai_image_size: str = "1536x1024"
+    # 16:9 size such as "2048x1152" removes that crop, and has been the
+    # default since 2026-11-11, after a side-by-side on four real photos (the
+    # user's call). Set "1536x1024" in one project's config.json to get the
+    # old canvas back.
+    openai_image_size: str = "2048x1152"
     # "" sends no quality (the provider's default, "auto"). "high" spends the
     # model's detail budget deliberately and costs more per image — update
     # pricing.openai_image_usd when you change it, or the spend estimate lies.

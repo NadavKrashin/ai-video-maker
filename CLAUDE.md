@@ -393,11 +393,16 @@ Core design rules:
   whole. Small sample, one draw each, canvas and quality changed together. `openai_image_size` is config
   now (validated: multiples of 16, so 1920x1080 is REFUSED — use 2048x1152),
   with `openai_image_quality` and `style_reference_labels` (names each cast
-  reference by position, per OpenAI's multi-image guidance) beside it. ALL
-  THREE DEFAULT TO THE OLD BEHAVIOUR on purpose — same lesson as the gate
-  thresholds: flip the shared default only after the user has looked at a
-  side-by-side on real photos. Try them in ONE project's config.json and
-  `storyboard --restyle-frame`. Pinned by tests/test_image_request_options.py.
+  reference by position, per OpenAI's multi-image guidance) beside it. THE
+  CANVAS DEFAULT IS NOW 2048x1152 (user call, 2026-11-11, after looking at
+  that side-by-side). QUALITY AND LABELS STAY OFF: quality was changed in
+  the same test as the canvas, so its effect on likeness is not isolated
+  (frame 05's eyes looked larger — the rejected direction), and labels have
+  not been looked at at all. Same lesson as the gate thresholds: try them in
+  ONE project's config.json with `storyboard --restyle-frame` first. Existing
+  styled frames are NOT re-styled by the new default; it lands on the next
+  styling of each frame. `pricing.openai_image_usd` (0.19) has not been
+  re-checked against the larger canvas. Pinned by tests/test_image_request_options.py.
 - BOTH OPENAI MODELS IN config.json ARE DEPRECATED (checked 2026-11-11):
   `gpt-image-2` is removed 2027-02-10 (replacement `gpt-image-2.6-sunburst`)
   and `gpt-5.1` on 2027-04-01 (replacement `gpt-6-sol`). Each swap changes

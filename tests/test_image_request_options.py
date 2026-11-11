@@ -1,7 +1,7 @@
 """The canvas, quality and reference labels sent when styling a photo.
 
-All three are opt-in. The first assertion in each group is therefore the
-same one: with nothing configured, the request is what it always was.
+The canvas is a true 16:9 one by default (2048x1152); quality and labels
+are opt-in, so with nothing configured they add nothing to the request.
 """
 
 from __future__ import annotations
@@ -61,18 +61,26 @@ def photo(tmp_path: Path) -> Path:
     return path
 
 
-class TestDefaultsAreUnchanged:
-    def test_the_live_config_still_asks_for_the_old_canvas(self):
+class TestDefaults:
+    def test_the_live_config_asks_for_a_true_16_9_canvas(self):
         config = _config()
-        assert config.openai_image_size == "1536x1024"
+        assert config.openai_image_size == "2048x1152"
+        # ...and so does a config file that does not mention it.
+        assert Config.model_fields["openai_image_size"].default == "2048x1152"
         assert config.openai_image_quality == ""
         assert config.style_reference_labels is False
 
     def test_no_quality_key_is_sent_unless_configured(self, photo, tmp_path):
         images = _Images()
         _client(_config(), images).style_image(photo, "style", tmp_path / "o.png")
-        assert images.calls[0]["size"] == "1536x1024"
+        assert images.calls[0]["size"] == "2048x1152"
         assert "quality" not in images.calls[0]
+
+    def test_the_old_canvas_is_still_one_setting_away(self, photo, tmp_path):
+        images = _Images()
+        config = _config(openai_image_size="1536x1024")
+        _client(config, images).style_image(photo, "style", tmp_path / "o.png")
+        assert images.calls[0]["size"] == "1536x1024"
 
 
 class TestCanvasAndQuality:
