@@ -721,6 +721,15 @@ Core design rules:
   re-entry, or a world morph around a steady subject. Enforced in
   `_MODE_A_SYSTEM` and `_REWORD_MOTION_SYSTEM` (pace anchors are not "risky
   detail" to drop).
+- "RE-PLAN ALL" MUST NOT NAME PAIRS (2026-11-12). The panel sent
+  `replan_clips: [every id in the saved storyboard]`. After a photo was
+  added, `15_to_17` no longer existed, the job died on "No such
+  transition(s) to re-plan", and 27 of 29 prompts silently stayed on the
+  first plan. The panel now sends `replan_all: true`, and
+  `_reconcile_storyboard` skips a requested id that exists in the SAVED
+  storyboard but not in the current pairs (stale, not a typo; its
+  replacements are dirty and planned anyway). An id found in neither still
+  raises. Pinned by TestReplanSurvivesAPhotoBeingAdded.
 - BEATS, NOT WORDS, ARE THE REAL BUDGET: a real 10s prompt ("they laugh,
   step back from the edge, and stroll down toward a green resort lawn where
   they change into white robes, set backpacks aside, and move together into

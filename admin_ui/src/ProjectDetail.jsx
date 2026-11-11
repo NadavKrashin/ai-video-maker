@@ -2563,11 +2563,16 @@ export default function ProjectDetail({ name, onBack }) {
 
   const replanAll = () => {
     if (needsSave()) return;
+    // Asked for as "all", never as a list of pair names: the names in the
+    // saved storyboard go stale the moment a photo is added or removed
+    // (15_to_17 becomes 15_to_16 + 16_to_17), and a list naming a pair
+    // that no longer exists used to fail the whole job. The server works
+    // out the current pairs itself.
     const ids = (storyboard?.transitions || []).map((t) => t.id);
     if (!ids.length) return;
     const rendered = (snap.clips || []).filter((c) => c.rendered).length;
     ask({
-      title: `Re-plan all ${ids.length} motion prompt(s)?`,
+      title: 'Re-plan every motion prompt?',
       lines: [
         `Asks the planner to look at every pair again and write fresh motion prompts, using the current cast and whoever you have tagged in each photo.`,
         'Any motion prompt you hand-wrote is REPLACED — re-plan is not a merge.',
@@ -2578,8 +2583,8 @@ export default function ProjectDetail({ name, onBack }) {
       ],
       cost: 'openai',
       danger: true,
-      label: `Re-plan ${ids.length}`,
-      action: () => run('storyboard', { replan_clips: ids }, 'replan all')
+      label: 'Re-plan all',
+      action: () => run('storyboard', { replan_all: true }, 'replan all')
     });
   };
 

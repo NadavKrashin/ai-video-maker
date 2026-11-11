@@ -1039,6 +1039,23 @@ class Pipeline:
             set(all_tids) if self.options.replan_all
             else set(self.options.replan_clips or [])
         )
+        # A requested pair that no longer EXISTS is not a typo. Adding or
+        # removing a photo re-pairs the frames (15_to_17 becomes 15_to_16 +
+        # 16_to_17), but the panel builds its request from the storyboard
+        # saved BEFORE that, so it still names the old pair. Refusing the
+        # whole job for that made "Re-plan all" fail on a real order right
+        # after a photo was added, and nothing was re-planned at all. The
+        # pairs that replaced it are new, so they are planned anyway.
+        gone = (requested - all_tids) & {
+            t.id for t in (saved.transitions if saved else [])
+        }
+        if gone:
+            logger.info(
+                "Skipping %d requested pair(s) that no longer exist after a "
+                "photo was added or removed: %s. The pairs that replaced "
+                "them are planned as new.", len(gone), ", ".join(sorted(gone)),
+            )
+            requested -= gone
         unknown = requested - all_tids
         if unknown:
             raise PipelineError(

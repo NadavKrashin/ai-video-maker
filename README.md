@@ -770,6 +770,13 @@ prompt has nobody crossing or leaving frame, a targeted rewrite restages it
 as an exit past the camera plus a walk back in. Prompt-side instructions
 alone kept missing these.
 
+**“Re-plan all” survives added and removed photos.** Adding a photo
+re-pairs the frames around it (`15_to_17` becomes `15_to_16` + `16_to_17`).
+The panel now asks for "all pairs" instead of listing pair names from the
+saved storyboard, and `--replan-clip` skips a named pair that no longer
+exists after such a change (its replacements are planned as new). A name
+that never existed still fails loudly.
+
 <a id="keeping-a-face-the-same-face"></a>
 
 **The cast's canonical faces (`faces`).** Every frame used to be styled on
