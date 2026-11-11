@@ -261,3 +261,110 @@ class TestIngestOnlyIngests:
         # uses the same path); the panel simply stops asking for it.
         assert self._ingest(app_client, storyboard=True).status_code == 200
         assert enqueued[0]["then"] == {"command": "storyboard", "options": {}}
+
+
+class TestOrdersSurviveCloudinaryBeingUnreadable:
+    """One refusing source must never blank the whole orders tab.
+
+    Real failure, 2026-11-11: the storefront had moved to a new Cloudinary
+    cloud, the API key in .env was switched to that account, but config.json
+    still named the old cloud — so every request came back "401 —
+    cloud_name mismatch" and /api/orders answered 500. That hid the
+    Firestore ledger too, which needs no Cloudinary at all, including two
+    paid orders nobody had ingested.
+    """
+
+    MISMATCH = (
+        "401 Client Error: Unauthorized for url: https://api.cloudinary.com/"
+        "v1_1/oldcloud/folders/video-orders?max_results=500 — Cloudinary "
+        "says: cloud_name mismatch"
+    )
+
+    @pytest.fixture
+    def ledger(self, monkeypatch):
+        """A fake Firestore ledger holding one paid order."""
+        from ai_video_maker.clients.firebase_client import FirestoreOrder
+        order = FirestoreOrder(
+            order_id="AM-180726-XY12", customer="Dana Cohen",
+            folder=f"video-orders/{LEAF}", status="new", photo_count=12,
+        )
+        monkeypatch.setattr(
+            "ai_video_maker.server.FirebaseClient.configured",
+            classmethod(lambda _cls, _config: True),
+        )
+        monkeypatch.setattr(
+            "ai_video_maker.server.FirebaseClient.from_config",
+            classmethod(lambda _cls, _config: SimpleNamespace(
+                list_orders=lambda: [order])),
+        )
+        return order
+
+    def _refusing_cloudinary(self, monkeypatch, exc):
+        calls = {"assets": 0}
+
+        class Refusing:
+            def list_order_folders(self):
+                raise exc
+
+            def list_order_assets(self, folder):
+                calls["assets"] += 1
+                raise exc
+
+        monkeypatch.setattr(
+            "ai_video_maker.server.CloudinaryClient.from_config",
+            classmethod(lambda _cls, _config: Refusing()),
+        )
+        return calls
+
+    def _get(self, client):
+        resp = client.get("/api/orders", headers=_auth())
+        assert resp.status_code == 200  # never a 500 for one source
+        return resp.json()
+
+    def test_a_refused_listing_still_lists_the_ledger(
+        self, app_client, monkeypatch, ledger
+    ):
+        self._refusing_cloudinary(monkeypatch, RuntimeError(self.MISMATCH))
+        body = self._get(app_client)
+        assert [o["order_id"] for o in body["orders"]] == ["AM-180726-XY12"]
+        assert body["orders"][0]["source"] == "firestore"
+
+    def test_the_reason_rides_along_for_the_panel(
+        self, app_client, monkeypatch, ledger
+    ):
+        self._refusing_cloudinary(monkeypatch, RuntimeError(self.MISMATCH))
+        assert "cloud_name mismatch" in self._get(app_client)["cloudinary_error"]
+
+    def test_missing_credentials_degrade_the_same_way(
+        self, app_client, monkeypatch, ledger
+    ):
+        # The client constructor itself raises when .env lacks the keys.
+        from ai_video_maker.errors import ConfigError
+
+        def no_creds(_cls, _config):
+            raise ConfigError("Cloudinary ingestion is not configured")
+
+        monkeypatch.setattr(
+            "ai_video_maker.server.CloudinaryClient.from_config",
+            classmethod(no_creds),
+        )
+        body = self._get(app_client)
+        assert len(body["orders"]) == 1
+        assert "not configured" in body["cloudinary_error"]
+
+    def test_rows_do_not_each_retry_the_refused_credentials(
+        self, app_client, monkeypatch, ledger
+    ):
+        # Asking again per row would repeat the same refusal once per order,
+        # each with a logged traceback, to learn nothing new.
+        calls = self._refusing_cloudinary(
+            monkeypatch, RuntimeError(self.MISMATCH)
+        )
+        body = self._get(app_client)
+        assert calls["assets"] == 0
+        assert body["orders"][0]["cloudinary_photos"] is None
+
+    def test_a_healthy_cloudinary_reports_no_error(self, app_client, monkeypatch):
+        FakeCloudinary.install(monkeypatch, {LEAF: _assets(3)})
+        assert self._get(app_client)["cloudinary_error"] == ""
+
