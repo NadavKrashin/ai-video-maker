@@ -407,10 +407,10 @@ Core design rules:
   `projects/_canvas_test/` and `projects/_plan_test_gpt51|gpt6sol/`). Both
   replacements run on the existing code unchanged. IMAGES:
   `gpt-image-2.6-sunburst` holds the real faces far better than gpt-image-2
-  but comes back close to a retouched photograph — the "stayed too
-  realistic" failure the user already rejected — so it is NOT a drop-in;
-  the style prompt (or the model's `complexity` field, or `-flare`) needs
-  work first. PLANNING, same 29 pairs under today's code: gpt-5.1 built a
+  but comes back close to a retouched photograph. I read that as the
+  "stayed too realistic" failure; the user read it as closer to what they
+  want (see THE STYLE DIAL MOVED TOWARD REALISM), so it may be nearly a
+  drop-in after all. PLANNING, same 29 pairs under today's code: gpt-5.1 built a
   34-entry cast with clothing-anchored epithets, averaged 61 words a prompt
   (max 137) and got 9 camera transitions; `gpt-6-sol` built a 12-entry cast,
   averaged 32 words (max 46), and got 18 camera transitions + 12 ten-second
@@ -684,6 +684,17 @@ Core design rules:
   Every transition therefore declares a `pair_index` that code re-aligns by
   (`_realign_by_pair_index`), and motion prompts must END at exactly what
   the end frame shows. Don't remove either guard.
+- THE STYLE DIAL MOVED TOWARD REALISM (user, 2026-11-11, on seeing
+  gpt-image-2.6-sunburst beside gpt-image-2): "I actually dont want it more
+  cartoon, I actually might want it a bit more real so the people look more
+  similar." LIKENESS NOW OUTRANKS CARTOON-NESS. This supersedes the earlier
+  rejection of "outputs that stayed too realistic" recorded in the next
+  bullet — do NOT push a model back toward cartoon to satisfy that older
+  text. Said with a "might", and how far to go (sunburst as-is vs. somewhere
+  between) is not settled; `style_prompt` still carries the old "never like
+  a photograph" language until the user picks a look. Still animated, still
+  no beautifying — the people-first, hair, eyewear and framing rules all
+  stand.
 - Styling must preserve LIKENESS while being an unmistakable Pixar-style
   cartoon: the whole scene (people, clothing, background) renders as a
   stylized 3D animated film still — never near-photorealistic — but with
