@@ -965,12 +965,33 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   frontend changes go on a **separate branch** there; this pipeline repo
   works on `main`.
 - After payment the frontend uploads each order's photos to Cloudinary
-  (cloud `dmxkoz4jo`, unsigned preset `videoOrders`), one folder per order:
+  (cloud `rl1csupb`, the company account, since 2026-08-16; unsigned preset
+  `videoOrders`), one folder per order:
   `video-orders/<ORDER-ID>_<customer>-<dd.mm.yyyy_HH-MM>/` with photos named
   `1, 2, ...` = their position in the movie, each asset tagged with the
   folder leaf name and carrying `context.order`. Customer PII is NOT stored
   in Cloudinary (email only). The order id (`AM-...`) reaches the user by
   confirmation email.
+- THE CLOUD NAME LIVES IN config.json, AND IT WINS OVER .env
+  (2026-11-11). `CloudinaryClient.from_config` reads `config or env`, so a
+  `CLOUDINARY_CLOUD_NAME` in .env is ignored while config.json has a value.
+  The storefront moved to the company cloud `rl1csupb` on 2026-08-16, but
+  config.json kept the old `dmxkoz4jo`. That stayed hidden while .env held
+  the OLD account's key. When the key was switched to the company account,
+  every call returned "401 — cloud_name mismatch", and /api/orders answered
+  500, blanking the whole tab. That also hid two paid, never-ingested
+  orders. So: a cloud change is a config.json change plus a .env change, in
+  that order, and "cloud_name mismatch" always means the two disagree. Never
+  hand-edit production's config.json: it is tracked, so the dirty tree
+  blocks every later deploy. Ship it through `dev` instead. The OLD account
+  (`dmxkoz4jo`) still hosts the storefront's testimonial images, and every
+  order ingested before the switch; projects from those orders now publish
+  into the new account. /api/orders is now BEST-EFFORT about Cloudinary.
+  It still lists the Firestore ledger, skips the per-row photo counts
+  instead of repeating a refused call once per order, and returns the
+  reason as `cloudinary_error`, which the Orders tab shows above the list.
+  Pinned by TestOrdersSurviveCloudinaryBeingUnreadable /
+  TestTheLiveConfigNamesTheStorefrontsCloud.
 - `pipeline.py orders` / `pipeline.py ingest <project> <order>` are the
   intake commands (`clients/cloudinary_client.py`; Admin API, basic auth via
   CLOUDINARY_API_KEY/SECRET in .env). Asset listing is BY TAG first (works

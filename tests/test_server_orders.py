@@ -368,3 +368,20 @@ class TestOrdersSurviveCloudinaryBeingUnreadable:
         FakeCloudinary.install(monkeypatch, {LEAF: _assets(3)})
         assert self._get(app_client)["cloudinary_error"] == ""
 
+
+class TestTheLiveConfigNamesTheStorefrontsCloud:
+    """config.json's cloud name must be the cloud the storefront uploads to.
+
+    It WINS over CLOUDINARY_CLOUD_NAME in .env (`config or env` in
+    CloudinaryClient.from_config), so a stale value here cannot be fixed
+    from .env — which is exactly how a key switch to the company account
+    took the orders tab down. The storefront (itaycohen1010/animoments,
+    src/config.js) has uploaded to `rl1csupb` since 2026-08-16.
+    """
+
+    def test_the_cloud_name_is_the_company_cloud(self):
+        live = json.loads(
+            (Path(__file__).resolve().parent.parent / "config.json")
+            .read_text(encoding="utf-8")
+        )
+        assert live["cloudinary_cloud_name"] == "rl1csupb"
