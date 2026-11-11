@@ -48,7 +48,11 @@ class Config(BaseModel):
     avoid_text_only_frames: bool = True
 
     # OpenAI models (safe to edit).
-    openai_image_model: str = "gpt-image-2"
+    # gpt-image-2 is deprecated (removed 2027-02-10). Sunburst is its
+    # editing-precision replacement and was chosen on a side-by-side
+    # (2026-11-11): it keeps real faces far better, at the cost of a less
+    # cartoon look — which is the trade the user asked for.
+    openai_image_model: str = "gpt-image-2.6-sunburst"
     openai_text_model: str = "gpt-5.1"
     # The canvas the image model draws on, "WIDTHxHEIGHT". The long-standing
     # 1536x1024 is 3:2, so every styled frame is then centre-cropped to 16:9
@@ -63,6 +67,9 @@ class Config(BaseModel):
     # "" sends no quality (the provider's default, "auto"). "high" spends the
     # model's detail budget deliberately and costs more per image — update
     # pricing.openai_image_usd when you change it, or the spend estimate lies.
+    # The shared config.json sets "high": that is what the approved
+    # side-by-side was drawn at. The code default stays unset so a config
+    # that does not mention quality sends nothing.
     openai_image_quality: str = ""
     # Name each cast reference in the styling prompt ("Image 2: the bald
     # man") instead of only saying that references follow. OpenAI's own

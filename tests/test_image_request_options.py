@@ -67,14 +67,23 @@ class TestDefaults:
         assert config.openai_image_size == "2048x1152"
         # ...and so does a config file that does not mention it.
         assert Config.model_fields["openai_image_size"].default == "2048x1152"
-        assert config.openai_image_quality == ""
         assert config.style_reference_labels is False
+
+    def test_the_live_config_is_the_look_that_was_approved(self):
+        # Model, canvas and quality were approved TOGETHER on one
+        # side-by-side. Changing any one of them is a new look, not a tweak.
+        config = _config()
+        assert config.openai_image_model == "gpt-image-2.6-sunburst"
+        assert config.openai_image_size == "2048x1152"
+        assert config.openai_image_quality == "high"
 
     def test_no_quality_key_is_sent_unless_configured(self, photo, tmp_path):
         images = _Images()
-        _client(_config(), images).style_image(photo, "style", tmp_path / "o.png")
+        config = _config(openai_image_quality="")
+        _client(config, images).style_image(photo, "style", tmp_path / "o.png")
         assert images.calls[0]["size"] == "2048x1152"
         assert "quality" not in images.calls[0]
+        assert Config.model_fields["openai_image_quality"].default == ""
 
     def test_the_old_canvas_is_still_one_setting_away(self, photo, tmp_path):
         images = _Images()

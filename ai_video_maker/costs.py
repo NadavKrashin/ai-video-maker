@@ -52,8 +52,10 @@ KIND_LABELS = {
 class Pricing(BaseModel):
     """Unit prices used to value each API call (config key ``pricing``).
 
-    Defaults reflect the models this project ships with (gpt-image-2,
-    gpt-5.1, Kling v2.5 Turbo Pro, mmaudio-v2) as of mid-2026. They are
+    Defaults reflect the models this project shipped with in mid-2026
+    (gpt-image-2, gpt-5.1, Kling v2.5 Turbo Pro, mmaudio-v2). The image
+    model has since moved to gpt-image-2.6-sunburst at quality high, whose
+    per-image cost has not been measured — treat the image price as stale. They are
     list prices, not your invoice: providers change rates, and volume/credit
     deals move them further. Edit config.json when a number drifts — every
     total in the panel is derived from these, including retroactively (the

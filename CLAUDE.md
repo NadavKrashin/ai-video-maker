@@ -420,10 +420,10 @@ Core design rules:
   (21_to_22) although "a camera transition is ALWAYS 5s", and gpt-6-sol
   wrote its own camera-move prompts at 10s on two pairs (07_to_08,
   08_to_09) that are not the code's deterministic family.
-- BOTH OPENAI MODELS IN config.json ARE DEPRECATED (checked 2026-11-11):
-  `gpt-image-2` is removed 2027-02-10 (replacement `gpt-image-2.6-sunburst`)
-  and `gpt-5.1` on 2027-04-01 (replacement `gpt-6-sol`). Each swap changes
-  every frame / every plan, so migrate with a side-by-side on one order.
+- THE TEXT MODEL IN config.json IS DEPRECATED (checked 2026-11-11):
+  `gpt-5.1` is removed 2027-04-01 (replacement `gpt-6-sol`). The swap
+  changes every plan, so migrate with rendered clips to look at. The image
+  model was already migrated (`gpt-image-2` is removed 2027-02-10).
 - ...AND THE DRIFT THAT ALREADY HAPPENED IS FINDABLE (same day). `faces`
   (cmd_faces) rebuilds the sheet for free; `faces --audit` is one vision
   call comparing every tagged appearance of each cast member and naming the
@@ -690,11 +690,19 @@ Core design rules:
   similar." LIKENESS NOW OUTRANKS CARTOON-NESS. This supersedes the earlier
   rejection of "outputs that stayed too realistic" recorded in the next
   bullet — do NOT push a model back toward cartoon to satisfy that older
-  text. Said with a "might", and how far to go (sunburst as-is vs. somewhere
-  between) is not settled; `style_prompt` still carries the old "never like
-  a photograph" language until the user picks a look. Still animated, still
-  no beautifying — the people-first, hair, eyewear and framing rules all
-  stand.
+  text. The user then picked the look: the sunburst column of
+  `projects/_canvas_test/model_comparison.jpg`. THAT LOOK IS A COMBINATION
+  and all of it is now the shared default: `gpt-image-2.6-sunburst` +
+  canvas 2048x1152 + quality `high` + the UNCHANGED `style_prompt`. The
+  prompt still says "never like a photograph" and that is deliberate: those
+  exact words, on this model, produced the frames the user approved, so
+  softening them would ship a look nobody has seen. If the prompt is ever
+  reworded for this model, render a side-by-side first. Still animated,
+  still no beautifying — the people-first, hair, eyewear and framing rules
+  all stand. `pricing.openai_image_usd` (0.19) predates this model and
+  quality: sunburst is billed per token ($30 / 1M image-output tokens) and
+  the real per-image cost has NOT been measured, so image spend estimates
+  are unverified until checked against an invoice.
 - Styling must preserve LIKENESS while being an unmistakable Pixar-style
   cartoon: the whole scene (people, clothing, background) renders as a
   stylized 3D animated film still — never near-photorealistic — but with
@@ -1210,8 +1218,10 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
 - `config.json` at the repo root is the user's live shared config. Current
   model choices are deliberate: Kling v2.5 Turbo Pro (`video_model` /
   `fal_model_id`),
-  `gpt-image-2` for images (user wants OpenAI images), `gpt-5.1` for
-  text/vision planning. The gpt-5 model line rejects non-default `temperature`
+  `gpt-image-2.6-sunburst` for images (user wants OpenAI images; switched
+  from the deprecated `gpt-image-2` on 2026-11-11), `gpt-5.1` for
+  text/vision planning (deprecated, removal 2027-04-01 — `gpt-6-sol` tested
+  but not adopted, see FIRST MIGRATION TEST). The gpt-5 model line rejects non-default `temperature`
   — don't add temperature params to chat calls.
 - Per-project overrides: a `projects/<name>/config.json` is merged key-over-key
   on top of the shared config.
