@@ -1288,6 +1288,14 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   merge, retests on the machine, rebuilds the panel, kickstarts the service,
   health-checks). **CI must stay keyless/offline — it can never be allowed
   to spend API credits.**
+- THE RUNNER LIVES IN `~/actions-runner`, NEVER INSIDE AN APP CHECKOUT
+  (owner's call, 2026-11-11). It is registered as `Atlass-Mac-mini`, and
+  routing uses the `mac-mini` label, not the name. A copy once installed at
+  `~/production/ai-video-maker/deploy/actions-runner` was deleted by the
+  owner. Its LaunchAgent then crash-looped on a missing `Runner.Listener`,
+  GitHub showed the runner offline, and a merged release sat QUEUED with
+  no error. "Merged but production didn't change" means checking the
+  runner first. The recovery steps are in deploy/PRODUCTION.md.
 - Admin API security invariants (pinned by tests/test_server_auth.py):
   constant-time token compare; ADMIN_API_TOKEN ≥ 16 chars enforced at boot;
   per-address lockout (10 bad tokens / 15 min → 429; keyed on
