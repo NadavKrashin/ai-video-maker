@@ -66,7 +66,7 @@ from .intake import parse_order_folder, read_order_record, write_order_record
 from .logging_setup import logger
 from .media.ffmpeg import (
     apply_edge_fades,
-    apply_end_fade,
+    apply_delivery_encode,
     combine_clips,
     ffprobe_duration,
     find_generated_clips,
@@ -2173,15 +2173,30 @@ class Pipeline:
         if self.audio_enabled:
             self._add_music(music_file)
 
-        # Last touch: fade the closing moments to black, audio included.
-        if self.config.end_fade_seconds > 0:
-            try:
-                apply_end_fade(final_video, self.config.end_fade_seconds)
-                logger.info(
-                    "Faded the last %.1fs to black.", self.config.end_fade_seconds
-                )
-            except Exception as exc:  # noqa: BLE001 - cosmetic, never fatal
-                logger.warning("End fade skipped: %s", exc)
+        # Last touch, and the only full re-encode of the finished movie: the
+        # closing fade, loudness, delivery bitrate and faststart in ONE pass.
+        try:
+            before = final_video.stat().st_size
+            apply_delivery_encode(
+                final_video,
+                fade_seconds=max(0.0, self.config.end_fade_seconds),
+                crf=self.config.final_crf,
+                target_lufs=(
+                    self.config.audio_target_lufs
+                    if self.config.audio_normalize else None
+                ),
+                faststart=self.config.final_faststart,
+            )
+            logger.info(
+                "Delivery encode done (crf %d%s%s): %.0f MB -> %.0f MB.",
+                self.config.final_crf,
+                ", loudness normalised" if self.config.audio_normalize else "",
+                ", faded out" if self.config.end_fade_seconds > 0 else "",
+                before / 1e6, final_video.stat().st_size / 1e6,
+            )
+        except Exception as exc:  # noqa: BLE001 - the movie already exists
+            # and plays; a failed polish pass must never lose it.
+            logger.warning("Delivery encode skipped: %s", exc)
 
     def _presentation_flags(self) -> tuple[bool, bool, bool]:
         """(intro_clip, credits_photos, closing_letter): CLI wins over config."""
@@ -2707,6 +2722,7 @@ class Pipeline:
                 self.config.music_volume,
                 self.config.sfx_volume,
                 loop=self.config.music_loop,
+                duck=self.config.music_ducking,
             )
             self.state.set(job_id, "done")
             self.summary.music_added = True

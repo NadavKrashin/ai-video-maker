@@ -1497,5 +1497,22 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   font-gated and only execute where a colour font exists. Apple Color Emoji
   itself is confirmed working there. Pinned by TestSegments (plain text and
   Hebrew must survive segmentation) / TestRenderWithEmoji.
+- THE FINISHED MOVIE GETS EXACTLY ONE FULL RE-ENCODE, AT THE END
+  (2026-11-11). `apply_delivery_encode` (media/ffmpeg.py) replaced the
+  separate end-fade pass: fade, loudness, delivery bitrate and `+faststart`
+  ride in a single command, because every extra generation costs quality
+  and minutes. Order inside the audio chain matters: loudnorm BEFORE afade,
+  or the normaliser pulls the fade-out back up. It runs even with no fade
+  configured, and a failure is a warning — the movie already exists and
+  plays. `final_crf` defaults to 20 (was a fixed 18) and `final_faststart`
+  to on; `audio_normalize` and `music_ducking` are OFF until the user has
+  listened (they change how every movie sounds — same rule as every other
+  taste default here). MEASURED, not estimated, on Itay-Kid's 186s movie:
+  crf 18 = 167 MB, 20 = 146, 22 = 119, 24 = 97; loudnorm moved it from -18.6
+  to exactly -16.0 LUFS. My earlier "CRF 21 halves it" claim came from a raw
+  35 MB Kling clip and did NOT hold for an assembled movie — it is 13% at
+  20. If files must get much smaller the lever is 22-24, not 20.
+  `projects/_canvas_test/delivery/` has before/after files to listen to.
+  Pinned by TestDeliveryEncode / TestMusicDucking / TestDeliveryConfig.
 - ffmpeg concat: mixed silent/sounded clips must go through the concat-filter
   path with silent padding (`_combine_clips_mixed_audio`), never the demuxer.
