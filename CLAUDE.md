@@ -420,10 +420,6 @@ Core design rules:
   (21_to_22) although "a camera transition is ALWAYS 5s", and gpt-6-sol
   wrote its own camera-move prompts at 10s on two pairs (07_to_08,
   08_to_09) that are not the code's deterministic family.
-- THE TEXT MODEL IN config.json IS DEPRECATED (checked 2026-11-11):
-  `gpt-5.1` is removed 2027-04-01 (replacement `gpt-6-sol`). The swap
-  changes every plan, so migrate with rendered clips to look at. The image
-  model was already migrated (`gpt-image-2` is removed 2027-02-10).
 - ...AND THE DRIFT THAT ALREADY HAPPENED IS FINDABLE (same day). `faces`
   (cmd_faces) rebuilds the sheet for free; `faces --audit` is one vision
   call comparing every tagged appearance of each cast member and naming the
@@ -513,6 +509,19 @@ Core design rules:
   there before anything is rendered. Panel: "Compare models" on a clip.
   The panel pieces were built and compile, but were NOT looked at in a
   browser (the in-app browser refused localhost that session).
+- FIRST BAKE-OFF (2026-11-11, clip 06_to_07 of `_plan_test_gpt51`: a
+  four-person selfie -> three men, 10s, people leaving and arriving). Kling
+  2.5 Turbo Pro, 3.0 Standard, 3.0 Pro and O3 Pro ALL accepted the request,
+  returned NO audio stream (so `generate_audio: false` is honoured) and
+  landed on the end frame — those three presets are now `verified`. Facts
+  from the files: 3.0 Standard returns 1280x720 (everything else 1920x1080)
+  at 24fps. My read of sampled STILLS only, which cannot show motion
+  artefacts: 2.5 drifted toward a photoreal look mid-clip and bent the
+  woman's head back; 3.0 Standard and Pro held the drawn style; O3 Pro may
+  have carried one man across instead of staging his exit. The user's eye on
+  the videos decides — do not adopt on this paragraph. Not tested: face
+  elements with an end frame, Kling 4. Side note worth keeping for the
+  encode work: re-encoding a 35 MB Kling clip at CRF 21 gave 7 MB.
 - MAKING A KNOB CONFIG IS ONLY HALF THE JOB (user question, 2026-09-07:
   "is this editable from the ui?"). Twice I told the user to "just try 2/3 on
   one project's config.json" — which, behind the Cloudflare tunnel, means SSH
@@ -1261,12 +1270,22 @@ the planner from a rendered clip, `lessons` shows/edits what it learned, and
   already-paid pending renders stay resumable. `cfg_scale` is deliberately
   left at the provider default until a real A/B on one clip says otherwise.
 - `config.json` at the repo root is the user's live shared config. Current
-  model choices are deliberate: Kling v2.5 Turbo Pro (`video_model` /
-  `fal_model_id`),
+  model choices are deliberate, all three changed on 2026-11-11 after
+  side-by-sides the user looked at: `video_model: kling-3-pro` (Kling 3.0
+  Pro, 0.112 USD/s — picked from the first bake-off; 60% more per clip than
+  2.5, so a 180s movie is about 20 USD, not 13) with `fal_max_elements: 0`,
+  i.e. NO cast faces sent yet: an element + end frame has never been
+  rendered and the approved clips had none. A project that pins kling-3-pro
+  ITSELF gets the preset's element settings, which is the way to try it on
+  one clip. The shared file no longer spells out `fal_model_id`/frame
+  fields — the preset fills them; don't put them back or the preset stops
+  applying.
   `gpt-image-2.6-sunburst` for images (user wants OpenAI images; switched
-  from the deprecated `gpt-image-2` on 2026-11-11), `gpt-5.1` for
-  text/vision planning (deprecated, removal 2027-04-01 — `gpt-6-sol` tested
-  but not adopted, see FIRST MIGRATION TEST). The gpt-5 model line rejects non-default `temperature`
+  from the deprecated `gpt-image-2` on 2026-11-11), `gpt-6-sol` for
+  text/vision planning (adopted by the user knowing it roughly doubles the
+  camera transitions — see FIRST MIGRATION TEST). Existing rendered clips
+  were made with Kling 2.5 and will show as `model_changed`; that is the
+  flag doing its job, not a fault. The gpt-5 model line rejects non-default `temperature`
   — don't add temperature params to chat calls.
 - Per-project overrides: a `projects/<name>/config.json` is merged key-over-key
   on top of the shared config.

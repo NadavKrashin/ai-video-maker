@@ -17,9 +17,11 @@ belongs to the MODEL, not to a separate switch somebody has to remember to
 flip in step with it.
 
 VERIFICATION: `verified` marks a preset whose request shape this project has
-actually rendered with — today only 2.5. Everything else comes from fal's
-published pages (re-read 2026-11-11) and has not been exercised from here,
-so the first render on one should be a single clip — `bakeoff <project>
+actually rendered with: 2.5, and since the first bake-off (2026-11-11) Kling
+3.0 Standard, 3.0 Pro and O3 Pro — each accepted the request, returned no
+audio and landed on the end frame. That says the REQUEST works, not that the
+model is better; face elements and Kling 4 are still untried. So the first
+render on a new model should be a single clip — `bakeoff <project>
 --clip ID`, which renders one pair on several models side by side without
 touching the movie — before a whole movie is committed to it.
 """
@@ -125,11 +127,12 @@ VIDEO_MODELS: tuple[VideoModel, ...] = (
         element_prompt_template="@Element{index}",
         extra_arguments={"generate_audio": False},
         price_note="fal model page, read 2026-11-11: $0.084/s audio off ($0.126/s with audio)",
+        verified=True,
         note=(
-            "The cheaper tier of Kling 3: 20% more per second than 2.5, with "
-            "the newer model's motion and one face element. Not yet rendered "
-            "from here: try one clip first and check the end frame is "
-            "honoured."
+            "The cheaper tier of Kling 3: 20% more per second than 2.5. "
+            "Rendered from here on 2026-11-11 and it lands on the end frame "
+            "— but it returns 1280x720, not 1080p, so it is softer than "
+            "every other model here. Face elements not yet tried."
         ),
     ),
     VideoModel(
@@ -147,12 +150,14 @@ VIDEO_MODELS: tuple[VideoModel, ...] = (
         element_prompt_template="@Element{index}",
         extra_arguments={"generate_audio": False},
         price_note="fal model page, read 2026-11-11: $0.112/s audio off ($0.168/s with audio)",
+        verified=True,
         note=(
-            "Newer model, better motion coherence, and it accepts ONE facial "
-            "element — the cast face reference — to hold a character's "
-            "identity through the shot. 60% more per second than 2.5. Its "
-            "schema lists the end frame and elements side by side, but that "
-            "has not been rendered from here: try one clip first."
+            "Newer model, 1080p, and it accepts ONE facial element — the "
+            "cast face reference — to hold a character's identity through "
+            "the shot. 60% more per second than 2.5. Rendered from here on "
+            "2026-11-11 and it lands on the end frame; sending a face "
+            "element together with the end frame has not been tried yet, so "
+            "compare one clip first on a tagged project."
         ),
     ),
     VideoModel(
@@ -165,10 +170,11 @@ VIDEO_MODELS: tuple[VideoModel, ...] = (
         supports_elements=False,
         extra_arguments={"generate_audio": False},
         price_note="fal model page, read 2026-11-11: $0.112/s audio off ($0.14/s with audio)",
+        verified=True,
         note=(
             "Kling's first-frame-to-last-frame model, 1080p. Same price as "
-            "3.0 Pro; no face elements on this endpoint. Not yet rendered "
-            "from here."
+            "3.0 Pro; no face elements on this endpoint. Rendered from here "
+            "on 2026-11-11 and it lands on the end frame."
         ),
     ),
     VideoModel(
