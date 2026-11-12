@@ -1108,7 +1108,8 @@ function ProjectSettingsCard({ settings, locked, busy, onSave, onReset }) {
 // first guess at who is in each photo; this is where a human fixes both and
 // then pushes those corrections into the prompts. Nothing here renders.
 function PeoplePanel({
-  locked, info, onPropose, onReplanAll, onReplanOutdated, onOpenTagger
+  locked, info, onPropose, onReplanAll, onReplanOutdated, onOpenTagger,
+  onConfirmTags
 }) {
   const untagged = info.totalFrames - info.taggedFrames;
   return (
@@ -1120,6 +1121,23 @@ function PeoplePanel({
         is in each photo, then re-plan so the prompts use it. Two people
         morphing into each other almost always starts here.
       </PanelIntro>
+      {info.draftTagFrames > 0 && (
+        <Alert color="blue" variant="light" mb="md"
+          title={`${info.draftTagFrames} photo(s) carry the AI's guess at who is in them — not reviewed`}>
+          The planner treats an unreviewed guess as a hint and trusts the
+          pictures over it, so you can leave these alone. If the movie needs
+          exact identities (people who look alike), correct the photos that
+          are wrong, then confirm the rest: reviewed tags are told to the
+          planner as fact.
+          <Group mt="sm">
+            <Button size="xs" variant="default" disabled={locked}
+              onClick={onConfirmTags}
+              title="Marks every remaining guess as reviewed. Free; save to apply, then re-plan.">
+              These are all correct
+            </Button>
+          </Group>
+        </Alert>
+      )}
       {info.outdatedPlans > 0 && (
         <Alert color="yellow" variant="light" mb="md"
           title={`${info.outdatedPlans} prompt(s) don't know about your latest tags`}>
@@ -2010,6 +2028,8 @@ export default function ProjectDetail({ name, onBack }) {
     // The identity review step (step 2).
     totalFrames,
     taggedFrames,
+    draftTagFrames: (storyboard?.frames || []).filter(
+      (f) => (f.people || []).length && f.people_draft).length,
     outdatedPlans: (snap.storyboard?.outdated_plans || []).length,
     hasCast: (storyboard?.characters || []).length > 0,
     fragileEpithets: (snap.storyboard?.fragile_epithets || []).length,
@@ -2144,8 +2164,21 @@ export default function ProjectDetail({ name, onBack }) {
     setStoryboard((sb) => ({
       ...sb,
       frames: (sb.frames || []).map(
-        (f) => (f.output_path === outputPath ? { ...f, people } : f)
+        // Touching a photo's tags makes them yours: no longer an AI guess.
+        (f) => (f.output_path === outputPath
+          ? { ...f, people, people_draft: false } : f)
       ),
+    }));
+    setDirty((d) => new Set(d).add(TAGS_EDIT));
+  };
+
+  // "I looked, the guesses are right": turns every unreviewed AI guess into
+  // a reviewed tag, which the planner is then told as fact. Free and local;
+  // it lands with the normal Save, like any other tag edit.
+  const confirmAllTags = () => {
+    setStoryboard((sb) => ({
+      ...sb,
+      frames: (sb.frames || []).map((f) => ({ ...f, people_draft: false })),
     }));
     setDirty((d) => new Set(d).add(TAGS_EDIT));
   };
@@ -2906,7 +2939,7 @@ export default function ProjectDetail({ name, onBack }) {
       onLook={(v) => saveSettings({ style_realism: v })} />,
     people: <PeoplePanel locked={locked} info={info}
       onPropose={askForTagSuggestions} onReplanAll={replanAll}
-      onReplanOutdated={replanOutdated}
+      onReplanOutdated={replanOutdated} onConfirmTags={confirmAllTags}
       onOpenTagger={() => { setShowTagger(true); setOpenPanel(''); }} />,
     render: <RenderPanel ask={ask} locked={locked} info={info}
       onGenerateAll={() => { if (!needsSave()) generateAll(snap); }}

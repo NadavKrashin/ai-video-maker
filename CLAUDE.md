@@ -755,6 +755,52 @@ Core design rules:
     look alike. Never make tagging a precondition.
   Pinned by TestSamePeopleNewPlaceStayInFrame /
   TestExitStagingOveruseIsVisible / TestRepeatedExitStagingIsVisible.
+- THE GOAL IS FULL AUTOMATION ACROSS MOVIE TYPES (user, 2026-11-12: "I
+  don't even need to look at the prompts ... for every use case I come up
+  here and make the edits, only for it to not work on the next use case").
+  How to work toward it:
+  - NEVER write a rule about a KIND OF MOVIE. A growing-up movie, a family
+    movie and a father-and-son movie are the same few PAIR situations in
+    different proportions. Decide per pair, from facts the planner reports
+    (rosters, heads, same_place), in code.
+  - Every change to staging must keep `tests/test_staging_regression.py`
+    green. It is a table of real pairs from all three kinds, with the
+    staging the user expects. When the user corrects a staging by hand,
+    ADD THAT PAIR AS A ROW before changing the gate.
+  - Prefer moving a decision into code over adding prose to
+    `_MODE_A_SYSTEM`; the rulebook is already long and self-contradicting
+    across movie types.
+  - Still to build (agreed direction, not yet done): run the clip reviewer
+    on every render and surface only failures (costs a vision call per
+    clip, get the user's OK first); ask the user only about photos whose
+    identity is uncertain; feed `hand_edited` diffs into lessons.
+- UNREVIEWED TAG GUESSES ARE HINTS, NOT FACTS (2026-11-12).
+  `Frame.people_draft` is True for tags written by `_propose_tags` and
+  cleared when a human edits that frame (panel + server diff on save) or
+  clicks "These are all correct". Drafts go to the planner through
+  `_proposed_people_block` ("NOBODY HAS CHECKED IT ... TRUST THE
+  PICTURES") and are excluded from `frame_people`, so they never drive the
+  swap/camera gate or the snapshot's `unstageable_pairs`. Cause: on
+  am-101126-unaq the proposal tagged the main child as his younger brother
+  in 14 photos and was handed over as "a human has tagged ... OVERRULES";
+  the user rewrote those prompts by hand. Legacy storyboards default to
+  reviewed (no behaviour change). The identity stamp marks drafts with "~"
+  so confirming one reads as "prompt behind". Pinned by
+  tests/test_identity_drafts.py.
+- CAST NAMES MUST SURVIVE AGEING. The "separate look-alikes by relative
+  age/size" rule is right when nobody ages and wrong in a growing-up movie
+  ("the younger boy" is also the older brother at two). `_MODE_A_SYSTEM`
+  now checks for ageing first and then forbids age/size words. Prompt-side
+  only; existing casts are never rewritten.
+- DIFFERENT PLACE + NOBODY IN BOTH FRAMES = CAMERA (`same_place` in the
+  transition schema; reason "different_place"). Deliberately narrow: the
+  user forced the camera on such a pair (unaq 8) but kept or wrote people
+  staging for "someone joins/leaves a person who stays" across places
+  (unaq 19, 23), so those stay staged. Unknown place never fires.
+- THE PLANNER'S ORIGINAL IS KEPT (`Transition.planned_prompt` /
+  `planned_duration`, `hand_edited_transitions`, snapshot `hand_edited`).
+  Before this a hand edit overwrote the only copy and the user's intent had
+  to be reconstructed from logs.
 - "RE-PLAN ALL" MUST NOT NAME PAIRS (2026-11-12). The panel sent
   `replan_clips: [every id in the saved storyboard]`. After a photo was
   added, `15_to_17` no longer existed, the job died on "No such

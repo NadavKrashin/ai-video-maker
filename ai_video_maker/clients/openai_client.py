@@ -310,6 +310,10 @@ _IDENTIFY_PEOPLE_SYSTEM = (
     "two and at seven looks like two different people, while two siblings at "
     "the same age can look almost identical; use the frame order (the film "
     "runs in order, so ages progress) and any adults beside them as context. "
+    "A film that follows ONE child growing up shows that child in most "
+    "frames: a lone child early in the film is far more likely the main "
+    "child when small than a younger sibling, whatever age word the cast "
+    "description uses. "
     "Be honest about uncertainty: a person you are unsure of should be LEFT "
     "OUT rather than guessed, because a human is about to check this and a "
     "missing tag is quicker to add than a wrong one is to notice. Never "
@@ -897,6 +901,20 @@ _MODE_A_SYSTEM = (
     "size or age — 'the taller boy' / 'the smaller boy' — which still works "
     "in every photo. Only when even that fails may clothing appear, and "
     "then only ADDED to a durable core, never instead of it. "
+    "BUT FIRST CHECK WHETHER ANYONE AGES ACROSS THE FRAMES. Many of these "
+    "films follow one child from baby to teenager. A child at two and the "
+    "same child at ten are ONE cast entry, never two, and in such a film "
+    "every age or size word is a trap: 'the younger boy', 'the little "
+    "girl', 'the smaller boy', 'the toddler' are true in one photo and "
+    "false in the next, and 'the younger boy' also describes the OLDER "
+    "brother in his own early photos. A real cast named two brothers 'the "
+    "older brown-haired boy' and 'the younger blue-eyed boy'; the main "
+    "child's early photos were then read as his brother and one boy was "
+    "staged as two people. When anyone visibly ages, build every epithet "
+    "from what survives growing up — hair colour and texture, eye colour, "
+    "freckles, glasses, face shape — and use NO age or size word for "
+    "anyone in that family ('the brown-haired boy', 'the blue-eyed boy "
+    "with fair hair'). "
     "Also give each character a `durable_epithet`: the same person written "
     "using ONLY these carried-over features, with no garment word at all. "
     "It is the wording the film falls back on, so make it a drop-in "
@@ -957,7 +975,9 @@ _MODE_A_SYSTEM = (
     "change is 5. "
     "TOO MANY PEOPLE TO CHOREOGRAPH: exit-and-entrance staging is for a FEW "
     "people — it does not scale. When more than {{MOVER_BUDGET}} people would "
-    "have to leave or arrive between the two frames, or either frame holds "
+    "have to leave or arrive between the two frames, or the two frames are "
+    "different places with NOBODY in both (nothing carries over: not a "
+    "person, not the ground they stand on), or either frame holds "
     "{{OVER_CROWD_LIMIT}} or more people who matter in the shot — clearly "
     "visible individuals, never distant background figures — and the "
     "roster or arrangement changes, per-person "
@@ -1264,6 +1284,11 @@ _TRANSITIONS_SCHEMA: dict[str, Any] = {
                     # (is_unstageable_pair).
                     "start_heads": {"type": "integer"},
                     "end_heads": {"type": "integer"},
+                    # Do the two frames show the SAME place? A fact, like
+                    # the head counts: with nobody in both frames AND a
+                    # different place, nothing carries over and code hands
+                    # the pair to the camera (unstageable_reason).
+                    "same_place": {"type": "boolean"},
                     # Who stands where, left to right, in each frame. Asked
                     # for as DATA because the planner reliably sees it but
                     # unreliably acts on it: it has twice written
@@ -1282,6 +1307,7 @@ _TRANSITIONS_SCHEMA: dict[str, Any] = {
                 },
                 "required": [
                     "pair_index", "difficulty", "start_heads", "end_heads",
+                    "same_place",
                     "start_order", "end_order",
                     "motion_prompt", "sound_prompt",
                 ],
@@ -1359,6 +1385,36 @@ def _merge_cast(
 def _people_count(n: int) -> str:
     """"1 person" / "5 people" — the planner reads these sentences."""
     return f"{n} person" if n == 1 else f"{n} people"
+
+
+def _proposed_people_block(hints: list[Optional[list[str]]]) -> str:
+    """Hand the planner the AI's UNREVIEWED tag guesses, as guesses.
+
+    These come from the automatic proposal that nobody checked. They used to
+    go out through ``_tagged_people_block`` as "a human has tagged this, it
+    OVERRULES what you see", and on a real growing-up movie the proposal
+    had labelled the main child as his younger brother in 14 photos, so the
+    planner was ordered to stage one boy as two people. A guess is worth
+    having (it is right most of the time), but the pictures outrank it, and
+    it never feeds the code decisions (swap, camera gate): those use
+    reviewed tags or the planner's own reading.
+    """
+    rows = [
+        f"- Frame {i:03d}, left to right: {', '.join(people)}"
+        for i, people in enumerate(hints, start=1) if people
+    ]
+    if not rows:
+        return ""
+    return "\n".join([
+        "PROPOSED IDENTITIES — an automatic first guess at who is in these "
+        "frames. NOBODY HAS CHECKED IT. Use it as a starting point, and "
+        "where the pictures disagree, TRUST THE PICTURES. The usual mistake "
+        "in it: one person at two different ages listed as two different "
+        "people. If a frame's lone child could be the film's main child at "
+        "another age, it is the same child, so animate them as one person. "
+        "Fill start_order/end_order from what you actually see.",
+        *rows,
+    ])
 
 
 def _tagged_people_block(
@@ -1806,8 +1862,19 @@ def unstageable_reason(
     start_order: Any, end_order: Any,
     start_heads: Any = None, end_heads: Any = None,
     mover_budget: Optional[int] = None, crowd_limit: Optional[int] = None,
+    *, same_place: Any = None,
 ) -> Optional[str]:
     """WHY this pair can no longer be staged through the people, or None.
+
+    ``"different_place"`` (2026-11-12): the planner reports the two frames
+    as different places AND nobody is in both. Then nothing carries over,
+    neither a person nor the ground they stand on, so there is no walk to
+    stage and no continuing subject to hold on. A human forced the camera
+    on exactly such a pair (toddlers on a couch -> two other children on a
+    floor). It is deliberately narrow: someone joining or leaving a person
+    who STAYS is still staged through the people, even across places, as
+    is the same cast in a new place. ``same_place`` None (unknown) never
+    fires, so plans made before the field existed are untouched.
 
     ``"movers"``  — more than ``mover_budget`` people leave or arrive, so
     the choreography cannot fit the beat budget however few people are on
@@ -1848,6 +1915,14 @@ def unstageable_reason(
     movers, crowd = _gate_measure(start_order, end_order, start_heads, end_heads)
     if movers > budget:
         return "movers"
+    if same_place is False and start_order and end_order:
+        shared = _match_people(
+            [_person_tokens(n) for n in start_order],
+            [_person_tokens(n) for n in end_order],
+        )
+        # None = the rosters could not be matched; ambiguity never decides.
+        if shared is not None and len(shared) == 0:
+            return "different_place"
     if crowd <= limit:
         return None
     if movers > 0 or is_arrangement_swap(start_order, end_order):
@@ -1882,6 +1957,7 @@ def describe_unstageable(
     start_order: Any, end_order: Any,
     start_heads: Any = None, end_heads: Any = None,
     mover_budget: Optional[int] = None, crowd_limit: Optional[int] = None,
+    *, same_place: Any = None,
 ) -> str:
     """Why the gate turned this pair into a camera move, in numbers ("" = it didn't).
 
@@ -1892,10 +1968,12 @@ def describe_unstageable(
     """
     reason = unstageable_reason(
         start_order, end_order, start_heads, end_heads,
-        mover_budget, crowd_limit,
+        mover_budget, crowd_limit, same_place=same_place,
     )
     if reason is None:
         return ""
+    if reason == "different_place":
+        return "a different place with nobody in both frames"
     budget = _MOVER_BUDGET if mover_budget is None else mover_budget
     limit = _CROWD_LIMIT if crowd_limit is None else crowd_limit
     movers, crowd = _gate_measure(start_order, end_order, start_heads, end_heads)
@@ -1914,6 +1992,7 @@ def is_unstageable_pair(
     start_order: Any, end_order: Any,
     start_heads: Any = None, end_heads: Any = None,
     mover_budget: Optional[int] = None, crowd_limit: Optional[int] = None,
+    *, same_place: Any = None,
 ) -> bool:
     """Can this pair no longer be staged through the people themselves?
 
@@ -1923,7 +2002,7 @@ def is_unstageable_pair(
     """
     return unstageable_reason(
         start_order, end_order, start_heads, end_heads,
-        mover_budget, crowd_limit,
+        mover_budget, crowd_limit, same_place=same_place,
     ) is not None
 
 
@@ -2799,6 +2878,7 @@ class OpenAIClient:
         lessons: Optional[list[str]] = None,
         frame_people: Optional[list[Optional[list[str]]]] = None,
         stage_anyway: Optional[list[bool]] = None,
+        frame_people_hints: Optional[list[Optional[list[str]]]] = None,
     ) -> tuple[list[tuple[str, int, str]], list[Character]]:
         """Vision-analyze consecutive frames and plan each clip between them.
 
@@ -2856,7 +2936,7 @@ class OpenAIClient:
             "{\n"
             '  "transitions": [\n'
             '    {"pair_index": int, "difficulty": 1-5, '
-            '"start_heads": int, "end_heads": int, '
+            '"start_heads": int, "end_heads": int, "same_place": bool, '
             '"start_order": [str, ...], "end_order": [str, ...], '
             '"motion_prompt": str, "sound_prompt": str}, ...\n'
             "  ],\n"
@@ -2875,7 +2955,12 @@ class OpenAIClient:
             "off, tourists behind a fence, a crowd in the distance — those "
             "are SCENERY, not people the clip has to keep track of. A family "
             "posed together counts every member; one boy in front of a busy "
-            "ski slope counts 1. start_order and end_order list those same "
+            "ski slope counts 1. same_place is true when the two frames were "
+            "taken in the SAME place (the same room, the same boat, the same "
+            "stretch of beach), so a person could walk from one to the other; "
+            "false when they are different places, however similar they "
+            "look. Judge the place, not the colours. "
+            "start_order and end_order list those same "
             "people — everyone you counted, never the background figures — in "
             "frame k and in frame k+1 respectively, LEFT TO "
             "RIGHT as they appear in that image, each by the same epithet the "
@@ -2916,6 +3001,9 @@ class OpenAIClient:
                 self.config.unstageable_mover_budget,
                 self.config.unstageable_crowd_limit,
             )
+        hints = _proposed_people_block(list(frame_people_hints or []))
+        if hints:
+            instruction += "\n\n" + hints
         if global_context.strip():
             # The user's whole-movie guidance (storyboard.global_motion_prompt).
             # It is prepended verbatim to every motion prompt at render time,
@@ -3064,6 +3152,7 @@ class OpenAIClient:
                 *orders(i), item.get("start_heads"), item.get("end_heads"),
                 self.config.unstageable_mover_budget,
                 self.config.unstageable_crowd_limit,
+                same_place=item.get("same_place"),
             )
             if unstageable and forced_people:
                 logger.info(
@@ -3084,6 +3173,7 @@ class OpenAIClient:
                         item.get("end_heads"),
                         self.config.unstageable_mover_budget,
                         self.config.unstageable_crowd_limit,
+                        same_place=item.get("same_place"),
                     ),
                     "your tags" if tagged(i)
                     else "the planner's own reading — frames not tagged yet",
