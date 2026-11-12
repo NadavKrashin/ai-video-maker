@@ -2111,3 +2111,55 @@ class TestExitStagingOveruseIsVisible:
             plans = _plans(config, data, 3)
         assert [m for m, _, _ in plans] == [self.EXIT] * 3  # never rewritten
         assert "3 of the 3 prompts planned here send people out past the camera" in caplog.text
+
+
+class TestCastNamesSurviveGrowingUp:
+    """In a film where someone ages, an age word names two people.
+
+    am-101126-unaq's cast was "the older brown-haired boy" and "the younger
+    blue-eyed boy". The main child's early photos were then tagged as his
+    brother, and one boy was staged as two people. The old rule recommended
+    exactly that kind of name ("separate them by relative size or age"),
+    which is right for a family trip and wrong for a growing-up movie.
+    """
+
+    def test_the_planner_checks_for_ageing_before_naming(self):
+        from ai_video_maker.clients.openai_client import mode_a_system
+        s = mode_a_system()
+        assert "BUT FIRST CHECK WHETHER ANYONE AGES ACROSS THE FRAMES" in s
+        assert "ONE cast entry, never two" in s
+        assert "use NO age or size word" in s
+
+    def test_relative_size_stays_for_films_where_nobody_ages(self):
+        from ai_video_maker.clients.openai_client import mode_a_system
+        assert "'the taller boy' / 'the smaller boy'" in mode_a_system()
+
+    def test_the_tag_proposer_expects_one_child_at_many_ages(self):
+        from ai_video_maker.clients import openai_client as oc
+        assert "ONE child growing up" in oc._IDENTIFY_PEOPLE_SYSTEM
+
+
+class TestDifferentPlaceWithNobodyInCommon:
+    def test_the_planner_reports_the_place_as_data(self):
+        item = _TRANSITIONS_SCHEMA["properties"]["transitions"]["items"]
+        assert item["properties"]["same_place"] == {"type": "boolean"}
+        assert "same_place" in item["required"]
+
+    def test_the_rule_the_model_is_taught_matches_the_gate(self):
+        from ai_video_maker.clients.openai_client import mode_a_system
+        assert "different places with NOBODY in both" in mode_a_system()
+
+    def test_the_coercer_uses_the_reported_place(self, config, caplog):
+        def data(same_place):
+            return {"transitions": [{
+                "pair_index": 1, "difficulty": 3, "sound_prompt": "",
+                "motion_prompt": "the man steps aside, then the boy steps in from the right and waves",
+                "start_order": ["the man"], "end_order": ["the boy"],
+                "start_heads": 1, "end_heads": 1, "same_place": same_place,
+            }]}
+        with caplog.at_level("INFO"):
+            camera = _plans(config, data(False), 1)[0]
+        assert is_camera_transition(camera[0]) and camera[1] == 5
+        assert "a different place with nobody in both frames" in caplog.text
+        staged = _plans(config, data(True), 1)[0][0]
+        assert not is_camera_transition(staged)

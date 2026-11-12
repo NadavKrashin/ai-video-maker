@@ -1710,6 +1710,17 @@ def create_app(config_path: Path, *, watch: bool = True) -> FastAPI:
             # Unreadable/hand-broken JSON on disk: there is nothing to diff
             # against, so save without inventing staleness.
             previous = None
+        # A frame whose tags a human just changed is no longer the AI's
+        # guess, whatever the client sent: reviewed tags are facts to the
+        # planner, guesses only hints. (The panel clears the flag itself;
+        # this is the guard for any other client.)
+        if previous is not None:
+            before = {f.output_path: f.people for f in previous.frames}
+            for frame in storyboard.frames:
+                if frame.people_draft and frame.people != before.get(
+                    frame.output_path, frame.people
+                ):
+                    frame.people_draft = False
         changed = changed_transition_ids(previous, storyboard)
         pipeline = _pipeline(ws)
         # A clip with a submitted-but-uncollected fal job is already paid for.

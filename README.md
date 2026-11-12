@@ -784,6 +784,37 @@ screen, or to the other side of someone. If a movie still ends up with more
 than two such prompts, `status` and the panel say so. Nothing is rewritten
 for you.
 
+**A different place with nobody in common is a camera move.** The planner
+reports whether the two photos show the same place. When they don't, and no
+person is in both, nothing carries over, so the pair gets the camera
+transition. Someone joining or leaving a person who stays is still staged
+through the people, even across places.
+
+**Tag guesses are hints; reviewed tags are facts.** The storyboard step
+guesses who is in each photo. Until you touch a photo's tags, that guess is
+passed to the planner as a hint it may overrule from the pictures, and it
+never drives the swap or camera decisions. Tags you edit, or confirm with
+**These are all correct** in the People step, are told to the planner as
+fact. A movie you never open works without tags; a movie that needs exact
+identities gets them once you have reviewed the tags. Tags saved before
+this existed count as reviewed.
+
+**Cast names survive growing up.** When anyone visibly ages across the
+photos, the planner names people by what survives it (hair colour and
+texture, eye colour, glasses), never by age or size. "The younger boy" is
+also the older brother in his own early photos.
+
+**Your hand edits are kept as evidence.** Each pair stores what the planner
+wrote (`planned_prompt`, `planned_duration`) beside the prompt as it is
+now, and `snapshot()["storyboard"]["hand_edited"]` lists the pairs you
+changed.
+
+**The staging regression set.** `tests/test_staging_regression.py` is a
+table of real pair situations from a growing-up movie, a big-family movie
+and two-person scenes, each with the staging expected. It runs with the
+normal tests before every deploy. When you correct a staging by hand, that
+pair belongs in the table.
+
 **“Re-plan all” survives added and removed photos.** Adding a photo
 re-pairs the frames around it (`15_to_17` becomes `15_to_16` + `16_to_17`).
 The panel now asks for "all pairs" instead of listing pair names from the

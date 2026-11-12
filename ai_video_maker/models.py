@@ -41,6 +41,16 @@ class Frame(BaseModel):
     # then corrected). Empty means "nobody has said", and the planner falls
     # back to working it out from the image as it always did.
     people: list[FramePerson] = Field(default_factory=list)
+    # True while `people` is only the AI's first guess (`tag` / the proposal
+    # at the end of `storyboard`) and no human has touched this frame's tags.
+    # A guess is a HINT to the planner; only reviewed tags are stated as
+    # fact and drive the code decisions (swap, camera gate). The proposal
+    # used to be handed over as "a human has tagged this, it OVERRULES what
+    # you see", and on a real growing-up movie it had labelled the main
+    # child as his younger brother in 14 photos, so the planner was ordered
+    # to stage one boy as two people. False on everything saved before this
+    # existed, so older projects behave exactly as they did.
+    people_draft: bool = False
     # Image-based projects: the input image this frame was styled from
     # (workspace-relative). Lets the pipeline detect that a styled file no
     # longer matches its source (inputs swapped/reordered) and re-style it.
@@ -123,6 +133,13 @@ class Transition(BaseModel):
     # existed, which reads as "planned from no tags at all" — true, and
     # exactly what makes an untagged project stay quiet.
     planned_identity: str = ""
+    # What the planner itself wrote for this pair, kept beside whatever the
+    # prompt says now. A hand edit used to overwrite the only copy, so
+    # nobody (human or machine) could later see WHAT was changed, and the
+    # same correction had to be explained again on the next movie. Empty on
+    # anything planned before this existed.
+    planned_prompt: str = ""
+    planned_duration: int = 0
 
 
 class Storyboard(BaseModel):
@@ -194,8 +211,12 @@ def identity_fingerprint(
             parts.append("?")
             continue
         ordered = sorted(frame.people, key=lambda p: p.x)
+        # A guess and a reviewed tag are different inputs to the planner
+        # (hint vs fact), so confirming a guess must read as "this prompt
+        # was planned before that". Reviewed tags keep their old stamp.
         parts.append(
-            ",".join(f"{p.id}={epithets.get(p.id, '')}" for p in ordered)
+            ("~" if frame.people_draft else "")
+            + ",".join(f"{p.id}={epithets.get(p.id, '')}" for p in ordered)
         )
     return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:12]
 
@@ -262,7 +283,9 @@ def outdated_identity_plans(storyboard: "Storyboard") -> list[str]:
     ]
 
 
-def tagged_people(storyboard: "Storyboard") -> dict[str, list[str]]:
+def tagged_people(
+    storyboard: "Storyboard", include_drafts: bool = True
+) -> dict[str, list[str]]:
     """Frame output_path -> the epithets standing in it, LEFT TO RIGHT.
 
     Resolves each frame's tagged cast ids through the movie's cast and
@@ -278,6 +301,8 @@ def tagged_people(storyboard: "Storyboard") -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     for frame in storyboard.frames:
         if not frame.people:
+            continue
+        if frame.people_draft and not include_drafts:
             continue
         ordered = sorted(frame.people, key=lambda p: p.x)
         epithets = [by_id[p.id] for p in ordered if p.id in by_id]
@@ -316,4 +341,15 @@ def changed_transition_ids(
         t.id for t in new.transitions
         if (before := previous.get(t.id)) is not None
         and any(getattr(before, f) != getattr(t, f) for f in _CLIP_DEFINING_FIELDS)
+    ]
+
+
+def hand_edited_transitions(storyboard: "Storyboard") -> list[str]:
+    """Ids of transitions whose prompt or length a human changed after planning."""
+    return [
+        t.id for t in storyboard.transitions
+        if t.planned_prompt and (
+            t.motion_prompt != t.planned_prompt
+            or (t.planned_duration and t.duration != t.planned_duration)
+        )
     ]

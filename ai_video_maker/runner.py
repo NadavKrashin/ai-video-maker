@@ -124,6 +124,7 @@ from .models import (
     outdated_identity_plans,
     outdated_reference_frames,
     reference_fingerprint,
+    hand_edited_transitions,
     tagged_people,
 )
 from .options import RunOptions
@@ -971,6 +972,10 @@ class Pipeline:
             f.output_path: f.people
             for f in (saved.frames if saved else []) if f.people
         }
+        tag_drafts = {
+            f.output_path for f in (saved.frames if saved else [])
+            if f.people and f.people_draft
+        }
         # Hand-written per-frame style notes are rebuilt-from-disk casualties
         # for the same reason, and have to be carried over just as explicitly.
         saved_notes = {
@@ -996,6 +1001,7 @@ class Pipeline:
                 source_path=src.relative_to(root).as_posix(),
                 styled_hash=hashes[dst],
                 people=tagged.get(dst.relative_to(root).as_posix(), []),
+                people_draft=dst.relative_to(root).as_posix() in tag_drafts,
                 style_note=saved_notes.get(dst.relative_to(root).as_posix(), ""),
                 styled_refs=saved_stamps.get(dst.relative_to(root).as_posix(), ""),
             )
@@ -1131,13 +1137,23 @@ class Pipeline:
                 frames=frames, transitions=[],
             )
         )
-        frame_people = [people_by_path.get(f.output_path) for f in frames]
+        # Reviewed tags are facts and drive the code decisions; the AI's
+        # unreviewed guesses go along as hints the planner may overrule.
+        frame_people = [
+            None if f.people_draft else people_by_path.get(f.output_path)
+            for f in frames
+        ]
+        frame_people_hints = [
+            people_by_path.get(f.output_path) if f.people_draft else None
+            for f in frames
+        ]
 
         plans, cast = self._plan_pairs(
             styled_paths, dirty, style,
             global_context=saved.global_motion_prompt if saved else "",
             cast=cast_now,
             frame_people=frame_people,
+            frame_people_hints=frame_people_hints,
             stage_anyway={
                 i for i, (a, b) in enumerate(pairs)
                 if f"{a.id}_to_{b.id}" in stage_forced
@@ -1204,6 +1220,8 @@ class Pipeline:
                         duration=duration,
                         sound_prompt=sound,
                         output_path=f"clips/{tid}.mp4",
+                        planned_prompt=motion,
+                        planned_duration=duration,
                     )
                 )
                 replanned.append(tid)
@@ -1242,6 +1260,7 @@ class Pipeline:
         global_context: str = "",
         cast: Optional[list[Character]] = None,
         frame_people: Optional[list[Optional[list[str]]]] = None,
+        frame_people_hints: Optional[list[Optional[list[str]]]] = None,
         stage_anyway: Optional[set[int]] = None,
     ) -> tuple[dict[int, tuple[str, int, str]], list[Character]]:
         """Vision-plan the dirty pairs only: {pair index: (motion, dur, sound)}.
@@ -1296,6 +1315,7 @@ class Pipeline:
                 "Analysing %d frame(s) to plan %d transition(s)...",
                 len(segment), len(run),
             )
+            seg_hints = list(frame_people_hints or [])[run[0]: run[-1] + 2]
             try:
                 seg_plans, cast = self.openai.analyze_frame_transitions(
                     segment, style,
@@ -1305,6 +1325,10 @@ class Pipeline:
                     lessons=lessons,
                     # Tags for exactly the frames in this segment.
                     frame_people=tags[run[0]: run[-1] + 2],
+                    # Only when there are any: a project with no
+                    # unreviewed guesses makes the same call it always did.
+                    **({"frame_people_hints": seg_hints}
+                       if any(seg_hints) else {}),
                     # Same, for the gate override: one flag per PAIR in this
                     # segment, in the segment's own order.
                     stage_anyway=[i in (stage_anyway or set()) for i in run],
@@ -3124,7 +3148,9 @@ class Pipeline:
 
         # Tags resolved to epithets, keyed by styled-frame path — the same
         # rosters planning feeds the unstageable-pair gate.
-        _snapshot_people = tagged_people(storyboard) if storyboard else {}
+        _snapshot_people = (
+            tagged_people(storyboard, include_drafts=False) if storyboard else {}
+        )
 
         if storyboard is None and not storyboard_error:
             next_step = "storyboard"
@@ -3233,6 +3259,16 @@ class Pipeline:
                 # and a tic by the third time. Visible, never rewritten;
                 # the fix is re-planning or editing the ones that don't
                 # need it.
+                # Prompts or lengths a human changed after planning, found
+                # by comparing against the planner's original kept beside
+                # each one. What you correct by hand is the most direct
+                # evidence of what the planner gets wrong.
+                "hand_edited": hand_edited_transitions(storyboard),
+                # Frames whose tags are still the AI's unreviewed guess
+                # (hints to the planner, not facts).
+                "draft_tag_frames": sum(
+                    1 for f in storyboard.frames if f.people and f.people_draft
+                ),
                 "repeated_exit_staging": [
                     storyboard.transitions[i].id
                     for i in overused_exit_staging(
@@ -3374,6 +3410,7 @@ class Pipeline:
             if not people:
                 continue
             frame.people = [FramePerson(**p) for p in people]
+            frame.people_draft = True
             tagged += 1
         if tagged:
             logger.info(
